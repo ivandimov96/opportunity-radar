@@ -1,0 +1,64 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #16181d;
+  --color-ink-muted: #5c6370;
+  --color-ink-faint: #9aa1ad;
+  --color-canvas: #f6f7f9;
+  --color-panel: #ffffff;
+  --color-line: #e4e7ec;
+  --color-accent: #1f5eff;
+  --color-accent-soft: #e8efff;
+  --color-ok: #15803d;
+  --color-ok-soft: #e6f6ec;
+  --color-warn: #b45309;
+  --color-warn-soft: #fff4e0;
+  --color-bad: #b91c1c;
+  --color-bad-soft: #fdecec;
+  --color-demo: #6d28d9;
+  --color-demo-soft: #f1ebff;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+html {
+  color-scheme: light;
+}
+body {
+  @apply bg-canvas text-ink antialiased;
+  font-family: var(--font-sans);
+}
+a {
+  @apply text-accent hover:underline;
+}
+.card {
+  @apply bg-panel border border-line rounded-lg;
+}
+.btn {
+  @apply inline-flex items-center gap-1.5 rounded-md border border-line bg-panel px-3 py-1.5 text-sm font-medium text-ink hover:bg-canvas disabled:opacity-50 disabled:cursor-not-allowed transition-colors;
+}
+.btn-primary {
+  @apply bg-accent text-white border-accent hover:bg-blue-700 hover:no-underline;
+}
+.btn-sm {
+  @apply px-2 py-1 text-xs;
+}
+.input,
+.select,
+.textarea {
+  @apply w-full rounded-md border border-line bg-panel px-3 py-1.5 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent;
+}
+.label {
+  @apply block text-xs font-medium text-ink-muted mb-1;
+}
+.table {
+  @apply w-full text-sm;
+}
+.table th {
+  @apply text-left text-xs font-semibold uppercase tracking-wide text-ink-muted px-3 py-2 border-b border-line;
+}
+.table td {
+  @apply px-3 py-2 border-b border-line align-top;
+}
+.table tr:last-child td {
+  @apply border-b-0;
+}
