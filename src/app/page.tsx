@@ -1,158 +1,205 @@
 import Link from "next/link";
-import { dashboardStats } from "@/lib/queries";
+import { attentionItems, dashboardStats, funnelCounts } from "@/lib/queries";
 import { getConfig, integrationStatus } from "@/lib/config";
-import { Badge, Card, Empty, PageHeader, ScoreBar, Stat, fmtDate } from "@/components/ui";
+import { Badge, Callout, Card, EmptyState, Icon, PageHeader, ScoreRing, fmtRelative } from "@/components/ui";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { seedDemoAction } from "./actions";
-import { stageLabel } from "@/lib/pipeline/stages";
 import { OPPORTUNITY_CATEGORIES, type OpportunityCategory } from "@/lib/industries";
+import { priorityScore } from "@/lib/scoring/score";
 
 export default function Overview() {
   const s = dashboardStats();
+  const funnel = funnelCounts();
+  const inbox = attentionItems();
   const cfg = getConfig();
   const integ = integrationStatus();
-  const queued = s.queue.filter((q) => q.status === "queued" || q.status === "running").reduce((a, b) => a + b.n, 0);
+  const active = s.queue.filter((q) => q.status === "queued" || q.status === "running").reduce((a, b) => a + b.n, 0);
+  const max = Math.max(1, ...funnel.map((f) => f.n));
+
+  if (s.total === 0) {
+    return (
+      <>
+        <PageHeader eyebrow="Welcome" title="Find businesses that genuinely need software" subtitle="Opportunity Radar discovers local businesses, researches their public operations, and turns verified findings into opportunity hypotheses you can validate in a real conversation." />
+        <div className="grid md:grid-cols-3 gap-4">
+          {[
+            { n: 1, icon: "search" as const, title: "Discover businesses", text: "Pick an industry and city. OpenStreetMap works without any credentials; CSV import brings your own list.", cta: <Link href="/searches/new" className="btn btn-primary">Start a search</Link> },
+            { n: 2, icon: "shield" as const, title: "Research with evidence", text: "Each website is crawled politely; every finding keeps its source URL and quote. AI only adds what it can prove.", cta: <Link href="/import" className="btn">Import a CSV</Link> },
+            { n: 3, icon: "sparkles" as const, title: "See it end to end", text: "Load clearly-labeled synthetic data to walk through findings, scored opportunities, drafts and the pipeline.", cta: <form action={seedDemoAction}><button className="btn">Load demo data</button></form> },
+          ].map((c) => (
+            <div key={c.n} className="surface p-5 flex flex-col">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="w-8 h-8 rounded-lg bg-accent-soft text-accent-text grid place-items-center"><Icon name={c.icon} /></span>
+                <span className="text-[11px] font-semibold uppercase tracking-wider text-ink-faint">Step {c.n}</span>
+              </div>
+              <h2 className="font-semibold">{c.title}</h2>
+              <p className="text-sm text-ink-muted mt-1 flex-1">{c.text}</p>
+              <div className="mt-4">{c.cta}</div>
+            </div>
+          ))}
+        </div>
+        {!cfg.ai.enabled && (
+          <div className="mt-5">
+            <Callout tone="warn" title="AI analysis and outreach drafting are off until an Anthropic API key is set." action={<Link href="/settings" className="btn btn-sm">Settings</Link>}>
+              Discovery, website research and deterministic findings work without it.
+            </Callout>
+          </div>
+        )}
+      </>
+    );
+  }
+
+  const kindMeta = {
+    failed: { icon: "alert" as const, tone: "bad" as const, label: "Failed" },
+    draft: { icon: "mail" as const, tone: "accent" as const, label: "Review draft" },
+    due: { icon: "clock" as const, tone: "warn" as const, label: "Next action" },
+    ready_analyze: { icon: "sparkles" as const, tone: "info" as const, label: "Ready to analyze" },
+    ready_draft: { icon: "note" as const, tone: "info" as const, label: "Ready to draft" },
+    ready_research: { icon: "globe" as const, tone: "info" as const, label: "Ready to research" },
+  };
+
   return (
     <>
       <PageHeader
         title="Overview"
-        subtitle="Find businesses → understand their operations → identify credible software opportunities → prioritize → start conversations."
+        subtitle="Where every business sits in the funnel, and what needs your decision now."
         actions={
           <>
-            <AutoRefresh active={queued > 0} />
+            <AutoRefresh active={active > 0} label={`${active} job${active === 1 ? "" : "s"} running`} />
             <Link href="/searches/new" className="btn btn-primary">
-              New search
+              <Icon name="plus" /> New search
             </Link>
           </>
         }
       />
       {!cfg.ai.enabled && (
-        <div className="rounded-md border border-warn/30 bg-warn-soft text-warn text-sm px-3 py-2 mb-4">
-          AI stages (extraction, analysis, outreach) are unavailable: <code>ANTHROPIC_API_KEY</code> is not set. Discovery and website research still run live. Use the demo data to explore the full workflow.{" "}
-          <Link href="/settings">Integration status</Link>
+        <div className="mb-5">
+          <Callout tone="warn" title="AI stages are off: no Anthropic API key configured." action={<Link href="/settings" className="btn btn-sm">How to enable</Link>}>
+            Discovery and website research run live. Analysis and outreach drafting need <code>ANTHROPIC_API_KEY</code>.
+          </Callout>
         </div>
       )}
-      {s.total === 0 && (
-        <Card title="Get started" className="mb-5">
-          <p className="text-sm text-ink-muted mb-3">No businesses yet. Start a live search (OpenStreetMap needs no credentials), import a CSV, or load clearly-labeled synthetic demo data to see the full workflow.</p>
-          <div className="flex gap-2">
-            <Link href="/searches/new" className="btn btn-primary">
-              Start a search
-            </Link>
-            <Link href="/import" className="btn">
-              Import CSV
-            </Link>
-            <form action={seedDemoAction}>
-              <button className="btn">Load demo data (synthetic)</button>
-            </form>
-          </div>
-        </Card>
-      )}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
-        <Stat label="Businesses" value={s.total} hint={s.demo ? `${s.demo} synthetic demo` : undefined} href="/businesses" />
-        <Stat label="Researched" value={s.researched} hint="websites fetched and findings stored" href="/businesses?research=done" />
-        <Stat label="With opportunity hypotheses" value={s.withOpps} hint={`${s.insufficient} concluded insufficient evidence`} href="/businesses?minAttr=1" />
-        <Stat label="Jobs in progress" value={queued} hint={`AI spend to date $${s.ai.total.toFixed(2)} (estimated)`} href="/settings" />
-      </div>
-      <div className="grid lg:grid-cols-3 gap-4">
-        <Card title="Top-ranked opportunities" className="lg:col-span-2">
-          {s.top.length === 0 ? (
-            <Empty>No analyzed opportunities yet.</Empty>
-          ) : (
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Business</th>
-                  <th>Opportunity</th>
-                  <th>Attractiveness</th>
-                  <th>Confidence</th>
-                </tr>
-              </thead>
-              <tbody>
+
+      <Card title="Funnel" description="Businesses progress left to right. Click a stage to filter." className="mb-5">
+        <ol className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+          {funnel.map((f, i) => (
+            <li key={f.key}>
+              <Link href={f.href} className="block hover:no-underline group">
+                <div className="text-[11px] text-ink-muted flex items-center gap-1">
+                  <span className="w-4 h-4 rounded-full bg-surface-3 text-[10px] grid place-items-center text-ink-faint">{i + 1}</span>
+                  {f.label}
+                </div>
+                <div className="text-2xl font-semibold tabular-nums mt-1 group-hover:text-accent-text">{f.n}</div>
+                <div className="h-1.5 rounded-full bg-surface-3 mt-2 overflow-hidden">
+                  <div className="h-full bg-accent rounded-full" style={{ width: `${Math.max(3, (f.n / max) * 100)}%` }} />
+                </div>
+              </Link>
+            </li>
+          ))}
+        </ol>
+      </Card>
+
+      <div className="grid lg:grid-cols-3 gap-5">
+        <div className="lg:col-span-2 space-y-5 min-w-0">
+          <Card title="Needs your attention" description="Failures, drafts to review, due actions, and businesses ready for the next step." padded={false}>
+            {inbox.length === 0 ? (
+              <EmptyState compact icon="check" title="Inbox zero" description="Nothing is waiting on you. Start a search or research more businesses." />
+            ) : (
+              <ul className="divide-y divide-line">
+                {inbox.map((it, i) => {
+                  const m = kindMeta[it.kind];
+                  return (
+                    <li key={i}>
+                      <Link href={it.href} className="flex items-center gap-3 px-5 py-3 hover:bg-surface-2 hover:no-underline">
+                        <span className={`w-8 h-8 rounded-lg grid place-items-center shrink-0 ${{ bad: "bg-bad-soft text-bad", accent: "bg-accent-soft text-accent-text", warn: "bg-warn-soft text-warn", info: "bg-info-soft text-info" }[m.tone]}`}>
+                          <Icon name={m.icon} />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-sm font-medium text-ink truncate">{it.businessName}</span>
+                          <span className="block text-xs text-ink-muted truncate">
+                            <span className="sm:hidden">{m.label} · </span>
+                            {it.detail}
+                          </span>
+                        </span>
+                        <Badge tone={m.tone} className="hidden sm:inline-flex">{m.label}</Badge>
+                        {it.when && <span className="hidden md:inline text-[11px] text-ink-faint w-14 text-right shrink-0">{fmtRelative(it.when)}</span>}
+                        <Icon name="chevronRight" className="w-4 h-4 text-ink-faint" />
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </Card>
+
+          <Card title="Top opportunities" description="Ranked by priority (60% attractiveness, 40% confidence)." padded={false} actions={<Link href="/businesses?quick=has_opps" className="btn btn-sm btn-ghost">View all</Link>}>
+            {s.top.length === 0 ? (
+              <EmptyState compact icon="sparkles" title="No analyzed opportunities yet" description={cfg.ai.enabled ? "Research a business, then run the analysis." : "Analysis needs an Anthropic API key. Demo data shows what this looks like."} />
+            ) : (
+              <ul className="divide-y divide-line">
                 {s.top.map(({ opp, business }) => (
-                  <tr key={opp.id}>
-                    <td>
-                      <Link href={`/businesses/${business.id}?tab=opportunities`}>{business.name}</Link>
-                      {business.isDemo && (
-                        <>
-                          {" "}
-                          <Badge tone="demo">demo</Badge>
-                        </>
-                      )}
-                      <div className="text-xs text-ink-faint">{[business.city, business.region].filter(Boolean).join(", ")}</div>
-                    </td>
-                    <td>
-                      <div>{opp.title}</div>
-                      <div className="text-xs text-ink-faint">{OPPORTUNITY_CATEGORIES[opp.category as OpportunityCategory] ?? opp.category}</div>
-                    </td>
-                    <td>
-                      <ScoreBar value={opp.attractivenessScore} label="" />
-                    </td>
-                    <td>
-                      <ScoreBar value={opp.confidenceScore} label="" tone={opp.confidenceScore < 40 ? "warn" : "ok"} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </Card>
-        <div className="space-y-4">
-          <Card title="Pipeline">
-            {s.stages.length === 0 ? (
-              <Empty>No prospects.</Empty>
-            ) : (
-              <ul className="text-sm space-y-1">
-                {s.stages.map((st) => (
-                  <li key={st.stage} className="flex justify-between">
-                    <Link href={`/businesses?stage=${st.stage}`}>{stageLabel(st.stage)}</Link>
-                    <span className="font-medium">{st.n}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-          <Card title="Next actions">
-            {s.nextActions.length === 0 ? (
-              <Empty>Nothing scheduled.</Empty>
-            ) : (
-              <ul className="text-sm space-y-2">
-                {s.nextActions.map(({ prospect, business }) => (
-                  <li key={business.id}>
-                    <Link href={`/businesses/${business.id}?tab=pipeline`}>{business.name}</Link>
-                    <div className="text-xs text-ink-muted">
-                      {prospect.nextAction} · {fmtDate(prospect.nextActionAt)}
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-          <Card title="Recent searches">
-            {s.recentSearches.length === 0 ? (
-              <Empty>None yet.</Empty>
-            ) : (
-              <ul className="text-sm space-y-1">
-                {s.recentSearches.map((r) => (
-                  <li key={r.id} className="flex justify-between gap-2">
-                    <Link href={`/searches/${r.id}`} className="truncate">
-                      {r.name}
+                  <li key={opp.id}>
+                    <Link href={`/businesses/${business.id}?tab=opportunities`} className="flex items-center gap-4 px-5 py-3 hover:bg-surface-2 hover:no-underline">
+                      <ScoreRing value={priorityScore(opp.attractivenessScore, opp.confidenceScore)} size={44} />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-2">
+                          <span className="text-sm font-medium text-ink truncate">{business.name}</span>
+                          {business.isDemo && <Badge tone="demo">demo</Badge>}
+                        </span>
+                        <span className="block text-xs text-ink-muted truncate">{opp.title}</span>
+                        <span className="block text-[11px] text-ink-faint">{OPPORTUNITY_CATEGORIES[opp.category as OpportunityCategory] ?? opp.category}</span>
+                      </span>
+                      <span className="hidden sm:flex gap-4 text-[11px] text-ink-muted">
+                        <span>
+                          Attr. <strong className="text-ink">{opp.attractivenessScore}</strong>
+                        </span>
+                        <span>
+                          Conf. <strong className={opp.confidenceScore < 40 ? "text-warn" : "text-ink"}>{opp.confidenceScore}</strong>
+                        </span>
+                      </span>
+                      <Icon name="chevronRight" className="w-4 h-4 text-ink-faint" />
                     </Link>
-                    <span className="text-xs text-ink-faint">{r.stats?.total ?? 0}</span>
                   </li>
                 ))}
               </ul>
             )}
           </Card>
         </div>
-      </div>
-      <div className="mt-5 text-xs text-ink-faint flex flex-wrap gap-x-4 gap-y-1">
-        {Object.values(integ).map((i) => (
-          <span key={i.label}>
-            <span className={`inline-block w-1.5 h-1.5 rounded-full mr-1 ${i.status === "live" ? "bg-ok" : i.status === "demo" ? "bg-demo" : i.status === "missing_credentials" ? "bg-warn" : "bg-ink-faint"}`} />
-            {i.label.split(" (")[0]}: {i.status.replace("_", " ")}
-          </span>
-        ))}
+
+        <div className="space-y-5 min-w-0">
+          <Card title="Recent searches" padded={false} actions={<Link href="/searches" className="btn btn-sm btn-ghost">All</Link>}>
+            {s.recentSearches.length === 0 ? (
+              <EmptyState compact icon="search" title="No searches yet" />
+            ) : (
+              <ul className="divide-y divide-line">
+                {s.recentSearches.map((r) => (
+                  <li key={r.id}>
+                    <Link href={`/searches/${r.id}`} className="flex items-center gap-3 px-5 py-2.5 hover:bg-surface-2 hover:no-underline">
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm text-ink truncate">{r.name}</span>
+                        <span className="block text-[11px] text-ink-faint">{fmtRelative(r.createdAt)}</span>
+                      </span>
+                      <span className="text-xs text-ink-muted tabular-nums">{r.stats?.total ?? 0}</span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+          <Card title="System">
+            <ul className="space-y-2 text-xs">
+              {Object.values(integ).map((i) => (
+                <li key={i.label} className="flex items-center gap-2">
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${i.status === "live" ? "bg-ok" : i.status === "demo" ? "bg-demo" : i.status === "missing_credentials" ? "bg-warn" : "bg-ink-faint"}`} />
+                  <span className="flex-1 text-ink-muted truncate">{i.label.split(" (")[0]}</span>
+                  <span className="text-ink-faint">{i.status.replace(/_/g, " ")}</span>
+                </li>
+              ))}
+            </ul>
+            <div className="text-xs text-ink-faint mt-3 pt-3 border-t border-line">
+              AI spend to date <strong className="text-ink">${s.ai.total.toFixed(2)}</strong> of ${cfg.AI_SPEND_LIMIT_USD} guard
+            </div>
+          </Card>
+        </div>
       </div>
     </>
   );

@@ -63,3 +63,12 @@ suppression lists, opt-out, rate limits, and jurisdiction checks (CAN-SPAM etc.)
 
 ## D10 — No authentication yet
 Single-operator local tool. Must add auth + HTTPS before public deployment.
+
+## D11 — UX principle: guided funnel, evidence first (2026-10-27)
+Alternatives: dashboard-centric "metrics" UI; CRM-style record pages; chat/agent UI.
+Choice: a single workflow engine (`src/lib/workflow.ts`) drives step states and the one
+recommended next action everywhere; the overview is an inbox + funnel; evidence is shown
+inline next to every claim. Why: the product's value is trust and momentum, not feature
+count; operators must never wonder what to do next or whether a statement is verified.
+Trade-offs: more opinionated navigation; fewer raw controls on the first screen.
+Revisit when: real operators ask for bulk operations or team views. See docs/DESIGN.md.

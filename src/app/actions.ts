@@ -201,6 +201,17 @@ export async function importCsvAction(fd: FormData) {
   redirect(`/searches/${id}`);
 }
 
+export async function updateWebsiteAction(fd: FormData) {
+  const id = str(fd, "businessId");
+  const { normalizeWebsite, websiteDomain } = await import("@/lib/discovery/normalize");
+  const website = normalizeWebsite(str(fd, "website"));
+  const db = getDb();
+  db.update(businesses).set({ website, websiteDomain: websiteDomain(website), researchStatus: website ? "not_started" : "no_website", updatedAt: nowIso() }).where(eq(businesses.id, id)).run();
+  logActivity(id, "note", website ? `Website set to ${website}` : "Website cleared");
+  if (website && fd.get("research") === "on") enqueueResearch(id, { analyze: true });
+  revalidatePath(`/businesses/${id}`);
+}
+
 export async function seedDemoAction() {
   seedDemo();
   revalidatePath("/");

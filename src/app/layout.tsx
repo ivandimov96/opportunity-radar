@@ -1,9 +1,10 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
-import { Nav } from "@/components/nav";
+import { AppShell } from "@/components/nav";
 import { getConfig } from "@/lib/config";
 
-export const metadata: Metadata = { title: "Opportunity Radar", description: "Software business opportunity intelligence" };
+export const metadata: Metadata = { title: { default: "Opportunity Radar", template: "%s · Opportunity Radar" }, description: "Evidence-first software opportunity intelligence" };
+export const viewport: Viewport = { width: "device-width", initialScale: 1, themeColor: [{ media: "(prefers-color-scheme: light)", color: "#f4f5f8" }, { media: "(prefers-color-scheme: dark)", color: "#0f1218" }] };
 export const dynamic = "force-dynamic";
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -11,10 +12,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <div className="flex min-h-screen">
-          <Nav aiEnabled={cfg.ai.enabled} />
-          <main className="flex-1 min-w-0 px-6 py-5 max-w-[1400px]">{children}</main>
-        </div>
+        <AppShell aiEnabled={cfg.ai.enabled}>{children}</AppShell>
       </body>
     </html>
   );

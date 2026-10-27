@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, like, or, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { activities, analyses, businesses, businessSources, jobs, observations, opportunities, outreachDrafts, pages, prospects, researchRuns, searchResults, searches, validationSignals } from "@/db/schema";
 import { usageSummary } from "@/lib/ai/usage";
+import { getConfig } from "@/lib/config";
 import { PIPELINE_STAGE_KEYS } from "@/lib/pipeline/stages";
 import { priorityScore } from "@/lib/scoring/score";
 
@@ -15,6 +16,89 @@ function bestOppSubquery() {
     .from(opportunities)
     .groupBy(opportunities.businessId)
     .as("best");
+}
+
+function draftSubquery() {
+  const db = getDb();
+  return db
+    .select({ businessId: outreachDrafts.businessId, drafts: sql<number>`count(*)`.as("drafts"), approved: sql<number>`sum(case when ${outreachDrafts.status} = 'approved' then 1 else 0 end)`.as("approved") })
+    .from(outreachDrafts)
+    .groupBy(outreachDrafts.businessId)
+    .as("drafts");
+}
+
+export function funnelCounts() {
+  const db = getDb();
+  const n = (where: ReturnType<typeof sql>) => db.select({ n: sql<number>`count(*)` }).from(businesses).leftJoin(prospects, eq(prospects.businessId, businesses.id)).where(where).get()?.n ?? 0;
+  const discovered = n(sql`1=1`);
+  const researched = n(sql`${businesses.researchStatus} = 'done'`);
+  const analyzed = n(sql`${businesses.analysisStatus} in ('done','insufficient_evidence')`);
+  const withOpps = db.select({ n: sql<number>`count(distinct ${opportunities.businessId})` }).from(opportunities).get()?.n ?? 0;
+  const outreach = db.select({ n: sql<number>`count(distinct ${outreachDrafts.businessId})` }).from(outreachDrafts).get()?.n ?? 0;
+  const contacted = n(sql`${prospects.stage} in ('contacted','in_conversation','validated','won')`);
+  const validated = n(sql`${prospects.stage} in ('validated','won')`);
+  return [
+    { key: "discovered", label: "Discovered", n: discovered, href: "/businesses" },
+    { key: "researched", label: "Researched", n: researched, href: "/businesses?research=done" },
+    { key: "analyzed", label: "Analyzed", n: analyzed, href: "/businesses?analysis=done" },
+    { key: "opportunities", label: "With opportunities", n: withOpps, href: "/businesses?minAttr=1" },
+    { key: "outreach", label: "Draft ready", n: outreach, href: "/businesses?stage=outreach_ready" },
+    { key: "contacted", label: "Contacted", n: contacted, href: "/pipeline" },
+    { key: "validated", label: "Validated", n: validated, href: "/pipeline" },
+  ];
+}
+
+export type AttentionItem = { kind: "failed" | "draft" | "due" | "ready_analyze" | "ready_draft" | "ready_research"; businessId: string; businessName: string; detail: string; href: string; when?: string | null };
+
+/** The operator's inbox: what needs a human decision right now. */
+export function attentionItems(limit = 12): AttentionItem[] {
+  const db = getDb();
+  const items: AttentionItem[] = [];
+  const failed = db
+    .select({ job: jobs, name: businesses.name, id: businesses.id })
+    .from(jobs)
+    .innerJoin(businesses, sql`json_extract(${jobs.payload}, '$.businessId') = ${businesses.id}`)
+    .where(eq(jobs.status, "failed"))
+    .orderBy(desc(jobs.finishedAt))
+    .limit(5)
+    .all();
+  for (const f of failed) items.push({ kind: "failed", businessId: f.id, businessName: f.name, detail: `${f.job.type.replace(/_/g, " ")} failed: ${(f.job.error ?? "").slice(0, 90)}`, href: `/businesses/${f.id}`, when: f.job.finishedAt });
+  const drafts = db
+    .select({ d: outreachDrafts, name: businesses.name })
+    .from(outreachDrafts)
+    .innerJoin(businesses, eq(outreachDrafts.businessId, businesses.id))
+    .where(eq(outreachDrafts.status, "draft"))
+    .orderBy(desc(outreachDrafts.createdAt))
+    .limit(6)
+    .all();
+  for (const d of drafts) items.push({ kind: "draft", businessId: d.d.businessId, businessName: d.name, detail: `Outreach draft awaiting review${d.d.warnings.length ? ` · ${d.d.warnings.length} warning${d.d.warnings.length === 1 ? "" : "s"}` : ""}`, href: `/businesses/${d.d.businessId}?tab=outreach`, when: d.d.createdAt });
+  const due = db
+    .select({ p: prospects, name: businesses.name })
+    .from(prospects)
+    .innerJoin(businesses, eq(prospects.businessId, businesses.id))
+    .where(sql`${prospects.nextAction} is not null`)
+    .orderBy(sql`coalesce(${prospects.nextActionAt}, '9999')`)
+    .limit(6)
+    .all();
+  for (const d of due) items.push({ kind: "due", businessId: d.p.businessId, businessName: d.name, detail: d.p.nextAction!, href: `/businesses/${d.p.businessId}?tab=activity`, when: d.p.nextActionAt });
+  if (!getConfig().ai.enabled) return items.slice(0, limit);
+  const readyAnalyze = db
+    .select({ b: businesses })
+    .from(businesses)
+    .where(and(eq(businesses.researchStatus, "done"), eq(businesses.analysisStatus, "not_started"), eq(businesses.isDemo, false)))
+    .limit(4)
+    .all();
+  for (const r of readyAnalyze) items.push({ kind: "ready_analyze", businessId: r.b.id, businessName: r.b.name, detail: "Research done — ready for opportunity analysis", href: `/businesses/${r.b.id}?tab=findings` });
+  const readyDraft = db
+    .select({ b: businesses })
+    .from(businesses)
+    .innerJoin(prospects, eq(prospects.businessId, businesses.id))
+    .leftJoin(outreachDrafts, eq(outreachDrafts.businessId, businesses.id))
+    .where(and(eq(businesses.analysisStatus, "done"), eq(prospects.stage, "qualified"), sql`${outreachDrafts.id} is null`))
+    .limit(4)
+    .all();
+  for (const r of readyDraft) items.push({ kind: "ready_draft", businessId: r.b.id, businessName: r.b.name, detail: "Opportunity found — ready for an outreach draft", href: `/businesses/${r.b.id}?tab=opportunities` });
+  return items.slice(0, limit);
 }
 
 export function dashboardStats() {
@@ -56,12 +140,14 @@ export function getSearchWithResults(id: string) {
   const search = db.select().from(searches).where(eq(searches.id, id)).get();
   if (!search) return null;
   const best = bestOppSubquery();
+  const dr = draftSubquery();
   const rows = db
-    .select({ business: businesses, rank: searchResults.rank, wasNew: searchResults.wasNew, stage: prospects.stage, attractiveness: best.attractiveness, confidence: best.confidence, oppCount: best.count })
+    .select({ business: businesses, rank: searchResults.rank, wasNew: searchResults.wasNew, stage: prospects.stage, attractiveness: best.attractiveness, confidence: best.confidence, oppCount: best.count, draftCount: dr.drafts })
     .from(searchResults)
     .innerJoin(businesses, eq(searchResults.businessId, businesses.id))
     .leftJoin(prospects, eq(prospects.businessId, businesses.id))
     .leftJoin(best, eq(best.businessId, businesses.id))
+    .leftJoin(dr, eq(dr.businessId, businesses.id))
     .where(eq(searchResults.searchId, id))
     .orderBy(searchResults.rank)
     .all();
@@ -80,12 +166,14 @@ export interface BusinessFilters {
   website?: "yes" | "no";
   demo?: "hide" | "only";
   sort?: "priority" | "attractiveness" | "confidence" | "name" | "updated";
+  quick?: "needs_research" | "needs_analysis" | "has_opps" | "drafts" | "insufficient";
   limit?: number;
 }
 
 export function listBusinesses(f: BusinessFilters = {}) {
   const db = getDb();
   const best = bestOppSubquery();
+  const dr = draftSubquery();
   const conds = [];
   if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`)));
   if (f.industry) conds.push(eq(businesses.industry, f.industry));
@@ -96,6 +184,11 @@ export function listBusinesses(f: BusinessFilters = {}) {
   if (f.website === "no") conds.push(sql`${businesses.website} is null`);
   if (f.demo === "hide") conds.push(eq(businesses.isDemo, false));
   if (f.demo === "only") conds.push(eq(businesses.isDemo, true));
+  if (f.quick === "needs_research") conds.push(and(sql`${businesses.website} is not null`, inArray(businesses.researchStatus, ["not_started", "failed"]), eq(businesses.isDemo, false)));
+  if (f.quick === "needs_analysis") conds.push(and(eq(businesses.researchStatus, "done"), inArray(businesses.analysisStatus, ["not_started", "failed"])));
+  if (f.quick === "has_opps") conds.push(sql`coalesce(${best.count}, 0) > 0`);
+  if (f.quick === "drafts") conds.push(sql`coalesce(${dr.drafts}, 0) > 0`);
+  if (f.quick === "insufficient") conds.push(eq(businesses.analysisStatus, "insufficient_evidence"));
   if (f.minAttr) conds.push(sql`coalesce(${best.attractiveness}, 0) >= ${f.minAttr}`);
   if (f.minConf) conds.push(sql`coalesce(${best.confidence}, 0) >= ${f.minConf}`);
   const order = {
@@ -106,10 +199,11 @@ export function listBusinesses(f: BusinessFilters = {}) {
     updated: desc(businesses.updatedAt),
   }[f.sort ?? "priority"];
   return db
-    .select({ business: businesses, stage: prospects.stage, nextAction: prospects.nextAction, attractiveness: best.attractiveness, confidence: best.confidence, oppCount: best.count })
+    .select({ business: businesses, stage: prospects.stage, nextAction: prospects.nextAction, nextActionAt: prospects.nextActionAt, attractiveness: best.attractiveness, confidence: best.confidence, oppCount: best.count, draftCount: dr.drafts })
     .from(businesses)
     .leftJoin(prospects, eq(prospects.businessId, businesses.id))
     .leftJoin(best, eq(best.businessId, businesses.id))
+    .leftJoin(dr, eq(dr.businessId, businesses.id))
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(order, businesses.name)
     .limit(f.limit ?? 500)
@@ -149,11 +243,13 @@ export function getBusinessDetail(id: string) {
 export function pipelineBoard() {
   const db = getDb();
   const best = bestOppSubquery();
+  const dr = draftSubquery();
   const rows = db
-    .select({ business: businesses, prospect: prospects, attractiveness: best.attractiveness, confidence: best.confidence })
+    .select({ business: businesses, prospect: prospects, attractiveness: best.attractiveness, confidence: best.confidence, draftCount: dr.drafts })
     .from(prospects)
     .innerJoin(businesses, eq(prospects.businessId, businesses.id))
     .leftJoin(best, eq(best.businessId, businesses.id))
+    .leftJoin(dr, eq(dr.businessId, businesses.id))
     .orderBy(desc(sql`coalesce(${best.attractiveness},0) * 0.6 + coalesce(${best.confidence},0) * 0.4`))
     .all();
   const byStage = Object.fromEntries(PIPELINE_STAGE_KEYS.map((k) => [k, [] as typeof rows]));

@@ -34,6 +34,13 @@ scoring; pilot market = independent auto repair, Austin TX, home services second
   breakdowns, outreach editor with claim mapping, pipeline, pages), pipeline board,
   patterns, CSV import, settings/integration status. Demo data is labeled everywhere.
 
+## UI redesign (same day, second pass)
+Rebuilt the interface around "guided funnel, evidence first" (docs/DESIGN.md): workflow
+engine with steppers and next-step recommendations, inbox-style overview with funnel,
+quick-filter chips, score rings with explanations, inline claim highlighting in the
+outreach editor, responsive shell with mobile drawer, dark mode. Verified with
+screenshots at 1360 px and 390 px (light and dark) and an updated Playwright journey.
+
 ## What was actually tested (executed in this session)
 - `pnpm typecheck`: clean. `pnpm build`: succeeds.
 - `pnpm test`: 51 tests pass (8 files) — normalization, dedupe rules, SSRF guard
@@ -44,7 +51,7 @@ scoring; pilot market = independent auto repair, Austin TX, home services second
   and the integrated pipeline (discover → research → analyze → outreach → pipeline)
   with HTTP and the model mocked at module boundaries, including empty results,
   insufficient evidence, unreachable website, missing credentials and spend guard.
-- `pnpm test:e2e`: 2 Playwright tests pass against a production build in demo mode —
+- `pnpm test:e2e`: 3 Playwright tests pass against a production build in demo mode (journey, provider listing, mobile layout with no horizontal overflow) —
   the full operator journey (load demo → search → profile → findings → opportunities →
   edit/approve draft → stage/note/validation signal → patterns → persistence).
 - Live checks (real network, no AI key): OSM discovery for `auto_repair` in Austin

@@ -1,4 +1,4 @@
-import { Card, PageHeader } from "@/components/ui";
+import { Callout, Card, Icon, PageHeader } from "@/components/ui";
 import { listPlaybooks } from "@/lib/industries";
 import { importCsvAction } from "@/app/actions";
 
@@ -6,47 +6,56 @@ export default async function ImportPage({ searchParams }: { searchParams: Promi
   const { error } = await searchParams;
   return (
     <>
-      <PageHeader title="Import businesses from CSV" subtitle="Bring your own list. Rows are normalized and merged with existing businesses by website domain, phone, or name + city." />
-      {error && <div className="rounded-md border border-bad/30 bg-bad-soft text-bad text-sm px-3 py-2 mb-4">{error}</div>}
-      <div className="grid md:grid-cols-2 gap-4 max-w-3xl">
+      <PageHeader crumbs={[{ href: "/searches", label: "Discover" }, { label: "Import CSV" }]} title="Import businesses from CSV" subtitle="Bring your own list. Rows are normalized and merged with existing businesses by website domain, phone, or name + city." />
+      {error && (
+        <div className="mb-4">
+          <Callout tone="bad" title="Import failed">{error}</Callout>
+        </div>
+      )}
+      <div className="grid lg:grid-cols-[1fr_360px] gap-5 items-start">
         <Card title="Upload">
-          <form action={importCsvAction} className="space-y-3" encType="multipart/form-data">
-            <div>
-              <label className="label">CSV file (max 5 MB)</label>
-              <input className="input" type="file" name="file" accept=".csv,text/csv" required />
-            </div>
-            <div>
-              <label className="label">Industry playbook</label>
-              <select className="select" name="industry" defaultValue="auto_repair">
-                {listPlaybooks().map((p) => (
-                  <option key={p.key} value={p.key}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
+          <form action={importCsvAction} className="space-y-4" encType="multipart/form-data">
+            <label className="block rounded-[var(--radius)] border-2 border-dashed border-line-strong hover:border-accent p-6 text-center cursor-pointer transition-colors">
+              <Icon name="upload" className="w-6 h-6 mx-auto text-ink-faint mb-2" />
+              <span className="text-sm font-medium">Choose a CSV file</span>
+              <span className="block text-xs text-ink-faint">Up to 5 MB · header row required · only “name” is mandatory</span>
+              <input className="block mx-auto mt-3 text-xs" type="file" name="file" accept=".csv,text/csv" required />
+            </label>
+            <div className="grid md:grid-cols-2 gap-4">
               <div>
-                <label className="label">Default city</label>
-                <input className="input" name="city" />
+                <label className="label">Industry playbook</label>
+                <select className="select" name="industry" defaultValue="auto_repair">
+                  {listPlaybooks().map((p) => (
+                    <option key={p.key} value={p.key}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
               </div>
-              <div>
-                <label className="label">Default region</label>
-                <input className="input" name="region" />
-              </div>
-              <div>
-                <label className="label">Country</label>
-                <input className="input" name="country" defaultValue="US" maxLength={2} />
+              <div className="grid grid-cols-3 gap-2">
+                <div className="col-span-1">
+                  <label className="label">City</label>
+                  <input className="input" name="city" placeholder="default" />
+                </div>
+                <div>
+                  <label className="label">Region</label>
+                  <input className="input" name="region" placeholder="TX" />
+                </div>
+                <div>
+                  <label className="label">Country</label>
+                  <input className="input" name="country" defaultValue="US" maxLength={2} />
+                </div>
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" name="autoResearch" /> Research and analyze imported businesses with websites
+              <input type="checkbox" name="autoResearch" className="accent-[var(--accent)]" /> Research and analyze imported businesses that have a website
             </label>
-            <button className="btn btn-primary">Import</button>
+            <button className="btn btn-primary btn-lg">
+              <Icon name="upload" /> Import
+            </button>
           </form>
         </Card>
-        <Card title="Expected columns">
-          <p className="text-sm text-ink-muted mb-2">Header names are matched loosely (case-insensitive). Only <code>name</code> is required.</p>
+        <Card title="Recognized columns" description="Header names match loosely, case-insensitive.">
           <table className="table text-xs">
             <tbody>
               {[
@@ -68,7 +77,7 @@ export default async function ImportPage({ searchParams }: { searchParams: Promi
               ))}
             </tbody>
           </table>
-          <pre className="mt-3 text-[11px] bg-canvas border border-line rounded p-2 overflow-auto">{`name,website,phone,city,state\n"Acme Auto Repair",acmeauto.com,(512) 555-0100,Austin,TX`}</pre>
+          <pre className="mt-3 text-[11px] bg-surface-2 border border-line rounded-[var(--radius-sm)] p-3 overflow-auto">{`name,website,phone,city,state\n"Acme Auto Repair",acmeauto.com,(512) 555-0100,Austin,TX`}</pre>
         </Card>
       </div>
     </>
