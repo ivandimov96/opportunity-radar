@@ -40,6 +40,8 @@ export type AppConfig = z.infer<typeof EnvSchema> & {
   ai: { enabled: boolean };
   googlePlaces: { enabled: boolean };
   overpassEndpoints: string[];
+  /** Running on Vercel serverless: storage is ephemeral and no long-lived worker exists. */
+  serverless: boolean;
 };
 
 let cached: AppConfig | null = null;
@@ -52,8 +54,12 @@ export function getConfig(): AppConfig {
   }
   const env = parsed.data;
   const apiKey = env.ANTHROPIC_API_KEY?.trim();
+  const serverless = Boolean(process.env.VERCEL);
+  // On Vercel the project directory is read-only; /tmp is the only writable location.
+  if (serverless && !process.env.DATABASE_PATH) env.DATABASE_PATH = "/tmp/radar.db";
   cached = {
     ...env,
+    serverless,
     ai: { enabled: Boolean(apiKey) },
     googlePlaces: { enabled: Boolean(env.GOOGLE_PLACES_API_KEY?.trim()) },
     overpassEndpoints: env.OVERPASS_ENDPOINTS.split(",")
@@ -108,6 +114,13 @@ export function integrationStatus() {
       label: "Demo data (synthetic)",
       status: "demo" as const,
       detail: "Synthetic sample businesses, findings, and opportunities. Clearly labeled; never real company data.",
+    },
+    storage: {
+      label: "Storage",
+      status: c.serverless ? ("demo" as const) : ("live" as const),
+      detail: c.serverless
+        ? "Ephemeral serverless deployment: the SQLite database lives in /tmp and resets whenever the function instance is recycled. Demo data is re-seeded automatically. For persistent use, run the app on a VM or container with a disk (see docs/OPERATIONS.md)."
+        : `SQLite file at ${c.DATABASE_PATH} (persistent).`,
     },
     outreachSending: {
       label: "Outreach sending",

@@ -24,7 +24,7 @@ const groups: { title: string; items: { href: string; label: string; icon: IconN
   },
 ];
 
-export function AppShell({ aiEnabled, children }: { aiEnabled: boolean; children: React.ReactNode }) {
+export function AppShell({ aiEnabled, serverless = false, children }: { aiEnabled: boolean; serverless?: boolean; children: React.ReactNode }) {
   const path = usePathname();
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [path]);
@@ -98,6 +98,14 @@ export function AppShell({ aiEnabled, children }: { aiEnabled: boolean; children
         </div>
       )}
       <main className="flex-1 min-w-0">
+        {serverless && (
+          <div className="bg-demo-soft text-demo text-xs px-4 py-2 text-center border-b border-demo/20">
+            <strong>Preview deployment.</strong> Storage is ephemeral: data resets when the server instance recycles, and demo data is re-seeded. Discovery and website research still run live.{" "}
+            <Link href="/settings" className="underline">
+              Details
+            </Link>
+          </div>
+        )}
         <div className="px-4 py-5 md:px-8 md:py-7 max-w-[1440px] mx-auto">{children}</div>
       </main>
     </div>

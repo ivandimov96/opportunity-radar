@@ -8,6 +8,7 @@ import { businesses, outreachDrafts, searches, searchResults } from "@/db/schema
 import { csvToCandidates, upsertCandidate, type DiscoveryProviderKey } from "@/lib/discovery";
 import { newId, nowIso } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
+import { kickWorker } from "@/lib/jobs/kick";
 import { enqueueAnalysis, enqueueOutreach, enqueueResearch } from "@/lib/jobs/handlers";
 import { addValidationSignal, ensureProspect, logActivity, setNextAction, setStage } from "@/lib/pipeline/prospects";
 import { PIPELINE_STAGE_KEYS, type PipelineStage, type ValidationSignalType } from "@/lib/pipeline/stages";
@@ -52,6 +53,7 @@ export async function createSearch(fd: FormData) {
     .values({ id, name: v.name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoResearch: v.autoResearch, providers: v.providers as DiscoveryProviderKey[], status: "queued", isDemo: v.providers.length === 1 && v.providers[0] === "demo" })
     .run();
   enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
+  kickWorker();
   redirect(`/searches/${id}`);
 }
 
@@ -59,6 +61,7 @@ export async function rerunSearch(fd: FormData) {
   const id = str(fd, "searchId");
   getDb().update(searches).set({ status: "queued", error: null, updatedAt: nowIso() }).where(eq(searches.id, id)).run();
   enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
+  kickWorker();
   revalidatePath(`/searches/${id}`);
 }
 
@@ -66,12 +69,14 @@ export async function researchBusinessAction(fd: FormData) {
   const id = str(fd, "businessId");
   const analyze = fd.get("analyze") !== "off";
   enqueueResearch(id, { analyze });
+  kickWorker();
   revalidatePath(`/businesses/${id}`);
 }
 
 export async function analyzeBusinessAction(fd: FormData) {
   const id = str(fd, "businessId");
   enqueueAnalysis(id);
+  kickWorker();
   revalidatePath(`/businesses/${id}`);
 }
 
@@ -87,6 +92,7 @@ export async function researchSearchResults(fd: FormData) {
     enqueueResearch(business.id, { analyze: true });
     n++;
   }
+  if (n > 0) kickWorker();
   revalidatePath(`/searches/${searchId}`);
   if (n === 0) logActivityNoop();
 }
@@ -100,6 +106,7 @@ export async function generateDraftAction(fd: FormData) {
   const opportunityId = str(fd, "opportunityId") || null;
   const style = (["concise", "consultative", "casual"].includes(str(fd, "style")) ? str(fd, "style") : "concise") as OutreachStyle;
   enqueueOutreach(businessId, opportunityId, style, str(fd, "senderName") || null);
+  kickWorker();
   revalidatePath(`/businesses/${businessId}`);
 }
 
@@ -198,6 +205,7 @@ export async function importCsvAction(fd: FormData) {
   }
   const s = db.select().from(searches).where(eq(searches.id, id)).get()!;
   db.update(searches).set({ stats: { ...s.stats!, created, merged, total: rank } }).where(eq(searches.id, id)).run();
+  if (autoResearch) kickWorker();
   redirect(`/searches/${id}`);
 }
 
@@ -208,7 +216,10 @@ export async function updateWebsiteAction(fd: FormData) {
   const db = getDb();
   db.update(businesses).set({ website, websiteDomain: websiteDomain(website), researchStatus: website ? "not_started" : "no_website", updatedAt: nowIso() }).where(eq(businesses.id, id)).run();
   logActivity(id, "note", website ? `Website set to ${website}` : "Website cleared");
-  if (website && fd.get("research") === "on") enqueueResearch(id, { analyze: true });
+  if (website && fd.get("research") === "on") {
+    enqueueResearch(id, { analyze: true });
+    kickWorker();
+  }
   revalidatePath(`/businesses/${id}`);
 }
 

@@ -32,6 +32,14 @@ export function openDatabase(filePath?: string): Db {
   holder.db = db;
   holder.sqlite = sqlite;
   holder.path = target;
+  if (getConfig().serverless && target !== ":memory:") {
+    const empty = (sqlite.prepare("select count(*) as n from businesses").get() as { n: number }).n === 0;
+    if (empty) {
+      // Ephemeral storage: make the deployment useful on every cold start.
+      // Lazy import avoids a circular dependency at module load.
+      void import("./seed-demo").then((m) => m.seedDemo()).catch((err) => console.warn("[db] demo seed failed", err));
+    }
+  }
   return db;
 }
 
