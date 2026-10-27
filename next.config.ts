@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  serverExternalPackages: ["better-sqlite3"],
+  serverExternalPackages: ["@libsql/client", "libsql"],
   // SQL migrations are read from disk at runtime; include them in every serverless function bundle.
   outputFileTracingIncludes: { "/**": ["./drizzle/**"] },
 };

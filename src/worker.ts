@@ -2,7 +2,7 @@
 import { getDb } from "@/db/client";
 import { startWorker, stopWorker } from "@/lib/jobs/worker";
 
-getDb();
+await getDb();
 startWorker();
 const shutdown = () => {
   stopWorker();

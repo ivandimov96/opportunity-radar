@@ -12,7 +12,9 @@ All settings are environment variables; see `.env.example`. None are required.
 | `OVERPASS_ENDPOINTS` | Comma-separated Overpass endpoints tried in order. |
 | `NOMINATIM_ENDPOINT`, `OSM_USER_AGENT` | Geocoding endpoint and the identifying User-Agent OSM policies require. Set a real contact. |
 | `RESEARCH_*` | Crawl limits: pages, bytes, timeout, concurrency. |
-| `DATABASE_PATH` | SQLite file (default `./data/radar.db`). |
+| `DATABASE_PATH` | Local SQLite file (default `./data/radar.db`). Ignored when `TURSO_DATABASE_URL` is set. |
+| `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN` | Hosted libSQL (Turso) database for cloud/serverless hosting. Persistent and shared across instances. |
+| `CRON_SECRET` | Optional bearer secret for `/api/jobs/drain` (set automatically by Vercel Cron when configured). |
 | `EMBEDDED_WORKER` | `true` runs the worker inside the Next.js process. |
 
 ## Credentials needed from the founder
@@ -34,10 +36,29 @@ All settings are environment variables; see `.env.example`. None are required.
 - Separate worker: `EMBEDDED_WORKER=false pnpm start` + `pnpm worker`.
 - Jobs left running by a crash are requeued after 15 minutes.
 
-## Deployment (not yet done)
-Single VM/container with persistent disk for SQLite; put behind HTTPS and add
-authentication before exposing publicly. Serverless platforms are unsuitable because of
-the SQLite file and the long-running worker.
+## Deployment
+### Vercel (current: https://opportunity-radar-sage-five.vercel.app)
+The app runs on Vercel in "serverless mode": no long-lived worker (jobs run after each
+response via `next/server` `after()` and a daily cron at `/api/jobs/drain`), and the
+database must be hosted because each function instance has its own ephemeral `/tmp`.
+
+1. Create a free Turso database: https://turso.tech → create database → copy the
+   `libsql://...` URL and create an auth token (`turso db tokens create <name>`).
+2. In the Vercel project add environment variables `TURSO_DATABASE_URL` and
+   `TURSO_AUTH_TOKEN` (production + preview), optionally `ANTHROPIC_API_KEY`.
+3. Redeploy. Migrations run automatically on first connection.
+
+Without `TURSO_DATABASE_URL` the deployment is a read-only demo: a banner says so, demo
+data is re-seeded on every cold start, and writes are not reliably kept.
+
+Deploy manually with `pnpm dlx vercel deploy --prod` from the repo root (the project is
+linked in `.vercel/`), or connect the GitHub repository in the Vercel dashboard for
+automatic deployments on push.
+
+### VM / container
+Also supported: any host with a persistent disk runs the local SQLite file with the
+embedded worker (`pnpm build && pnpm start`). Put it behind HTTPS and add authentication
+before exposing it publicly.
 
 ## Cost considerations (estimates)
 - OSM: free (respect policies). Google Places: pay-per-request.

@@ -100,7 +100,7 @@ export function AppShell({ aiEnabled, serverless = false, children }: { aiEnable
       <main className="flex-1 min-w-0">
         {serverless && (
           <div className="bg-demo-soft text-demo text-xs px-4 py-2 text-center border-b border-demo/20">
-            <strong>Preview deployment.</strong> Storage is ephemeral: data resets when the server instance recycles, and demo data is re-seeded. Discovery and website research still run live.{" "}
+            <strong>Preview deployment without persistent storage.</strong> Each server instance keeps its own temporary database, so changes may not survive the next request. Demo data is re-seeded automatically.{" "}
             <Link href="/settings" className="underline">
               Details
             </Link>

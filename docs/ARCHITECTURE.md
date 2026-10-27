@@ -3,8 +3,9 @@
 ## Stack (chosen 2026-10-27)
 - **Next.js 16 (App Router) + React 19 + TypeScript**: one process serves UI, server
   actions, route handlers and the embedded background worker.
-- **SQLite (better-sqlite3) + Drizzle ORM**: zero-ops persistence, WAL mode, FK
-  cascades, SQL migrations in `drizzle/`. Migrating to Postgres is a driver swap.
+- **SQLite via libSQL (`@libsql/client`) + Drizzle ORM**: a local file in development,
+  a hosted Turso database in the cloud; same dialect, SQL migrations in `drizzle/`, FK
+  cascades, async queries.
 - **Zod 4** for env, input and model-output schemas.
 - **Anthropic SDK** with structured outputs (`messages.parse` + `zodOutputFormat`).
 - **cheerio** (HTML→text), **robots-parser**, **undici** (pinned-IP agent).
@@ -91,8 +92,8 @@ src/instrumentation.ts  starts the embedded worker
   before any public deployment (see OPERATIONS.md).
 
 ## Trade-offs accepted
-- SQLite + in-process worker: simplest possible ops; not horizontally scalable (fine
-  for one operator, thousands of businesses).
+- SQLite/libSQL + in-process (or post-response) worker: simplest possible ops; fine
+  for one operator and thousands of businesses, not for multi-tenant scale.
 - No vector clustering: category taxonomy grouping is sufficient and transparent at
   this scale; revisit when categories prove too coarse.
 - Google Places adapter untested live; OSM public instances unreliable under load.

@@ -15,11 +15,11 @@ export type UpsertOutcome = { businessId: string; wasNew: boolean; matchedBy?: "
  *  4. Same normalized name + city.
  * A match merges missing fields only; it never overwrites values already present.
  */
-export function upsertCandidate(
+export async function upsertCandidate(
   db: Db,
   c: BusinessCandidate,
   ctx: { industry: string; searchId?: string | null; isDemo?: boolean },
-): UpsertOutcome {
+): Promise<UpsertOutcome> {
   const website = normalizeWebsite(c.website);
   const domain = websiteDomain(website);
   const phone = normalizePhone(c.phone);
@@ -31,7 +31,7 @@ export function upsertCandidate(
   let existingId: string | null = null;
   let matchedBy: UpsertOutcome["matchedBy"];
 
-  const bySource = db
+  const bySource = await db
     .select({ businessId: businessSources.businessId })
     .from(businessSources)
     .where(and(eq(businessSources.provider, c.provider), eq(businessSources.providerId, c.providerId)))
@@ -41,21 +41,21 @@ export function upsertCandidate(
     matchedBy = "provider_id";
   }
   if (!existingId && domain) {
-    const row = db.select({ id: businesses.id }).from(businesses).where(eq(businesses.websiteDomain, domain)).get();
+    const row = await db.select({ id: businesses.id }).from(businesses).where(eq(businesses.websiteDomain, domain)).get();
     if (row) {
       existingId = row.id;
       matchedBy = "domain";
     }
   }
   if (!existingId && phone) {
-    const row = db.select({ id: businesses.id }).from(businesses).where(eq(businesses.phone, phone)).get();
+    const row = await db.select({ id: businesses.id }).from(businesses).where(eq(businesses.phone, phone)).get();
     if (row) {
       existingId = row.id;
       matchedBy = "phone";
     }
   }
   if (!existingId && nameNormalized && cityNorm) {
-    const rows = db
+    const rows = await db
       .select({ id: businesses.id, city: businesses.city })
       .from(businesses)
       .where(or(eq(businesses.nameNormalized, nameNormalized)))
@@ -69,8 +69,8 @@ export function upsertCandidate(
 
   const ts = nowIso();
   if (existingId) {
-    const cur = db.select().from(businesses).where(eq(businesses.id, existingId)).get()!;
-    db.update(businesses)
+    const cur = (await db.select().from(businesses).where(eq(businesses.id, existingId)).get())!;
+    await db.update(businesses)
       .set({
         website: cur.website ?? website,
         websiteDomain: cur.websiteDomain ?? domain,
@@ -89,7 +89,7 @@ export function upsertCandidate(
       .where(eq(businesses.id, existingId))
       .run();
     if (matchedBy !== "provider_id") {
-      db.insert(businessSources)
+      await db.insert(businessSources)
         .values({
           id: newId(),
           businessId: existingId,
@@ -107,7 +107,7 @@ export function upsertCandidate(
   }
 
   const id = newId();
-  db.insert(businesses)
+  await db.insert(businesses)
     .values({
       id,
       name: c.name.trim(),
@@ -132,7 +132,7 @@ export function upsertCandidate(
       updatedAt: ts,
     })
     .run();
-  db.insert(businessSources)
+  await db.insert(businessSources)
     .values({
       id: newId(),
       businessId: id,

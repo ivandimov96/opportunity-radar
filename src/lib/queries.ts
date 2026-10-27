@@ -9,34 +9,34 @@ import { priorityScore } from "@/lib/scoring/score";
 
 export type BusinessRow = typeof businesses.$inferSelect;
 
-function bestOppSubquery() {
-  const db = getDb();
-  return db
+async function bestOppSubquery() {
+  const db = await getDb();
+  return await db
     .select({ businessId: opportunities.businessId, attractiveness: sql<number>`max(${opportunities.attractivenessScore})`.as("attractiveness"), confidence: sql<number>`max(${opportunities.confidenceScore})`.as("confidence"), count: sql<number>`count(*)`.as("count") })
     .from(opportunities)
     .groupBy(opportunities.businessId)
     .as("best");
 }
 
-function draftSubquery() {
-  const db = getDb();
-  return db
+async function draftSubquery() {
+  const db = await getDb();
+  return await db
     .select({ businessId: outreachDrafts.businessId, drafts: sql<number>`count(*)`.as("drafts"), approved: sql<number>`sum(case when ${outreachDrafts.status} = 'approved' then 1 else 0 end)`.as("approved") })
     .from(outreachDrafts)
     .groupBy(outreachDrafts.businessId)
     .as("drafts");
 }
 
-export function funnelCounts() {
-  const db = getDb();
-  const n = (where: ReturnType<typeof sql>) => db.select({ n: sql<number>`count(*)` }).from(businesses).leftJoin(prospects, eq(prospects.businessId, businesses.id)).where(where).get()?.n ?? 0;
-  const discovered = n(sql`1=1`);
-  const researched = n(sql`${businesses.researchStatus} = 'done'`);
-  const analyzed = n(sql`${businesses.analysisStatus} in ('done','insufficient_evidence')`);
-  const withOpps = db.select({ n: sql<number>`count(distinct ${opportunities.businessId})` }).from(opportunities).get()?.n ?? 0;
-  const outreach = db.select({ n: sql<number>`count(distinct ${outreachDrafts.businessId})` }).from(outreachDrafts).get()?.n ?? 0;
-  const contacted = n(sql`${prospects.stage} in ('contacted','in_conversation','validated','won')`);
-  const validated = n(sql`${prospects.stage} in ('validated','won')`);
+export async function funnelCounts() {
+  const db = await getDb();
+  const n = async (where: ReturnType<typeof sql>) => (await db.select({ n: sql<number>`count(*)` }).from(businesses).leftJoin(prospects, eq(prospects.businessId, businesses.id)).where(where).get())?.n ?? 0;
+  const discovered = await n(sql`1=1`);
+  const researched = await n(sql`${businesses.researchStatus} = 'done'`);
+  const analyzed = await n(sql`${businesses.analysisStatus} in ('done','insufficient_evidence')`);
+  const withOpps = (await db.select({ n: sql<number>`count(distinct ${opportunities.businessId})` }).from(opportunities).get())?.n ?? 0;
+  const outreach = (await db.select({ n: sql<number>`count(distinct ${outreachDrafts.businessId})` }).from(outreachDrafts).get())?.n ?? 0;
+  const contacted = await n(sql`${prospects.stage} in ('contacted','in_conversation','validated','won')`);
+  const validated = await n(sql`${prospects.stage} in ('validated','won')`);
   return [
     { key: "discovered", label: "Discovered", n: discovered, href: "/businesses" },
     { key: "researched", label: "Researched", n: researched, href: "/businesses?research=done" },
@@ -51,10 +51,10 @@ export function funnelCounts() {
 export type AttentionItem = { kind: "failed" | "draft" | "due" | "ready_analyze" | "ready_draft" | "ready_research"; businessId: string; businessName: string; detail: string; href: string; when?: string | null };
 
 /** The operator's inbox: what needs a human decision right now. */
-export function attentionItems(limit = 12): AttentionItem[] {
-  const db = getDb();
+export async function attentionItems(limit = 12): Promise<AttentionItem[]> {
+  const db = await getDb();
   const items: AttentionItem[] = [];
-  const failed = db
+  const failed = await db
     .select({ job: jobs, name: businesses.name, id: businesses.id })
     .from(jobs)
     .innerJoin(businesses, sql`json_extract(${jobs.payload}, '$.businessId') = ${businesses.id}`)
@@ -63,7 +63,7 @@ export function attentionItems(limit = 12): AttentionItem[] {
     .limit(5)
     .all();
   for (const f of failed) items.push({ kind: "failed", businessId: f.id, businessName: f.name, detail: `${f.job.type.replace(/_/g, " ")} failed: ${(f.job.error ?? "").slice(0, 90)}`, href: `/businesses/${f.id}`, when: f.job.finishedAt });
-  const drafts = db
+  const drafts = await db
     .select({ d: outreachDrafts, name: businesses.name })
     .from(outreachDrafts)
     .innerJoin(businesses, eq(outreachDrafts.businessId, businesses.id))
@@ -72,7 +72,7 @@ export function attentionItems(limit = 12): AttentionItem[] {
     .limit(6)
     .all();
   for (const d of drafts) items.push({ kind: "draft", businessId: d.d.businessId, businessName: d.name, detail: `Outreach draft awaiting review${d.d.warnings.length ? ` · ${d.d.warnings.length} warning${d.d.warnings.length === 1 ? "" : "s"}` : ""}`, href: `/businesses/${d.d.businessId}?tab=outreach`, when: d.d.createdAt });
-  const due = db
+  const due = await db
     .select({ p: prospects, name: businesses.name })
     .from(prospects)
     .innerJoin(businesses, eq(prospects.businessId, businesses.id))
@@ -82,14 +82,14 @@ export function attentionItems(limit = 12): AttentionItem[] {
     .all();
   for (const d of due) items.push({ kind: "due", businessId: d.p.businessId, businessName: d.name, detail: d.p.nextAction!, href: `/businesses/${d.p.businessId}?tab=activity`, when: d.p.nextActionAt });
   if (!getConfig().ai.enabled) return items.slice(0, limit);
-  const readyAnalyze = db
+  const readyAnalyze = await db
     .select({ b: businesses })
     .from(businesses)
     .where(and(eq(businesses.researchStatus, "done"), eq(businesses.analysisStatus, "not_started"), eq(businesses.isDemo, false)))
     .limit(4)
     .all();
   for (const r of readyAnalyze) items.push({ kind: "ready_analyze", businessId: r.b.id, businessName: r.b.name, detail: "Research done — ready for opportunity analysis", href: `/businesses/${r.b.id}?tab=findings` });
-  const readyDraft = db
+  const readyDraft = await db
     .select({ b: businesses })
     .from(businesses)
     .innerJoin(prospects, eq(prospects.businessId, businesses.id))
@@ -101,25 +101,25 @@ export function attentionItems(limit = 12): AttentionItem[] {
   return items.slice(0, limit);
 }
 
-export function dashboardStats() {
-  const db = getDb();
-  const count = (where?: ReturnType<typeof eq>) => db.select({ n: sql<number>`count(*)` }).from(businesses).where(where).get()?.n ?? 0;
-  const total = count();
-  const researched = count(eq(businesses.researchStatus, "done"));
-  const withOpps = db.select({ n: sql<number>`count(distinct ${opportunities.businessId})` }).from(opportunities).get()?.n ?? 0;
-  const insufficient = count(eq(businesses.analysisStatus, "insufficient_evidence"));
-  const demo = count(eq(businesses.isDemo, true));
-  const stages = db.select({ stage: prospects.stage, n: sql<number>`count(*)` }).from(prospects).groupBy(prospects.stage).all();
-  const queue = db.select({ status: jobs.status, n: sql<number>`count(*)` }).from(jobs).groupBy(jobs.status).all();
-  const recentSearches = db.select().from(searches).orderBy(desc(searches.createdAt)).limit(5).all();
-  const top = db
+export async function dashboardStats() {
+  const db = await getDb();
+  const count = async (where?: ReturnType<typeof eq>) => (await db.select({ n: sql<number>`count(*)` }).from(businesses).where(where).get())?.n ?? 0;
+  const total = await count();
+  const researched = await count(eq(businesses.researchStatus, "done"));
+  const withOpps = (await db.select({ n: sql<number>`count(distinct ${opportunities.businessId})` }).from(opportunities).get())?.n ?? 0;
+  const insufficient = await count(eq(businesses.analysisStatus, "insufficient_evidence"));
+  const demo = await count(eq(businesses.isDemo, true));
+  const stages = await db.select({ stage: prospects.stage, n: sql<number>`count(*)` }).from(prospects).groupBy(prospects.stage).all();
+  const queue = await db.select({ status: jobs.status, n: sql<number>`count(*)` }).from(jobs).groupBy(jobs.status).all();
+  const recentSearches = await db.select().from(searches).orderBy(desc(searches.createdAt)).limit(5).all();
+  const top = await db
     .select({ opp: opportunities, business: businesses })
     .from(opportunities)
     .innerJoin(businesses, eq(opportunities.businessId, businesses.id))
     .orderBy(desc(sql`${opportunities.attractivenessScore} * 0.6 + ${opportunities.confidenceScore} * 0.4`))
     .limit(8)
     .all();
-  const nextActions = db
+  const nextActions = await db
     .select({ prospect: prospects, business: businesses })
     .from(prospects)
     .innerJoin(businesses, eq(prospects.businessId, businesses.id))
@@ -127,21 +127,21 @@ export function dashboardStats() {
     .orderBy(sql`coalesce(${prospects.nextActionAt}, '9999')`)
     .limit(8)
     .all();
-  return { total, researched, withOpps, insufficient, demo, stages, queue, recentSearches, top, nextActions, ai: usageSummary() };
+  return { total, researched, withOpps, insufficient, demo, stages, queue, recentSearches, top, nextActions, ai: await usageSummary() };
 }
 
-export function listSearches() {
-  const db = getDb();
-  return db.select().from(searches).orderBy(desc(searches.createdAt)).all();
+export async function listSearches() {
+  const db = await getDb();
+  return await db.select().from(searches).orderBy(desc(searches.createdAt)).all();
 }
 
-export function getSearchWithResults(id: string) {
-  const db = getDb();
-  const search = db.select().from(searches).where(eq(searches.id, id)).get();
+export async function getSearchWithResults(id: string) {
+  const db = await getDb();
+  const search = await db.select().from(searches).where(eq(searches.id, id)).get();
   if (!search) return null;
-  const best = bestOppSubquery();
-  const dr = draftSubquery();
-  const rows = db
+  const best = await bestOppSubquery();
+  const dr = await draftSubquery();
+  const rows = await db
     .select({ business: businesses, rank: searchResults.rank, wasNew: searchResults.wasNew, stage: prospects.stage, attractiveness: best.attractiveness, confidence: best.confidence, oppCount: best.count, draftCount: dr.drafts })
     .from(searchResults)
     .innerJoin(businesses, eq(searchResults.businessId, businesses.id))
@@ -151,7 +151,7 @@ export function getSearchWithResults(id: string) {
     .where(eq(searchResults.searchId, id))
     .orderBy(searchResults.rank)
     .all();
-  const job = db.select().from(jobs).where(and(eq(jobs.type, "discover_search"), sql`json_extract(${jobs.payload}, '$.searchId') = ${id}`)).orderBy(desc(jobs.createdAt)).limit(1).get() ?? null;
+  const job = (await db.select().from(jobs).where(and(eq(jobs.type, "discover_search"), sql`json_extract(${jobs.payload}, '$.searchId') = ${id}`)).orderBy(desc(jobs.createdAt)).limit(1).get()) ?? null;
   return { search, rows, job };
 }
 
@@ -170,10 +170,10 @@ export interface BusinessFilters {
   limit?: number;
 }
 
-export function listBusinesses(f: BusinessFilters = {}) {
-  const db = getDb();
-  const best = bestOppSubquery();
-  const dr = draftSubquery();
+export async function listBusinesses(f: BusinessFilters = {}) {
+  const db = await getDb();
+  const best = await bestOppSubquery();
+  const dr = await draftSubquery();
   const conds = [];
   if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`)));
   if (f.industry) conds.push(eq(businesses.industry, f.industry));
@@ -198,7 +198,7 @@ export function listBusinesses(f: BusinessFilters = {}) {
     name: businesses.name,
     updated: desc(businesses.updatedAt),
   }[f.sort ?? "priority"];
-  return db
+  return await db
     .select({ business: businesses, stage: prospects.stage, nextAction: prospects.nextAction, nextActionAt: prospects.nextActionAt, attractiveness: best.attractiveness, confidence: best.confidence, oppCount: best.count, draftCount: dr.drafts })
     .from(businesses)
     .leftJoin(prospects, eq(prospects.businessId, businesses.id))
@@ -210,27 +210,27 @@ export function listBusinesses(f: BusinessFilters = {}) {
     .all();
 }
 
-export function getBusinessDetail(id: string) {
-  const db = getDb();
-  const business = db.select().from(businesses).where(eq(businesses.id, id)).get();
+export async function getBusinessDetail(id: string) {
+  const db = await getDb();
+  const business = await db.select().from(businesses).where(eq(businesses.id, id)).get();
   if (!business) return null;
-  const sources = db.select().from(businessSources).where(eq(businessSources.businessId, id)).all();
-  const prospect = db.select().from(prospects).where(eq(prospects.businessId, id)).get() ?? null;
-  const runs = db.select().from(researchRuns).where(eq(researchRuns.businessId, id)).orderBy(desc(researchRuns.startedAt)).limit(5).all();
+  const sources = await db.select().from(businessSources).where(eq(businessSources.businessId, id)).all();
+  const prospect = (await db.select().from(prospects).where(eq(prospects.businessId, id)).get()) ?? null;
+  const runs = await db.select().from(researchRuns).where(eq(researchRuns.businessId, id)).orderBy(desc(researchRuns.startedAt)).limit(5).all();
   const latestRun = runs[0] ?? null;
-  const pageRows = latestRun ? db.select({ id: pages.id, url: pages.url, finalUrl: pages.finalUrl, kind: pages.kind, statusCode: pages.statusCode, title: pages.title, bytes: pages.bytes, error: pages.error, fetchedAt: pages.fetchedAt, textLength: sql<number>`length(coalesce(${pages.text}, ''))` }).from(pages).where(eq(pages.researchRunId, latestRun.id)).all() : [];
-  const obs = db.select().from(observations).where(eq(observations.businessId, id)).orderBy(observations.kind, observations.category).all();
-  const analysis = db.select().from(analyses).where(eq(analyses.businessId, id)).orderBy(desc(analyses.createdAt)).limit(1).get() ?? null;
-  const opps = analysis ? db.select().from(opportunities).where(eq(opportunities.analysisId, analysis.id)).orderBy(opportunities.rank).all() : [];
-  const drafts = db.select().from(outreachDrafts).where(eq(outreachDrafts.businessId, id)).orderBy(desc(outreachDrafts.createdAt)).all();
-  const acts = db.select().from(activities).where(eq(activities.businessId, id)).orderBy(desc(activities.createdAt)).limit(100).all();
-  const signals = db.select().from(validationSignals).where(eq(validationSignals.businessId, id)).orderBy(desc(validationSignals.createdAt)).all();
-  const activeJobs = db
+  const pageRows = latestRun ? await db.select({ id: pages.id, url: pages.url, finalUrl: pages.finalUrl, kind: pages.kind, statusCode: pages.statusCode, title: pages.title, bytes: pages.bytes, error: pages.error, fetchedAt: pages.fetchedAt, textLength: sql<number>`length(coalesce(${pages.text}, ''))` }).from(pages).where(eq(pages.researchRunId, latestRun.id)).all() : [];
+  const obs = await db.select().from(observations).where(eq(observations.businessId, id)).orderBy(observations.kind, observations.category).all();
+  const analysis = (await db.select().from(analyses).where(eq(analyses.businessId, id)).orderBy(desc(analyses.createdAt)).limit(1).get()) ?? null;
+  const opps = analysis ? await db.select().from(opportunities).where(eq(opportunities.analysisId, analysis.id)).orderBy(opportunities.rank).all() : [];
+  const drafts = await db.select().from(outreachDrafts).where(eq(outreachDrafts.businessId, id)).orderBy(desc(outreachDrafts.createdAt)).all();
+  const acts = await db.select().from(activities).where(eq(activities.businessId, id)).orderBy(desc(activities.createdAt)).limit(100).all();
+  const signals = await db.select().from(validationSignals).where(eq(validationSignals.businessId, id)).orderBy(desc(validationSignals.createdAt)).all();
+  const activeJobs = await db
     .select()
     .from(jobs)
     .where(and(inArray(jobs.status, ["queued", "running"]), sql`json_extract(${jobs.payload}, '$.businessId') = ${id}`))
     .all();
-  const failedJobs = db
+  const failedJobs = await db
     .select()
     .from(jobs)
     .where(and(eq(jobs.status, "failed"), sql`json_extract(${jobs.payload}, '$.businessId') = ${id}`))
@@ -240,11 +240,11 @@ export function getBusinessDetail(id: string) {
   return { business, sources, prospect, runs, latestRun, pages: pageRows, observations: obs, analysis, opportunities: opps, drafts, activities: acts, signals, activeJobs, failedJobs };
 }
 
-export function pipelineBoard() {
-  const db = getDb();
-  const best = bestOppSubquery();
-  const dr = draftSubquery();
-  const rows = db
+export async function pipelineBoard() {
+  const db = await getDb();
+  const best = await bestOppSubquery();
+  const dr = await draftSubquery();
+  const rows = await db
     .select({ business: businesses, prospect: prospects, attractiveness: best.attractiveness, confidence: best.confidence, draftCount: dr.drafts })
     .from(prospects)
     .innerJoin(businesses, eq(prospects.businessId, businesses.id))
@@ -257,19 +257,19 @@ export function pipelineBoard() {
   return byStage;
 }
 
-export function patternSummary() {
-  const db = getDb();
-  const groups = db
+export async function patternSummary() {
+  const db = await getDb();
+  const groups = await db
     .select({ category: opportunities.category, industry: businesses.industry, businesses: sql<number>`count(distinct ${opportunities.businessId})`, avgAttr: sql<number>`round(avg(${opportunities.attractivenessScore}))`, avgConf: sql<number>`round(avg(${opportunities.confidenceScore}))`, demoCount: sql<number>`sum(case when ${businesses.isDemo} then 1 else 0 end)` })
     .from(opportunities)
     .innerJoin(businesses, eq(opportunities.businessId, businesses.id))
     .groupBy(opportunities.category, businesses.industry)
     .orderBy(desc(sql`count(distinct ${opportunities.businessId})`))
     .all();
-  const allOpps = db.select({ opp: opportunities, business: businesses }).from(opportunities).innerJoin(businesses, eq(opportunities.businessId, businesses.id)).all();
-  const allObs = db.select({ id: observations.id, statement: observations.statement }).from(observations).all();
+  const allOpps = await db.select({ opp: opportunities, business: businesses }).from(opportunities).innerJoin(businesses, eq(opportunities.businessId, businesses.id)).all();
+  const allObs = await db.select({ id: observations.id, statement: observations.statement }).from(observations).all();
   const obsById = new Map(allObs.map((o) => [o.id, o.statement]));
-  const signalRows = db.select({ category: validationSignals.opportunityCategory, type: validationSignals.signalType, n: sql<number>`count(*)` }).from(validationSignals).groupBy(validationSignals.opportunityCategory, validationSignals.signalType).all();
+  const signalRows = await db.select({ category: validationSignals.opportunityCategory, type: validationSignals.signalType, n: sql<number>`count(*)` }).from(validationSignals).groupBy(validationSignals.opportunityCategory, validationSignals.signalType).all();
   return groups.map((g) => {
     const members = allOpps.filter((o) => o.opp.category === g.category && o.business.industry === g.industry);
     const evidence = new Map<string, number>();
@@ -295,8 +295,8 @@ export function patternSummary() {
   });
 }
 
-export function exportBusinessesCsv() {
-  const rows = listBusinesses({ limit: 10000 });
+export async function exportBusinessesCsv() {
+  const rows = await listBusinesses({ limit: 10000 });
   const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
   const header = ["name", "industry", "website", "email", "phone", "city", "region", "country", "stage", "research_status", "analysis_status", "best_attractiveness", "best_confidence", "is_demo"];
   const lines = rows.map((r) => [r.business.name, r.business.industry, r.business.website, r.business.email, r.business.phone, r.business.city, r.business.region, r.business.country, r.stage, r.business.researchStatus, r.business.analysisStatus, r.attractiveness, r.confidence, r.business.isDemo ? "DEMO" : ""].map(esc).join(","));

@@ -55,16 +55,16 @@ export interface StructuredResult<T> {
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number };
 }
 
-export function assertSpendWithinLimit() {
+export async function assertSpendWithinLimit() {
   const cfg = getConfig();
-  const spent = totalSpendUsd();
+  const spent = await totalSpendUsd();
   if (spent >= cfg.AI_SPEND_LIMIT_USD) {
     throw new AiSpendLimitError(`AI spend guard: estimated spend $${spent.toFixed(2)} has reached the limit of $${cfg.AI_SPEND_LIMIT_USD}. Raise AI_SPEND_LIMIT_USD to continue.`);
   }
 }
 
 export async function callStructured<S extends z.ZodType>(call: StructuredCall<S>): Promise<StructuredResult<z.infer<S>>> {
-  assertSpendWithinLimit();
+  await assertSpendWithinLimit();
   const anthropic = getAnthropic();
   const response = await anthropic.messages.parse({
     model: call.model,
@@ -79,7 +79,7 @@ export async function callStructured<S extends z.ZodType>(call: StructuredCall<S
     cacheRead: response.usage.cache_read_input_tokens ?? 0,
     cacheWrite: response.usage.cache_creation_input_tokens ?? 0,
   };
-  const costUsd = recordUsage({ stage: call.stage, model: call.model, businessId: call.businessId, ...usage });
+  const costUsd = await recordUsage({ stage: call.stage, model: call.model, businessId: call.businessId, ...usage });
   if (response.stop_reason === "refusal") {
     throw new AiRefusalError(`Model declined the ${call.stage} request${response.stop_details?.explanation ? `: ${response.stop_details.explanation}` : "."}`);
   }

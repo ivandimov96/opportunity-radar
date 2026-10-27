@@ -17,7 +17,7 @@ type Tab = (typeof TABS)[number];
 export default async function BusinessPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ tab?: string }> }) {
   const { id } = await params;
   const sp = await searchParams;
-  const d = getBusinessDetail(id);
+  const d = await getBusinessDetail(id);
   if (!d) notFound();
   const { business: b } = d;
   const cfg = getConfig();

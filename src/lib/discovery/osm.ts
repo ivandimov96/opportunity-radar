@@ -23,8 +23,8 @@ async function geocodeArea(q: DiscoveryQuery, signal?: AbortSignal): Promise<BBo
   const cfg = getConfig();
   const parts = [q.city, q.region, q.country].filter(Boolean).join(", ");
   const key = `nominatim:${parts.toLowerCase()}`;
-  const db = getDb();
-  const cached = db.select().from(geocodeCache).where(eq(geocodeCache.key, key)).get();
+  const db = await getDb();
+  const cached = await db.select().from(geocodeCache).where(eq(geocodeCache.key, key)).get();
   if (cached) return cached.value as BBox & { displayName: string };
 
   const url = new URL("/search", cfg.NOMINATIM_ENDPOINT);
@@ -40,7 +40,7 @@ async function geocodeArea(q: DiscoveryQuery, signal?: AbortSignal): Promise<BBo
   if (!data.length) throw new ProviderError(`Could not geocode location "${parts}"`, "osm");
   const [s, n, w, e] = data[0].boundingbox.map(Number);
   const value = { south: s, north: n, west: w, east: e, displayName: data[0].display_name };
-  db.insert(geocodeCache).values({ key, value }).onConflictDoNothing().run();
+  await db.insert(geocodeCache).values({ key, value }).onConflictDoNothing().run();
   return value;
 }
 

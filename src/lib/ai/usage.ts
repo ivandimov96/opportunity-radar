@@ -18,26 +18,28 @@ export function estimateCostUsd(model: string, u: { input: number; output: numbe
   return (u.input * p.input + u.output * p.output + u.cacheRead * p.cacheRead + u.cacheWrite * p.cacheWrite) / 1_000_000;
 }
 
-export function recordUsage(args: { stage: string; model: string; businessId?: string | null; input: number; output: number; cacheRead: number; cacheWrite: number }) {
+export async function recordUsage(args: { stage: string; model: string; businessId?: string | null; input: number; output: number; cacheRead: number; cacheWrite: number }) {
   const cost = estimateCostUsd(args.model, args);
-  getDb()
+  const db = await getDb();
+  await db
     .insert(aiUsage)
     .values({ id: newId(), stage: args.stage, model: args.model, businessId: args.businessId ?? null, inputTokens: args.input, outputTokens: args.output, cacheReadTokens: args.cacheRead, cacheWriteTokens: args.cacheWrite, estimatedCostUsd: cost })
     .run();
   return cost;
 }
 
-export function totalSpendUsd(): number {
-  const row = getDb().select({ total: sql<number>`coalesce(sum(${aiUsage.estimatedCostUsd}), 0)` }).from(aiUsage).get();
+export async function totalSpendUsd(): Promise<number> {
+  const db = await getDb();
+  const row = await db.select({ total: sql<number>`coalesce(sum(${aiUsage.estimatedCostUsd}), 0)` }).from(aiUsage).get();
   return row?.total ?? 0;
 }
 
-export function usageSummary() {
-  const db = getDb();
-  const byStage = db
+export async function usageSummary() {
+  const db = await getDb();
+  const byStage = await db
     .select({ stage: aiUsage.stage, calls: sql<number>`count(*)`, cost: sql<number>`sum(${aiUsage.estimatedCostUsd})`, input: sql<number>`sum(${aiUsage.inputTokens})`, output: sql<number>`sum(${aiUsage.outputTokens})` })
     .from(aiUsage)
     .groupBy(aiUsage.stage)
     .all();
-  return { total: totalSpendUsd(), byStage };
+  return { total: await totalSpendUsd(), byStage };
 }

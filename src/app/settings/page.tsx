@@ -5,11 +5,11 @@ import { workerStatus } from "@/lib/jobs/worker";
 import { Badge, Callout, Card, KeyValue, PageHeader, type Tone } from "@/components/ui";
 import { ATTRACTIVENESS_WEIGHTS, CONFIDENCE_WEIGHTS } from "@/lib/scoring/score";
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
   const cfg = getConfig();
   const integ = integrationStatus();
-  const usage = usageSummary();
-  const jobs = jobCounts();
+  const usage = await usageSummary();
+  const jobs = await jobCounts();
   const worker = workerStatus();
   const tone = (s: string): Tone => (s === "live" ? "ok" : s === "demo" ? "demo" : s === "missing_credentials" ? "warn" : "neutral");
   const label = (s: string) => ({ live: "Live", demo: "Demo", missing_credentials: "Needs credentials", not_implemented: "Not implemented" })[s] ?? s;

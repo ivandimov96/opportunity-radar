@@ -72,3 +72,13 @@ inline next to every claim. Why: the product's value is trust and momentum, not 
 count; operators must never wonder what to do next or whether a statement is verified.
 Trade-offs: more opinionated navigation; fewer raw controls on the first screen.
 Revisit when: real operators ask for bulk operations or team views. See docs/DESIGN.md.
+
+## D12 — Data layer: libSQL (Turso-compatible) instead of better-sqlite3 (2026-10-27)
+Context: deploying to Vercel showed that a file-based SQLite database is unusable on
+serverless (each instance has its own ephemeral /tmp, so writes vanish between requests).
+Alternatives: Postgres (Neon) — different dialect, bigger migration; keep better-sqlite3
+and host on a VM — not Vercel; Vercel Blob snapshots — lost-update hazards.
+Choice: `@libsql/client` + Drizzle libsql driver. Same SQLite dialect and migrations;
+`file:` URL locally, `libsql://` Turso URL in the cloud; the whole data layer became
+async. Trade-offs: every query is now awaited; one more hosted service (Turso free tier)
+for cloud persistence. Revisit when: multi-tenant scale suggests Postgres.

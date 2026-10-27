@@ -7,10 +7,10 @@ import { seedDemoAction } from "./actions";
 import { OPPORTUNITY_CATEGORIES, type OpportunityCategory } from "@/lib/industries";
 import { priorityScore } from "@/lib/scoring/score";
 
-export default function Overview() {
-  const s = dashboardStats();
-  const funnel = funnelCounts();
-  const inbox = attentionItems();
+export default async function Overview() {
+  const s = await dashboardStats();
+  const funnel = await funnelCounts();
+  const inbox = await attentionItems();
   const cfg = getConfig();
   const integ = integrationStatus();
   const active = s.queue.filter((q) => q.status === "queued" || q.status === "running").reduce((a, b) => a + b.n, 0);

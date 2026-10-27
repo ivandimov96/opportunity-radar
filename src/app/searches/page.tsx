@@ -4,8 +4,8 @@ import { Badge, Card, EmptyState, Icon, PageHeader, StatusPill, fmtRelative } fr
 import { getPlaybook } from "@/lib/industries";
 import { seedDemoAction } from "../actions";
 
-export default function SearchesPage() {
-  const rows = listSearches();
+export default async function SearchesPage() {
+  const rows = await listSearches();
   return (
     <>
       <PageHeader

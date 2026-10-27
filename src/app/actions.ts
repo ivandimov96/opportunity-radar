@@ -48,19 +48,19 @@ export async function createSearch(fd: FormData) {
   if (!parsed.success) redirect(`/searches/new?error=${encodeURIComponent(parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "))}`);
   const v = parsed.data;
   const id = newId();
-  getDb()
+  await (await getDb())
     .insert(searches)
     .values({ id, name: v.name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoResearch: v.autoResearch, providers: v.providers as DiscoveryProviderKey[], status: "queued", isDemo: v.providers.length === 1 && v.providers[0] === "demo" })
     .run();
-  enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
+  await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
   kickWorker();
   redirect(`/searches/${id}`);
 }
 
 export async function rerunSearch(fd: FormData) {
   const id = str(fd, "searchId");
-  getDb().update(searches).set({ status: "queued", error: null, updatedAt: nowIso() }).where(eq(searches.id, id)).run();
-  enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
+  await (await getDb()).update(searches).set({ status: "queued", error: null, updatedAt: nowIso() }).where(eq(searches.id, id)).run();
+  await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
   kickWorker();
   revalidatePath(`/searches/${id}`);
 }
@@ -68,14 +68,14 @@ export async function rerunSearch(fd: FormData) {
 export async function researchBusinessAction(fd: FormData) {
   const id = str(fd, "businessId");
   const analyze = fd.get("analyze") !== "off";
-  enqueueResearch(id, { analyze });
+  await enqueueResearch(id, { analyze });
   kickWorker();
   revalidatePath(`/businesses/${id}`);
 }
 
 export async function analyzeBusinessAction(fd: FormData) {
   const id = str(fd, "businessId");
-  enqueueAnalysis(id);
+  await enqueueAnalysis(id);
   kickWorker();
   revalidatePath(`/businesses/${id}`);
 }
@@ -83,13 +83,13 @@ export async function analyzeBusinessAction(fd: FormData) {
 export async function researchSearchResults(fd: FormData) {
   const searchId = str(fd, "searchId");
   const onlyNew = fd.get("onlyUnresearched") === "on";
-  const db = getDb();
-  const rows = db.select({ business: businesses }).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, searchId)).all();
+  const db = await getDb();
+  const rows = await db.select({ business: businesses }).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, searchId)).all();
   let n = 0;
   for (const { business } of rows) {
     if (!business.website || business.isDemo) continue;
     if (onlyNew && business.researchStatus === "done") continue;
-    enqueueResearch(business.id, { analyze: true });
+    await enqueueResearch(business.id, { analyze: true });
     n++;
   }
   if (n > 0) kickWorker();
@@ -105,7 +105,7 @@ export async function generateDraftAction(fd: FormData) {
   const businessId = str(fd, "businessId");
   const opportunityId = str(fd, "opportunityId") || null;
   const style = (["concise", "consultative", "casual"].includes(str(fd, "style")) ? str(fd, "style") : "concise") as OutreachStyle;
-  enqueueOutreach(businessId, opportunityId, style, str(fd, "senderName") || null);
+  await enqueueOutreach(businessId, opportunityId, style, str(fd, "senderName") || null);
   kickWorker();
   revalidatePath(`/businesses/${businessId}`);
 }
@@ -114,18 +114,18 @@ export async function updateDraftAction(fd: FormData) {
   const id = str(fd, "draftId");
   const businessId = str(fd, "businessId");
   const status = str(fd, "status");
-  const db = getDb();
-  const cur = db.select().from(outreachDrafts).where(eq(outreachDrafts.id, id)).get();
+  const db = await getDb();
+  const cur = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, id)).get();
   if (!cur) return;
   const subject = str(fd, "subject");
   const body = str(fd, "body");
   const edited = subject !== (cur.subject ?? "") || body !== cur.body;
-  db.update(outreachDrafts)
+  await db.update(outreachDrafts)
     .set({ subject, body, status: ["draft", "approved", "archived"].includes(status) ? status : cur.status, editedByUser: cur.editedByUser || edited, updatedAt: nowIso() })
     .where(eq(outreachDrafts.id, id))
     .run();
-  if (status === "approved" && cur.status !== "approved") logActivity(businessId, "system", "Outreach draft approved for manual sending.", { draftId: id });
-  if (edited) logActivity(businessId, "note", "Outreach draft edited by operator.", { draftId: id });
+  if (status === "approved" && cur.status !== "approved") await logActivity(businessId, "system", "Outreach draft approved for manual sending.", { draftId: id });
+  if (edited) await logActivity(businessId, "note", "Outreach draft edited by operator.", { draftId: id });
   revalidatePath(`/businesses/${businessId}`);
 }
 
@@ -133,7 +133,7 @@ export async function updateStageAction(fd: FormData) {
   const businessId = str(fd, "businessId");
   const stage = str(fd, "stage") as PipelineStage;
   if (!PIPELINE_STAGE_KEYS.includes(stage)) return;
-  setStage(businessId, stage, str(fd, "note") || undefined);
+  await setStage(businessId, stage, str(fd, "note") || undefined);
   revalidatePath(`/businesses/${businessId}`);
   revalidatePath("/pipeline");
 }
@@ -143,13 +143,13 @@ export async function addNoteAction(fd: FormData) {
   const content = str(fd, "content");
   const type = ["note", "call", "email", "meeting"].includes(str(fd, "type")) ? str(fd, "type") : "note";
   if (!content) return;
-  ensureProspect(businessId);
-  logActivity(businessId, type, content);
+  await ensureProspect(businessId);
+  await logActivity(businessId, type, content);
   if (type !== "note") {
-    const db = getDb();
+    const db = await getDb();
     const { prospects } = await import("@/db/schema");
-    const p = db.select().from(prospects).where(eq(prospects.businessId, businessId)).get();
-    if (p && ["discovered", "researched", "qualified", "outreach_ready"].includes(p.stage)) setStage(businessId, "contacted", `${type} logged`);
+    const p = await db.select().from(prospects).where(eq(prospects.businessId, businessId)).get();
+    if (p && ["discovered", "researched", "qualified", "outreach_ready"].includes(p.stage)) await setStage(businessId, "contacted", `${type} logged`);
   }
   revalidatePath(`/businesses/${businessId}`);
 }
@@ -159,7 +159,7 @@ export async function setNextActionAction(fd: FormData) {
   const nextAction = str(fd, "nextAction") || null;
   const at = str(fd, "nextActionAt") || null;
   const priority = ["low", "normal", "high"].includes(str(fd, "priority")) ? str(fd, "priority") : undefined;
-  setNextAction(businessId, nextAction, at ? new Date(at).toISOString() : null, priority);
+  await setNextAction(businessId, nextAction, at ? new Date(at).toISOString() : null, priority);
   revalidatePath(`/businesses/${businessId}`);
 }
 
@@ -168,7 +168,7 @@ export async function addValidationSignalAction(fd: FormData) {
   const category = str(fd, "category");
   const type = str(fd, "signalType") as ValidationSignalType;
   if (!category || !type) return;
-  addValidationSignal(businessId, category, type, str(fd, "notes") || undefined);
+  await addValidationSignal(businessId, category, type, str(fd, "notes") || undefined);
   revalidatePath(`/businesses/${businessId}`);
   revalidatePath("/patterns");
 }
@@ -185,26 +185,26 @@ export async function importCsvAction(fd: FormData) {
   const text = await file.text();
   const { candidates, errors } = csvToCandidates(text, { country, city, region });
   if (!candidates.length) redirect(`/import?error=${encodeURIComponent(errors.join("; ") || "No rows found")}`);
-  const db = getDb();
+  const db = await getDb();
   const id = newId();
-  db.insert(searches).values({ id, name: `CSV import: ${file.name}`, industry, country, region, city, maxResults: candidates.length, providers: ["csv"], requireWebsite: false, autoResearch, status: "done", stats: { providerResults: { csv: { found: candidates.length, error: errors.length ? `${errors.length} row error(s): ${errors.slice(0, 3).join("; ")}` : undefined } }, created: 0, merged: 0, skippedNoWebsite: 0, total: 0, attribution: ["Operator-supplied CSV import"] } }).run();
+  await db.insert(searches).values({ id, name: `CSV import: ${file.name}`, industry, country, region, city, maxResults: candidates.length, providers: ["csv"], requireWebsite: false, autoResearch, status: "done", stats: { providerResults: { csv: { found: candidates.length, error: errors.length ? `${errors.length} row error(s): ${errors.slice(0, 3).join("; ")}` : undefined } }, created: 0, merged: 0, skippedNoWebsite: 0, total: 0, attribution: ["Operator-supplied CSV import"] } }).run();
   let created = 0;
   let merged = 0;
   let rank = 0;
   for (const c of candidates) {
-    const r = upsertCandidate(db, c, { industry, searchId: id });
+    const r = await upsertCandidate(db, c, { industry, searchId: id });
     rank++;
     if (r.wasNew) created++;
     else merged++;
-    db.insert(searchResults).values({ searchId: id, businessId: r.businessId, rank, wasNew: r.wasNew }).onConflictDoNothing().run();
-    ensureProspect(r.businessId);
+    await db.insert(searchResults).values({ searchId: id, businessId: r.businessId, rank, wasNew: r.wasNew }).onConflictDoNothing().run();
+    await ensureProspect(r.businessId);
     if (autoResearch) {
-      const b = db.select({ website: businesses.website }).from(businesses).where(eq(businesses.id, r.businessId)).get();
-      if (b?.website) enqueueResearch(r.businessId, { analyze: true });
+      const b = await db.select({ website: businesses.website }).from(businesses).where(eq(businesses.id, r.businessId)).get();
+      if (b?.website) await enqueueResearch(r.businessId, { analyze: true });
     }
   }
-  const s = db.select().from(searches).where(eq(searches.id, id)).get()!;
-  db.update(searches).set({ stats: { ...s.stats!, created, merged, total: rank } }).where(eq(searches.id, id)).run();
+  const s = (await db.select().from(searches).where(eq(searches.id, id)).get())!;
+  await db.update(searches).set({ stats: { ...s.stats!, created, merged, total: rank } }).where(eq(searches.id, id)).run();
   if (autoResearch) kickWorker();
   redirect(`/searches/${id}`);
 }
@@ -213,25 +213,25 @@ export async function updateWebsiteAction(fd: FormData) {
   const id = str(fd, "businessId");
   const { normalizeWebsite, websiteDomain } = await import("@/lib/discovery/normalize");
   const website = normalizeWebsite(str(fd, "website"));
-  const db = getDb();
-  db.update(businesses).set({ website, websiteDomain: websiteDomain(website), researchStatus: website ? "not_started" : "no_website", updatedAt: nowIso() }).where(eq(businesses.id, id)).run();
-  logActivity(id, "note", website ? `Website set to ${website}` : "Website cleared");
+  const db = await getDb();
+  await db.update(businesses).set({ website, websiteDomain: websiteDomain(website), researchStatus: website ? "not_started" : "no_website", updatedAt: nowIso() }).where(eq(businesses.id, id)).run();
+  await logActivity(id, "note", website ? `Website set to ${website}` : "Website cleared");
   if (website && fd.get("research") === "on") {
-    enqueueResearch(id, { analyze: true });
+    await enqueueResearch(id, { analyze: true });
     kickWorker();
   }
   revalidatePath(`/businesses/${id}`);
 }
 
 export async function seedDemoAction() {
-  seedDemo();
+  await seedDemo();
   revalidatePath("/");
   redirect("/searches");
 }
 
 export async function deleteBusinessAction(fd: FormData) {
   const id = str(fd, "businessId");
-  getDb().delete(businesses).where(eq(businesses.id, id)).run();
+  await (await getDb()).delete(businesses).where(eq(businesses.id, id)).run();
   revalidatePath("/businesses");
   redirect("/businesses");
 }

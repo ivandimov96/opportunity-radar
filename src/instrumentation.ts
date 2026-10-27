@@ -5,6 +5,6 @@ export async function register() {
   if (!cfg.EMBEDDED_WORKER || cfg.serverless) return;
   const { getDb } = await import("@/db/client");
   const { startWorker } = await import("@/lib/jobs/worker");
-  getDb();
+  await getDb();
   startWorker();
 }

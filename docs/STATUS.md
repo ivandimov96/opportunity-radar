@@ -41,6 +41,14 @@ quick-filter chips, score rings with explanations, inline claim highlighting in 
 outreach editor, responsive shell with mobile drawer, dark mode. Verified with
 screenshots at 1360 px and 390 px (light and dark) and an updated Playwright journey.
 
+## Deployment (same day, third pass)
+Repository pushed to https://github.com/ivandimov96/opportunity-radar; Vercel project
+`opportunity-radar` deployed at https://opportunity-radar-sage-five.vercel.app. The first
+deployment proved that file-based SQLite cannot persist on serverless, so the data layer
+was migrated to libSQL (Turso-compatible, async). Persistence on Vercel needs
+`TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` (founder action; free tier). Until then the
+deployment is a labeled read-only demo.
+
 ## What was actually tested (executed in this session)
 - `pnpm typecheck`: clean. `pnpm build`: succeeds.
 - `pnpm test`: 51 tests pass (8 files) — normalization, dedupe rules, SSRF guard

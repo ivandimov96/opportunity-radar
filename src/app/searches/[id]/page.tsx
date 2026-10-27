@@ -11,7 +11,7 @@ import { rerunSearch, researchSearchResults } from "@/app/actions";
 
 export default async function SearchDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const data = getSearchWithResults(id);
+  const data = await getSearchWithResults(id);
   if (!data) notFound();
   const { search, rows, job } = data;
   const discovering = search.status === "queued" || search.status === "running";

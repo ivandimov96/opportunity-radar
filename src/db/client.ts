@@ -1,58 +1,87 @@
-import Database from "better-sqlite3";
-import { drizzle, type BetterSQLite3Database } from "drizzle-orm/better-sqlite3";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+/**
+ * Database access via libSQL (SQLite-compatible). Works against a local file
+ * in development (`file:./data/radar.db`) and a hosted Turso database in the
+ * cloud (`libsql://...` + auth token). Migrations run once per process before
+ * the first query. All queries are async.
+ */
+import { createClient, type Client } from "@libsql/client";
+import { drizzle, type LibSQLDatabase } from "drizzle-orm/libsql";
+import { migrate } from "drizzle-orm/libsql/migrator";
 import fs from "node:fs";
 import path from "node:path";
 import * as schema from "./schema";
 import { getConfig } from "@/lib/config";
 
-export type Db = BetterSQLite3Database<typeof schema>;
+export type Db = LibSQLDatabase<typeof schema>;
 
-type Holder = { db?: Db; sqlite?: Database.Database; path?: string };
+type Holder = { client?: Client; db?: Db; ready?: Promise<Db>; key?: string };
 const g = globalThis as unknown as { __radarDb?: Holder };
 if (!g.__radarDb) g.__radarDb = {};
 
+export function databaseUrl(): { url: string; authToken?: string; local: boolean } {
+  const cfg = getConfig();
+  if (cfg.TURSO_DATABASE_URL) return { url: cfg.TURSO_DATABASE_URL, authToken: cfg.TURSO_AUTH_TOKEN, local: false };
+  const p = cfg.DATABASE_PATH;
+  if (p === ":memory:") return { url: ":memory:", local: true };
+  return { url: `file:${path.resolve(p)}`, local: true };
+}
+
 function migrationsFolder() {
-  // The app always runs from the repository root (dev, start, tests, worker).
+  // The app always runs from the repository root (dev, start, tests, worker, serverless bundle).
   return path.join(process.cwd(), "drizzle");
 }
 
-export function openDatabase(filePath?: string): Db {
-  const target = filePath ?? getConfig().DATABASE_PATH;
+async function open(target: { url: string; authToken?: string; local: boolean }): Promise<Db> {
+  if (target.local && target.url.startsWith("file:")) fs.mkdirSync(path.dirname(target.url.slice(5)), { recursive: true });
+  const client = createClient({ url: target.url, authToken: target.authToken, intMode: "number" });
+  if (target.local) {
+    await client.execute("PRAGMA journal_mode = WAL").catch(() => {});
+    await client.execute("PRAGMA busy_timeout = 5000").catch(() => {});
+  }
+  await client.execute("PRAGMA foreign_keys = ON").catch(() => {});
+  const db = drizzle(client, { schema });
+  await migrate(db, { migrationsFolder: migrationsFolder() });
   const holder = g.__radarDb!;
-  if (holder.db && holder.path === target) return holder.db;
-  if (holder.sqlite) holder.sqlite.close();
-  if (target !== ":memory:") fs.mkdirSync(path.dirname(target), { recursive: true });
-  const sqlite = new Database(target);
-  sqlite.pragma("journal_mode = WAL");
-  sqlite.pragma("foreign_keys = ON");
-  sqlite.pragma("busy_timeout = 5000");
-  const db = drizzle(sqlite, { schema });
-  migrate(db, { migrationsFolder: migrationsFolder() });
+  holder.client = client;
   holder.db = db;
-  holder.sqlite = sqlite;
-  holder.path = target;
-  if (getConfig().serverless && target !== ":memory:") {
-    const empty = (sqlite.prepare("select count(*) as n from businesses").get() as { n: number }).n === 0;
-    if (empty) {
-      // Ephemeral storage: make the deployment useful on every cold start.
-      // Lazy import avoids a circular dependency at module load.
-      void import("./seed-demo").then((m) => m.seedDemo()).catch((err) => console.warn("[db] demo seed failed", err));
-    }
+  if (getConfig().serverless && !getConfig().TURSO_DATABASE_URL) {
+    // Ephemeral storage: keep the deployment useful on every cold start.
+    const n = (await client.execute("select count(*) as n from businesses")).rows[0]?.n as number;
+    if (!n) await import("./seed-demo").then((m) => m.seedDemo()).catch((err) => console.warn("[db] demo seed failed", err));
   }
   return db;
 }
 
-export function getDb(): Db {
-  return openDatabase();
+/** Returns the migrated database handle (memoized per process). */
+export function getDb(): Promise<Db> {
+  const holder = g.__radarDb!;
+  const target = databaseUrl();
+  const key = `${target.url}|${target.authToken ? "token" : ""}`;
+  if (holder.ready && holder.key === key) return holder.ready;
+  holder.client?.close();
+  holder.key = key;
+  holder.ready = open(target);
+  holder.db = undefined;
+  return holder.ready;
+}
+
+/** Test helper: open a fresh database (in-memory by default). */
+export function openDatabase(filePath?: string): Promise<Db> {
+  if (filePath) process.env.DATABASE_PATH = filePath;
+  const holder = g.__radarDb!;
+  holder.client?.close();
+  holder.ready = undefined;
+  holder.key = undefined;
+  return getDb();
 }
 
 export function closeDatabase() {
   const holder = g.__radarDb!;
-  holder.sqlite?.close();
+  holder.client?.close();
+  holder.client = undefined;
   holder.db = undefined;
-  holder.sqlite = undefined;
-  holder.path = undefined;
+  holder.ready = undefined;
+  holder.key = undefined;
 }
 
 export { schema };

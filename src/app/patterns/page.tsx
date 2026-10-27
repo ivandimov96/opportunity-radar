@@ -3,8 +3,8 @@ import { patternSummary } from "@/lib/queries";
 import { Badge, Callout, Card, EmptyState, Icon, PageHeader } from "@/components/ui";
 import { OPPORTUNITY_CATEGORIES, getPlaybook, type OpportunityCategory } from "@/lib/industries";
 
-export default function PatternsPage() {
-  const groups = patternSummary();
+export default async function PatternsPage() {
+  const groups = await patternSummary();
   const max = Math.max(1, ...groups.map((g) => g.businesses));
   return (
     <>

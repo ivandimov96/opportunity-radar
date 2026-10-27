@@ -27,17 +27,19 @@ function isRetryable(err: unknown) {
 
 export async function runJob(job: JobRow) {
   const handler = HANDLERS[job.type as JobType];
-  const progress: ProgressFn = (p) => updateJobProgress(job.id, p);
+  const progress: ProgressFn = (p) => {
+    void updateJobProgress(job.id, p).catch(() => {});
+  };
   if (!handler) {
-    failJob(job, `Unknown job type ${job.type}`, false);
+    await failJob(job, `Unknown job type ${job.type}`, false);
     return;
   }
   try {
     await handler(job, progress);
-    completeJob(job.id);
+    await completeJob(job.id);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    const outcome = failJob(job, msg, isRetryable(err));
+    const outcome = await failJob(job, msg, isRetryable(err));
     console.warn(`[worker] job ${job.type}/${job.id} ${outcome}: ${msg}`);
   }
 }
@@ -46,7 +48,7 @@ export async function runJob(job: JobRow) {
 export async function drainQueue(types: JobType[] = Object.keys(HANDLERS) as JobType[], max = 100) {
   let n = 0;
   while (n < max) {
-    const job = claimNextJob("drain", types);
+    const job = await claimNextJob("drain", types);
     if (!job) break;
     await runJob(job);
     n++;
@@ -60,16 +62,24 @@ export function startWorker(opts: { pollMs?: number } = {}) {
   const state: WorkerState = { running: true, active: 0, id: `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}` };
   g.__radarWorker = state;
   const maxConcurrent = cfg.RESEARCH_CONCURRENCY;
-  recoverStaleJobs();
-  const tick = () => {
-    if (!state.running) return;
-    while (state.active < maxConcurrent) {
-      const job = claimNextJob(state.id, Object.keys(HANDLERS) as JobType[]);
-      if (!job) break;
-      state.active++;
-      runJob(job).finally(() => {
-        state.active--;
-      });
+  void recoverStaleJobs().catch((err) => console.warn("[worker] stale recovery failed", err));
+  let ticking = false;
+  const tick = async () => {
+    if (!state.running || ticking) return;
+    ticking = true;
+    try {
+      while (state.active < maxConcurrent) {
+        const job = await claimNextJob(state.id, Object.keys(HANDLERS) as JobType[]);
+        if (!job) break;
+        state.active++;
+        void runJob(job).finally(() => {
+          state.active--;
+        });
+      }
+    } catch (err) {
+      console.warn("[worker] tick failed", err);
+    } finally {
+      ticking = false;
     }
   };
   state.timer = setInterval(tick, opts.pollMs ?? 1500);
@@ -79,7 +89,7 @@ export function startWorker(opts: { pollMs?: number } = {}) {
     if (state.timer) clearInterval(state.timer);
   };
   console.log(`[worker] started (${state.id}), concurrency ${maxConcurrent}`);
-  tick();
+  void tick();
   return state;
 }
 

@@ -1,6 +1,5 @@
-import { openDatabase, closeDatabase } from "./client";
+import { closeDatabase, openDatabase } from "./client";
 
-const db = openDatabase();
-void db;
+await openDatabase();
 console.log("Database migrated.");
 closeDatabase();

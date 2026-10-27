@@ -51,41 +51,41 @@ function fakeModel(stage: string, schemaData: unknown) {
 }
 
 describe("integrated pipeline", () => {
-  let db: ReturnType<typeof useTempDb>;
-  beforeEach(() => {
+  let db: Awaited<ReturnType<typeof useTempDb>>;
+  beforeEach(async () => {
     resetEnv({ ANTHROPIC_API_KEY: "test-key" });
-    db = useTempDb();
+    db = await useTempDb();
     clearRobotsCache();
     callStructured.mockReset();
   });
 
   it("runs discovery (demo provider) and records search stats", async () => {
     const id = newId();
-    db.insert(searches).values({ id, name: "Demo", industry: "auto_repair", country: "US", city: "Austin", maxResults: 10, providers: ["demo"], requireWebsite: false }).run();
-    enqueueJob("discover_search", { searchId: id });
+    await db.insert(searches).values({ id, name: "Demo", industry: "auto_repair", country: "US", city: "Austin", maxResults: 10, providers: ["demo"], requireWebsite: false }).run();
+    await enqueueJob("discover_search", { searchId: id });
     expect(await drainQueue()).toBe(1);
-    const s = db.select().from(searches).where(eq(searches.id, id)).get()!;
+    const s = (await db.select().from(searches).where(eq(searches.id, id)).get())!;
     expect(s.status).toBe("done");
     expect(s.stats?.created).toBe(4);
     expect(s.stats?.attribution[0]).toMatch(/Synthetic demo/);
-    expect(db.select().from(businesses).all().every((b) => b.isDemo)).toBe(true);
-    expect(db.select().from(prospects).all()).toHaveLength(4);
+    expect((await db.select().from(businesses).all()).every((b) => b.isDemo)).toBe(true);
+    expect(await db.select().from(prospects).all()).toHaveLength(4);
   });
 
   it("empty discovery results mark the search done with zero businesses", async () => {
     const id = newId();
-    db.insert(searches).values({ id, name: "Empty", industry: "dental", country: "US", city: "Austin", maxResults: 10, providers: ["demo"], requireWebsite: true }).run();
+    await db.insert(searches).values({ id, name: "Empty", industry: "dental", country: "US", city: "Austin", maxResults: 10, providers: ["demo"], requireWebsite: true }).run();
     // dental demo list falls back to auto_repair demo; requireWebsite drops the one without a site
-    enqueueJob("discover_search", { searchId: id });
+    await enqueueJob("discover_search", { searchId: id });
     await drainQueue();
-    const s = db.select().from(searches).where(eq(searches.id, id)).get()!;
+    const s = (await db.select().from(searches).where(eq(searches.id, id)).get())!;
     expect(s.status).toBe("done");
     expect(s.stats?.skippedNoWebsite).toBe(1);
   });
 
   it("researches a website, grounds AI observations, analyzes, scores, drafts outreach and advances the pipeline", async () => {
     const bizId = newId();
-    db.insert(businesses).values({ id: bizId, name: "Barton Auto Care", nameNormalized: "barton auto care", industry: "auto_repair", website: "https://bartonauto.example", websiteDomain: "bartonauto.example", city: "Austin", region: "TX", firstProvider: "csv" }).run();
+    await db.insert(businesses).values({ id: bizId, name: "Barton Auto Care", nameNormalized: "barton auto care", industry: "auto_repair", website: "https://bartonauto.example", websiteDomain: "bartonauto.example", city: "Austin", region: "TX", firstProvider: "csv" }).run();
 
     callStructured.mockImplementationOnce(async (call: { stage: string }) =>
       fakeModel(call.stage, {
@@ -97,20 +97,20 @@ describe("integrated pipeline", () => {
         unknowns: [{ topic: "Scheduling software", note: "No booking tool is referenced" }],
       }),
     );
-    enqueueResearch(bizId, { analyze: true });
+    await enqueueResearch(bizId, { analyze: true });
     expect(await drainQueue(["research_business"])).toBe(1);
 
-    const obs = db.select().from(observations).where(eq(observations.businessId, bizId)).all();
+    const obs = await db.select().from(observations).where(eq(observations.businessId, bizId)).all();
     const verified = obs.filter((o) => o.kind === "verified");
     expect(verified.some((o) => o.statement === "Website asks customers to call to schedule service" && o.method === "deterministic")).toBe(true);
     expect(verified.some((o) => o.statement.includes("ASE-certified") && o.method === "ai")).toBe(true);
     expect(verified.some((o) => o.statement.includes("Tekmetric"))).toBe(false); // rejected: not grounded
     expect(obs.some((o) => o.kind === "unknown")).toBe(true);
     for (const o of verified) expect(o.sourceUrl).toMatch(/^https:\/\/bartonauto\.example/);
-    const biz = db.select().from(businesses).where(eq(businesses.id, bizId)).get()!;
+    const biz = (await db.select().from(businesses).where(eq(businesses.id, bizId)).get())!;
     expect(biz.researchStatus).toBe("done");
     expect(biz.email).toBe("service@bartonauto.example");
-    expect(db.select().from(prospects).where(eq(prospects.businessId, bizId)).get()!.stage).toBe("researched");
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, bizId)).get())!.stage).toBe("researched");
 
     const callToSchedule = verified.find((o) => o.statement.includes("call to schedule"))!;
     callStructured.mockImplementationOnce(async (call: { stage: string }) =>
@@ -128,16 +128,16 @@ describe("integrated pipeline", () => {
       }),
     );
     expect(await drainQueue(["analyze_business"])).toBe(1);
-    const opps = db.select().from(opportunities).where(eq(opportunities.businessId, bizId)).all().sort((a, b) => a.rank - b.rank);
+    const opps = (await db.select().from(opportunities).where(eq(opportunities.businessId, bizId)).all()).sort((a, b) => a.rank - b.rank);
     expect(opps).toHaveLength(2);
     expect(opps[0].supportingObservationIds).toEqual([callToSchedule.id]);
     expect(opps[1].supportingObservationIds).toEqual([]);
     expect(opps[1].confidenceScore).toBeLessThanOrEqual(35);
     expect(opps[1].aiRatings?.evidenceStrength).toBe(2);
     expect(opps[0].confidenceScore).toBeGreaterThan(opps[1].confidenceScore);
-    const analysis = db.select().from(analyses).where(eq(analyses.businessId, bizId)).get()!;
+    const analysis = (await db.select().from(analyses).where(eq(analyses.businessId, bizId)).get())!;
     expect(analysis.validationWarnings?.length).toBeGreaterThan(0);
-    expect(db.select().from(prospects).where(eq(prospects.businessId, bizId)).get()!.stage).toBe("qualified");
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, bizId)).get())!.stage).toBe("qualified");
 
     callStructured.mockImplementationOnce(async (call: { stage: string }) =>
       fakeModel(call.stage, {
@@ -149,43 +149,43 @@ describe("integrated pipeline", () => {
         ],
       }),
     );
-    enqueueOutreach(bizId, opps[0].id, "concise");
+    await enqueueOutreach(bizId, opps[0].id, "concise");
     expect(await drainQueue(["generate_outreach"])).toBe(1);
-    const drafts = db.select().from(outreachDrafts).where(eq(outreachDrafts.businessId, bizId)).all();
+    const drafts = await db.select().from(outreachDrafts).where(eq(outreachDrafts.businessId, bizId)).all();
     expect(drafts).toHaveLength(1);
     expect(drafts[0].toEmail).toBe("service@bartonauto.example");
     expect(drafts[0].claims[0].observationIds).toEqual([callToSchedule.id]);
     expect(drafts[0].warnings.some((w) => w.startsWith("Unsupported claim"))).toBe(true);
     expect(drafts[0].warnings.some((w) => w.includes("percentage"))).toBe(true);
-    expect(db.select().from(prospects).where(eq(prospects.businessId, bizId)).get()!.stage).toBe("outreach_ready");
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, bizId)).get())!.stage).toBe("outreach_ready");
   });
 
   it("records insufficient evidence when the model finds no compelling opportunity", async () => {
     const bizId = newId();
-    db.insert(businesses).values({ id: bizId, name: "Quiet Shop", nameNormalized: "quiet shop", industry: "auto_repair", website: "https://bartonauto.example", firstProvider: "csv" }).run();
-    db.insert(observations).values({ id: newId(), businessId: bizId, kind: "verified", category: "hours", statement: "Website lists business hours", evidenceQuote: "Mon - Fri", sourceUrl: "https://bartonauto.example", method: "deterministic" }).run();
+    await db.insert(businesses).values({ id: bizId, name: "Quiet Shop", nameNormalized: "quiet shop", industry: "auto_repair", website: "https://bartonauto.example", firstProvider: "csv" }).run();
+    await db.insert(observations).values({ id: newId(), businessId: bizId, kind: "verified", category: "hours", statement: "Website lists business hours", evidenceQuote: "Mon - Fri", sourceUrl: "https://bartonauto.example", method: "deterministic" }).run();
     callStructured.mockImplementationOnce(async () => fakeModel("analysis", { company_summary: "s", documented_workflows: [], industry_workflows_considered: [], existing_tools_detected: [], opportunities: [], no_compelling_opportunity: true, no_opportunity_reason: "Only business hours are verified." }));
-    enqueueJob("analyze_business", { businessId: bizId });
+    await enqueueJob("analyze_business", { businessId: bizId });
     await drainQueue();
-    expect(db.select().from(businesses).where(eq(businesses.id, bizId)).get()!.analysisStatus).toBe("insufficient_evidence");
-    expect(db.select().from(opportunities).where(eq(opportunities.businessId, bizId)).all()).toHaveLength(0);
-    expect(db.select().from(prospects).where(eq(prospects.businessId, bizId)).get()!.stage).toBe("discovered");
+    expect((await db.select().from(businesses).where(eq(businesses.id, bizId)).get())!.analysisStatus).toBe("insufficient_evidence");
+    expect(await db.select().from(opportunities).where(eq(opportunities.businessId, bizId)).all()).toHaveLength(0);
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, bizId)).get())!.stage).toBe("discovered");
   });
 
   it("isolates failures: an unreachable website fails only its own job and is retried", async () => {
     const good = newId();
     const bad = newId();
-    db.insert(businesses).values({ id: good, name: "Good", nameNormalized: "good", industry: "auto_repair", website: "https://bartonauto.example", firstProvider: "csv" }).run();
-    db.insert(businesses).values({ id: bad, name: "Bad", nameNormalized: "bad", industry: "auto_repair", website: "https://down.example", firstProvider: "csv" }).run();
+    await db.insert(businesses).values({ id: good, name: "Good", nameNormalized: "good", industry: "auto_repair", website: "https://bartonauto.example", firstProvider: "csv" }).run();
+    await db.insert(businesses).values({ id: bad, name: "Bad", nameNormalized: "bad", industry: "auto_repair", website: "https://down.example", firstProvider: "csv" }).run();
     resetEnv({}); // no AI key: deterministic only, also tests the no-credentials path
-    enqueueResearch(bad, { analyze: false });
-    enqueueResearch(good, { analyze: false });
+    await enqueueResearch(bad, { analyze: false });
+    await enqueueResearch(good, { analyze: false });
     await drainQueue(["research_business"]);
-    expect(db.select().from(businesses).where(eq(businesses.id, good)).get()!.researchStatus).toBe("done");
-    const badBiz = db.select().from(businesses).where(eq(businesses.id, bad)).get()!;
+    expect((await db.select().from(businesses).where(eq(businesses.id, good)).get())!.researchStatus).toBe("done");
+    const badBiz = (await db.select().from(businesses).where(eq(businesses.id, bad)).get())!;
     expect(badBiz.researchStatus).toBe("failed");
     const { jobs } = await import("@/db/schema");
-    const badJob = db.select().from(jobs).where(eq(jobs.idempotencyKey, `research:${bad}`)).get()!;
+    const badJob = (await db.select().from(jobs).where(eq(jobs.idempotencyKey, `research:${bad}`)).get())!;
     expect(badJob.status).toBe("failed"); // homepage unavailable => non-retryable
     expect(badJob.error).toMatch(/could not be fetched/);
     expect(callStructured).not.toHaveBeenCalled();
@@ -194,11 +194,11 @@ describe("integrated pipeline", () => {
   it("analysis without credentials fails clearly and does not retry", async () => {
     resetEnv({});
     const bizId = newId();
-    db.insert(businesses).values({ id: bizId, name: "X", nameNormalized: "x", industry: "auto_repair", firstProvider: "csv" }).run();
-    enqueueJob("analyze_business", { businessId: bizId });
+    await db.insert(businesses).values({ id: bizId, name: "X", nameNormalized: "x", industry: "auto_repair", firstProvider: "csv" }).run();
+    await enqueueJob("analyze_business", { businessId: bizId });
     await drainQueue();
     const { jobs } = await import("@/db/schema");
-    const j = db.select().from(jobs).all()[0];
+    const j = (await db.select().from(jobs).all())[0];
     expect(j.status).toBe("failed");
     expect(j.error).toMatch(/ANTHROPIC_API_KEY/);
   });
@@ -206,8 +206,8 @@ describe("integrated pipeline", () => {
   it("stops AI work when the spend guard is reached", async () => {
     resetEnv({ ANTHROPIC_API_KEY: "k", AI_SPEND_LIMIT_USD: "0.0001" });
     const { recordUsage } = await import("@/lib/ai/usage");
-    recordUsage({ stage: "analysis", model: "claude-opus-5-5", input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 });
+    await recordUsage({ stage: "analysis", model: "claude-opus-5-5", input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 });
     const { assertSpendWithinLimit, AiSpendLimitError } = await import("@/lib/ai/client");
-    expect(() => assertSpendWithinLimit()).toThrow(AiSpendLimitError);
+    await expect(assertSpendWithinLimit()).rejects.toThrow(AiSpendLimitError);
   });
 });

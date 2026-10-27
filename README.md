@@ -31,7 +31,7 @@ See [docs/STATUS.md](docs/STATUS.md) for what was actually run and what remains.
 
 ## Quick start
 
-Requirements: Node 24+, pnpm 11+. No Docker, no external database.
+Requirements: Node 22+, pnpm 11+. No Docker; a local SQLite file by default, or a hosted Turso database for cloud deployments.
 
 ```bash
 pnpm install

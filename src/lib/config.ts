@@ -29,6 +29,9 @@ const EnvSchema = z.object({
   RESEARCH_FETCH_TIMEOUT_MS: z.coerce.number().int().default(15_000),
   RESEARCH_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
   DATABASE_PATH: z.string().default("./data/radar.db"),
+  /** Hosted libSQL/Turso database (persistent in the cloud). When set, DATABASE_PATH is ignored. */
+  TURSO_DATABASE_URL: z.string().optional(),
+  TURSO_AUTH_TOKEN: z.string().optional(),
   EMBEDDED_WORKER: z
     .string()
     .default("true")
@@ -55,6 +58,7 @@ export function getConfig(): AppConfig {
   const env = parsed.data;
   const apiKey = env.ANTHROPIC_API_KEY?.trim();
   const serverless = Boolean(process.env.VERCEL);
+  if (!env.TURSO_DATABASE_URL?.trim()) env.TURSO_DATABASE_URL = undefined;
   // On Vercel the project directory is read-only; /tmp is the only writable location.
   if (serverless && !process.env.DATABASE_PATH) env.DATABASE_PATH = "/tmp/radar.db";
   cached = {
@@ -117,10 +121,12 @@ export function integrationStatus() {
     },
     storage: {
       label: "Storage",
-      status: c.serverless ? ("demo" as const) : ("live" as const),
-      detail: c.serverless
-        ? "Ephemeral serverless deployment: the SQLite database lives in /tmp and resets whenever the function instance is recycled. Demo data is re-seeded automatically. For persistent use, run the app on a VM or container with a disk (see docs/OPERATIONS.md)."
-        : `SQLite file at ${c.DATABASE_PATH} (persistent).`,
+      status: c.TURSO_DATABASE_URL ? ("live" as const) : c.serverless ? ("demo" as const) : ("live" as const),
+      detail: c.TURSO_DATABASE_URL
+        ? "Hosted libSQL (Turso) database: persistent and shared across all server instances."
+        : c.serverless
+          ? "Ephemeral serverless deployment: each server instance has its own temporary SQLite file, so changes are not reliably kept between requests. Demo data is re-seeded automatically. Set TURSO_DATABASE_URL and TURSO_AUTH_TOKEN for persistence."
+          : `Local SQLite file at ${c.DATABASE_PATH} (persistent).`,
     },
     outreachSending: {
       label: "Outreach sending",

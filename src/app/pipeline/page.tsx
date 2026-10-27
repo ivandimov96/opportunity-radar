@@ -4,8 +4,8 @@ import { Badge, Icon, PageHeader, ScoreRing, fmtRelative } from "@/components/ui
 import { PIPELINE_STAGES } from "@/lib/pipeline/stages";
 import { priorityScore } from "@/lib/scoring/score";
 
-export default function PipelinePage() {
-  const board = pipelineBoard();
+export default async function PipelinePage() {
+  const board = await pipelineBoard();
   const total = Object.values(board).reduce((a, b) => a + b.length, 0);
   return (
     <>

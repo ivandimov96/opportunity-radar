@@ -30,7 +30,7 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
     quick: (sp.quick as BusinessFilters["quick"]) || undefined,
     sort: (sp.sort as BusinessFilters["sort"]) || "priority",
   };
-  const rows = listBusinesses(f);
+  const rows = await listBusinesses(f);
   const qs = (patch: Record<string, string | undefined>) => {
     const p = new URLSearchParams();
     for (const [k, v] of Object.entries({ ...sp, ...patch })) if (v) p.set(k, v);

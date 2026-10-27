@@ -1,7 +1,7 @@
 /**
- * SQLite-backed job queue. Single-writer semantics via better-sqlite3's
- * synchronous transactions make claiming race-free within a process; a
- * lockedBy column plus stale-lock recovery handles multiple worker processes.
+ * libSQL-backed job queue. Claiming runs inside a transaction so two workers
+ * never take the same job; a lockedBy column plus stale-lock recovery handles
+ * crashed processes.
  */
 import { and, asc, eq, inArray, lt, lte, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
@@ -11,24 +11,24 @@ import { newId, nowIso } from "@/lib/ids";
 export type JobType = "discover_search" | "research_business" | "analyze_business" | "generate_outreach";
 export type JobRow = typeof jobs.$inferSelect;
 
-export function enqueueJob(type: JobType, payload: Record<string, unknown>, opts: { idempotencyKey?: string; maxAttempts?: number; delayMs?: number } = {}): { id: string; created: boolean } {
-  const db = getDb();
+export async function enqueueJob(type: JobType, payload: Record<string, unknown>, opts: { idempotencyKey?: string; maxAttempts?: number; delayMs?: number } = {}): Promise<{ id: string; created: boolean }> {
+  const db = await getDb();
   if (opts.idempotencyKey) {
-    const existing = db.select({ id: jobs.id, status: jobs.status }).from(jobs).where(eq(jobs.idempotencyKey, opts.idempotencyKey)).get();
+    const existing = await db.select({ id: jobs.id, status: jobs.status }).from(jobs).where(eq(jobs.idempotencyKey, opts.idempotencyKey)).get();
     if (existing && (existing.status === "queued" || existing.status === "running")) return { id: existing.id, created: false };
-    if (existing) db.delete(jobs).where(eq(jobs.id, existing.id)).run(); // allow re-run after completion/failure
+    if (existing) await db.delete(jobs).where(eq(jobs.id, existing.id)).run(); // allow re-run after completion/failure
   }
   const id = newId();
   const scheduledAt = new Date(Date.now() + (opts.delayMs ?? 0)).toISOString();
-  db.insert(jobs).values({ id, type, payload, idempotencyKey: opts.idempotencyKey ?? null, maxAttempts: opts.maxAttempts ?? 3, scheduledAt }).run();
+  await db.insert(jobs).values({ id, type, payload, idempotencyKey: opts.idempotencyKey ?? null, maxAttempts: opts.maxAttempts ?? 3, scheduledAt }).run();
   return { id, created: true };
 }
 
-export function claimNextJob(workerId: string, types: JobType[]): JobRow | null {
-  const db = getDb();
-  return db.transaction((tx) => {
+export async function claimNextJob(workerId: string, types: JobType[]): Promise<JobRow | null> {
+  const db = await getDb();
+  return db.transaction(async (tx) => {
     const now = nowIso();
-    const row = tx
+    const row = await tx
       .select()
       .from(jobs)
       .where(and(eq(jobs.status, "queued"), inArray(jobs.type, types), lte(jobs.scheduledAt, now)))
@@ -36,55 +36,65 @@ export function claimNextJob(workerId: string, types: JobType[]): JobRow | null 
       .limit(1)
       .get();
     if (!row) return null;
-    tx.update(jobs)
+    const res = await tx
+      .update(jobs)
       .set({ status: "running", lockedBy: workerId, startedAt: now, attempts: row.attempts + 1 })
       .where(and(eq(jobs.id, row.id), eq(jobs.status, "queued")))
       .run();
+    if (!res.rowsAffected) return null;
     return { ...row, status: "running", lockedBy: workerId, startedAt: now, attempts: row.attempts + 1 };
   });
 }
 
-export function updateJobProgress(id: string, progress: { message?: string; done?: number; total?: number }) {
-  getDb().update(jobs).set({ progress }).where(eq(jobs.id, id)).run();
+export async function updateJobProgress(id: string, progress: { message?: string; done?: number; total?: number }) {
+  const db = await getDb();
+  await db.update(jobs).set({ progress }).where(eq(jobs.id, id)).run();
 }
 
-export function completeJob(id: string) {
-  getDb().update(jobs).set({ status: "done", finishedAt: nowIso(), lockedBy: null, error: null }).where(eq(jobs.id, id)).run();
+export async function completeJob(id: string) {
+  const db = await getDb();
+  await db.update(jobs).set({ status: "done", finishedAt: nowIso(), lockedBy: null, error: null }).where(eq(jobs.id, id)).run();
 }
 
-export function failJob(job: JobRow, error: string, retryable: boolean) {
-  const db = getDb();
+export async function failJob(job: JobRow, error: string, retryable: boolean): Promise<"requeued" | "failed"> {
+  const db = await getDb();
   if (retryable && job.attempts < job.maxAttempts) {
     const backoffMs = Math.min(5 * 60_000, 10_000 * 2 ** (job.attempts - 1));
-    db.update(jobs)
+    await db
+      .update(jobs)
       .set({ status: "queued", lockedBy: null, error, scheduledAt: new Date(Date.now() + backoffMs).toISOString() })
       .where(eq(jobs.id, job.id))
       .run();
-    return "requeued" as const;
+    return "requeued";
   }
-  db.update(jobs).set({ status: "failed", finishedAt: nowIso(), lockedBy: null, error }).where(eq(jobs.id, job.id)).run();
-  return "failed" as const;
+  await db.update(jobs).set({ status: "failed", finishedAt: nowIso(), lockedBy: null, error }).where(eq(jobs.id, job.id)).run();
+  return "failed";
 }
 
 /** Jobs left "running" by a crashed worker are requeued after a grace period. */
-export function recoverStaleJobs(staleMs = 15 * 60_000) {
+export async function recoverStaleJobs(staleMs = 15 * 60_000): Promise<number> {
+  const db = await getDb();
   const cutoff = new Date(Date.now() - staleMs).toISOString();
-  return getDb()
+  const res = await db
     .update(jobs)
     .set({ status: "queued", lockedBy: null, error: "Recovered from stale lock" })
     .where(and(eq(jobs.status, "running"), lt(jobs.startedAt, cutoff)))
-    .run().changes;
+    .run();
+  return res.rowsAffected;
 }
 
-export function jobCounts() {
-  const rows = getDb().select({ status: jobs.status, type: jobs.type, n: sql<number>`count(*)` }).from(jobs).groupBy(jobs.status, jobs.type).all();
-  return rows;
+export async function jobCounts() {
+  const db = await getDb();
+  return db.select({ status: jobs.status, type: jobs.type, n: sql<number>`count(*)` }).from(jobs).groupBy(jobs.status, jobs.type).all();
 }
 
-export function getJob(id: string) {
-  return getDb().select().from(jobs).where(eq(jobs.id, id)).get() ?? null;
+export async function getJob(id: string) {
+  const db = await getDb();
+  return (await db.select().from(jobs).where(eq(jobs.id, id)).get()) ?? null;
 }
 
-export function cancelQueuedJob(id: string) {
-  return getDb().update(jobs).set({ status: "cancelled", finishedAt: nowIso() }).where(and(eq(jobs.id, id), eq(jobs.status, "queued"))).run().changes > 0;
+export async function cancelQueuedJob(id: string) {
+  const db = await getDb();
+  const res = await db.update(jobs).set({ status: "cancelled", finishedAt: nowIso() }).where(and(eq(jobs.id, id), eq(jobs.status, "queued"))).run();
+  return res.rowsAffected > 0;
 }
