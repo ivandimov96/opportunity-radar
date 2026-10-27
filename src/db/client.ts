@@ -44,12 +44,15 @@ async function open(target: { url: string; authToken?: string; local: boolean })
   const holder = g.__radarDb!;
   holder.client = client;
   holder.db = db;
-  if (getConfig().serverless && !getConfig().TURSO_DATABASE_URL) {
-    // Ephemeral storage: keep the deployment useful on every cold start.
-    const n = (await client.execute("select count(*) as n from businesses")).rows[0]?.n as number;
-    if (!n) await import("./seed-demo").then((m) => m.seedDemo()).catch((err) => console.warn("[db] demo seed failed", err));
-  }
   return db;
+}
+
+/** Ephemeral serverless storage: keep the deployment useful on every cold start. */
+async function needsDemoSeed(client: Client) {
+  const cfg = getConfig();
+  if (!cfg.serverless || cfg.TURSO_DATABASE_URL) return false;
+  const n = (await client.execute("select count(*) as n from businesses")).rows[0]?.n as number;
+  return !n;
 }
 
 /** Returns the migrated database handle (memoized per process). */
@@ -60,8 +63,20 @@ export function getDb(): Promise<Db> {
   if (holder.ready && holder.key === key) return holder.ready;
   holder.client?.close();
   holder.key = key;
-  holder.ready = open(target);
   holder.db = undefined;
+  const base = open(target);
+  // Seeding runs after `base` resolves and must see a resolved handle itself
+  // (seedDemo and its helpers call getDb), so `ready` is swapped back to `base`
+  // before the seed starts. Callers arriving mid-seed simply get the empty DB.
+  holder.ready = base.then(async (db) => {
+    if (holder.client && (await needsDemoSeed(holder.client))) {
+      holder.ready = base;
+      await import("./seed-demo")
+        .then((m) => m.seedDemo())
+        .catch((err) => console.warn("[db] demo seed failed", err));
+    }
+    return db;
+  });
   return holder.ready;
 }
 
