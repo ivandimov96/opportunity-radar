@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e235c594-a469-4449-9694-68e0bd9b160d",
+  "id": "b9ad5e39-7dd2-4b9a-b12f-a729beb39a2c",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "activities": {
@@ -158,145 +158,6 @@
       },
       "indexes": {},
       "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "analyses": {
-      "name": "analyses",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "business_id": {
-          "name": "business_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "research_run_id": {
-          "name": "research_run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'done'"
-        },
-        "model": {
-          "name": "model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "company_summary": {
-          "name": "company_summary",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "documented_workflows": {
-          "name": "documented_workflows",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "industry_workflows": {
-          "name": "industry_workflows",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "existing_tools": {
-          "name": "existing_tools",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "no_compelling_opportunity": {
-          "name": "no_compelling_opportunity",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": false
-        },
-        "no_opportunity_reason": {
-          "name": "no_opportunity_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "validation_warnings": {
-          "name": "validation_warnings",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
-        }
-      },
-      "indexes": {
-        "analyses_business_idx": {
-          "name": "analyses_business_idx",
-          "columns": [
-            "business_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "analyses_business_id_businesses_id_fk": {
-          "name": "analyses_business_id_businesses_id_fk",
-          "tableFrom": "analyses",
-          "tableTo": "businesses",
-          "columnsFrom": [
-            "business_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "analyses_research_run_id_research_runs_id_fk": {
-          "name": "analyses_research_run_id_research_runs_id_fk",
-          "tableFrom": "analyses",
-          "tableTo": "research_runs",
-          "columnsFrom": [
-            "research_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -540,24 +401,58 @@
           "notNull": true,
           "autoincrement": false
         },
-        "research_status": {
-          "name": "research_status",
+        "status": {
+          "name": "status",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
-          "default": "'not_started'"
+          "default": "'new'"
         },
-        "analysis_status": {
-          "name": "analysis_status",
+        "status_message": {
+          "name": "status_message",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'not_started'"
+          "notNull": false,
+          "autoincrement": false
         },
-        "last_researched_at": {
-          "name": "last_researched_at",
+        "verdict": {
+          "name": "verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "summary": {
+          "name": "summary",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "best_attractiveness": {
+          "name": "best_attractiveness",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "best_confidence": {
+          "name": "best_confidence",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "priority": {
+          "name": "priority",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "investigated_at": {
+          "name": "investigated_at",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
@@ -604,15 +499,139 @@
           ],
           "isUnique": false
         },
-        "businesses_industry_idx": {
-          "name": "businesses_industry_idx",
+        "businesses_status_idx": {
+          "name": "businesses_status_idx",
           "columns": [
-            "industry"
+            "status"
+          ],
+          "isUnique": false
+        },
+        "businesses_priority_idx": {
+          "name": "businesses_priority_idx",
+          "columns": [
+            "priority"
           ],
           "isUnique": false
         }
       },
       "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "facts": {
+      "name": "facts",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "business_id": {
+          "name": "business_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "investigation_id": {
+          "name": "investigation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "value": {
+          "name": "value",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "evidence_quote": {
+          "name": "evidence_quote",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "source_url": {
+          "name": "source_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "method": {
+          "name": "method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+        }
+      },
+      "indexes": {
+        "facts_business_key": {
+          "name": "facts_business_key",
+          "columns": [
+            "business_id",
+            "key"
+          ],
+          "isUnique": true
+        }
+      },
+      "foreignKeys": {
+        "facts_business_id_businesses_id_fk": {
+          "name": "facts_business_id_businesses_id_fk",
+          "tableFrom": "facts",
+          "tableTo": "businesses",
+          "columnsFrom": [
+            "business_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "facts_investigation_id_investigations_id_fk": {
+          "name": "facts_investigation_id_investigations_id_fk",
+          "tableFrom": "facts",
+          "tableTo": "investigations",
+          "columnsFrom": [
+            "investigation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -645,6 +664,171 @@
       },
       "indexes": {},
       "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {}
+    },
+    "investigations": {
+      "name": "investigations",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "business_id": {
+          "name": "business_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'running'"
+        },
+        "started_at": {
+          "name": "started_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
+        },
+        "finished_at": {
+          "name": "finished_at",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "error": {
+          "name": "error",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "pages_fetched": {
+          "name": "pages_fetched",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "pages_failed": {
+          "name": "pages_failed",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "facts_verified": {
+          "name": "facts_verified",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "facts_rejected": {
+          "name": "facts_rejected",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cost_usd": {
+          "name": "cost_usd",
+          "type": "real",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "workflows": {
+          "name": "workflows",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "verdict": {
+          "name": "verdict",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "verdict_reason": {
+          "name": "verdict_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "warnings": {
+          "name": "warnings",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "investigations_business_idx": {
+          "name": "investigations_business_idx",
+          "columns": [
+            "business_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "investigations_business_id_businesses_id_fk": {
+          "name": "investigations_business_id_businesses_id_fk",
+          "tableFrom": "investigations",
+          "tableTo": "businesses",
+          "columnsFrom": [
+            "business_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {}
@@ -778,150 +962,6 @@
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
-    "observations": {
-      "name": "observations",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "business_id": {
-          "name": "business_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "research_run_id": {
-          "name": "research_run_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "category": {
-          "name": "category",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "statement": {
-          "name": "statement",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "evidence_quote": {
-          "name": "evidence_quote",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "source_url": {
-          "name": "source_url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "page_id": {
-          "name": "page_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "method": {
-          "name": "method",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "confidence": {
-          "name": "confidence",
-          "type": "real",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 1
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
-        }
-      },
-      "indexes": {
-        "observations_business_idx": {
-          "name": "observations_business_idx",
-          "columns": [
-            "business_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "observations_business_id_businesses_id_fk": {
-          "name": "observations_business_id_businesses_id_fk",
-          "tableFrom": "observations",
-          "tableTo": "businesses",
-          "columnsFrom": [
-            "business_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "observations_research_run_id_research_runs_id_fk": {
-          "name": "observations_research_run_id_research_runs_id_fk",
-          "tableFrom": "observations",
-          "tableTo": "research_runs",
-          "columnsFrom": [
-            "research_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "observations_page_id_pages_id_fk": {
-          "name": "observations_page_id_pages_id_fk",
-          "tableFrom": "observations",
-          "tableTo": "pages",
-          "columnsFrom": [
-            "page_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
     "opportunities": {
       "name": "opportunities",
       "columns": {
@@ -932,8 +972,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "analysis_id": {
-          "name": "analysis_id",
+        "investigation_id": {
+          "name": "investigation_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -988,8 +1028,8 @@
           "notNull": false,
           "autoincrement": false
         },
-        "supporting_observation_ids": {
-          "name": "supporting_observation_ids",
+        "supporting_fact_keys": {
+          "name": "supporting_fact_keys",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -1099,12 +1139,12 @@
         }
       },
       "foreignKeys": {
-        "opportunities_analysis_id_analyses_id_fk": {
-          "name": "opportunities_analysis_id_analyses_id_fk",
+        "opportunities_investigation_id_investigations_id_fk": {
+          "name": "opportunities_investigation_id_investigations_id_fk",
           "tableFrom": "opportunities",
-          "tableTo": "analyses",
+          "tableTo": "investigations",
           "columnsFrom": [
-            "analysis_id"
+            "investigation_id"
           ],
           "columnsTo": [
             "id"
@@ -1295,8 +1335,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "research_run_id": {
-          "name": "research_run_id",
+        "investigation_id": {
+          "name": "investigation_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -1352,13 +1392,6 @@
           "notNull": false,
           "autoincrement": false
         },
-        "text_hash": {
-          "name": "text_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "bytes": {
           "name": "bytes",
           "type": "integer",
@@ -1392,12 +1425,12 @@
         }
       },
       "foreignKeys": {
-        "pages_research_run_id_research_runs_id_fk": {
-          "name": "pages_research_run_id_research_runs_id_fk",
+        "pages_investigation_id_investigations_id_fk": {
+          "name": "pages_investigation_id_investigations_id_fk",
           "tableFrom": "pages",
-          "tableTo": "research_runs",
+          "tableTo": "investigations",
           "columnsFrom": [
-            "research_run_id"
+            "investigation_id"
           ],
           "columnsTo": [
             "id"
@@ -1439,7 +1472,7 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
-          "default": "'discovered'"
+          "default": "'lead'"
         },
         "priority": {
           "name": "priority",
@@ -1477,121 +1510,6 @@
         "prospects_business_id_businesses_id_fk": {
           "name": "prospects_business_id_businesses_id_fk",
           "tableFrom": "prospects",
-          "tableTo": "businesses",
-          "columnsFrom": [
-            "business_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {}
-    },
-    "research_runs": {
-      "name": "research_runs",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "business_id": {
-          "name": "business_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'running'"
-        },
-        "started_at": {
-          "name": "started_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))"
-        },
-        "finished_at": {
-          "name": "finished_at",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "pages_fetched": {
-          "name": "pages_fetched",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "pages_failed": {
-          "name": "pages_failed",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "ai_observations_accepted": {
-          "name": "ai_observations_accepted",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "ai_observations_rejected": {
-          "name": "ai_observations_rejected",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "notes": {
-          "name": "notes",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "research_runs_business_idx": {
-          "name": "research_runs_business_idx",
-          "columns": [
-            "business_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "research_runs_business_id_businesses_id_fk": {
-          "name": "research_runs_business_id_businesses_id_fk",
-          "tableFrom": "research_runs",
           "tableTo": "businesses",
           "columnsFrom": [
             "business_id"
@@ -1756,7 +1674,7 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
-          "default": false
+          "default": true
         },
         "providers": {
           "name": "providers",
@@ -1765,13 +1683,13 @@
           "notNull": true,
           "autoincrement": false
         },
-        "auto_research": {
-          "name": "auto_research",
+        "auto_investigate": {
+          "name": "auto_investigate",
           "type": "integer",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
-          "default": false
+          "default": true
         },
         "status": {
           "name": "status",

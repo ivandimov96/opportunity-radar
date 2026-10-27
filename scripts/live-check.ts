@@ -7,18 +7,18 @@
  */
 import { eq } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { businesses, observations, pages, researchRuns, searchResults, searches } from "@/db/schema";
+import { businesses, facts, investigations, searchResults, searches } from "@/db/schema";
 import { newId } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { drainQueue } from "@/lib/jobs/worker";
-import { enqueueResearch } from "@/lib/jobs/handlers";
+import { enqueueInvestigation } from "@/lib/jobs/handlers";
 
 const db = await getDb();
 const city = process.argv[2] ?? "Austin";
 const region = process.argv[3] ?? "TX";
 const industry = process.argv[4] ?? "auto_repair";
 const id = newId();
-await db.insert(searches).values({ id, name: `LIVE CHECK ${industry} ${city}`, industry, country: "US", region, city, maxResults: 15, providers: ["osm"], requireWebsite: true }).run();
+await db.insert(searches).values({ id, name: `LIVE CHECK ${industry} ${city}`, industry, country: "US", region, city, maxResults: 15, providers: ["osm"], requireWebsite: true, autoInvestigate: false }).run();
 await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
 console.log("Discovery job queued; draining locally…");
 await drainQueue(["discover_search"]);
@@ -31,11 +31,10 @@ if (!target) {
   console.log("No business with a website to research.");
   process.exit(0);
 }
-console.log(`\nResearching ${target.name} (${target.website}) …`);
-await enqueueResearch(target.id, { analyze: false });
-await drainQueue(["research_business"]);
-const run = (await db.select().from(researchRuns).where(eq(researchRuns.businessId, target.id)).get())!;
-console.log("Run:", run.status, `pages ${run.pagesFetched}/${run.pagesFetched + run.pagesFailed}`, run.error ?? "", (run.notes ?? []).join(" | "));
-for (const p of await db.select().from(pages).where(eq(pages.businessId, target.id)).all()) console.log(`   page ${p.kind} ${p.url} -> ${p.statusCode ?? p.error} (${(p.text ?? "").length} chars)`);
-for (const o of await db.select().from(observations).where(eq(observations.businessId, target.id)).all()) console.log(`   [${o.kind}/${o.method}] ${o.statement} — "${(o.evidenceQuote ?? "").slice(0, 70)}"`);
+console.log(`\nInvestigating ${target.name} (${target.website}) …`);
+await enqueueInvestigation(target.id);
+await drainQueue(["investigate_business"]);
+const inv = (await db.select().from(investigations).where(eq(investigations.businessId, target.id)).all()).at(-1)!;
+console.log("Investigation:", inv.status, `pages ${inv.pagesFetched}/${inv.pagesFetched + inv.pagesFailed}`, `${((inv.durationMs ?? 0) / 1000).toFixed(1)}s`, inv.error ?? "", (inv.notes ?? []).join(" | "));
+for (const f of await db.select().from(facts).where(eq(facts.businessId, target.id)).all()) console.log(`   ${f.status === "verified" ? "✓" : "–"} ${f.key}: ${f.value ?? ""}`);
 console.log(`\nOpen http://localhost:3000/businesses/${target.id}`);

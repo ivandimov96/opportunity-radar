@@ -1,8 +1,8 @@
 /**
  * Main operator journey in demo mode (no credentials):
- * load demo data -> inspect search -> open business profile -> review findings,
- * opportunities, scores -> edit & approve an outreach draft -> update pipeline
- * -> record a validation signal -> see it on the patterns page -> data persists.
+ * load demo data -> inspect search -> open business profile -> review profile
+ * facts, opportunities, scores -> edit & approve an outreach draft -> update
+ * pipeline -> record a validation signal -> see it on the patterns page -> persists.
  */
 import { expect, test } from "@playwright/test";
 
@@ -10,31 +10,29 @@ test("end-to-end demo journey", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: /Find businesses that genuinely need software/ })).toBeVisible();
 
-  // Load demo data from the empty-state guide
   await page.getByRole("button", { name: /Load demo data/ }).click();
   await page.waitForURL(/\/searches$/);
   await page.getByRole("link", { name: /DEMO — Auto repair/ }).click();
   await expect(page.getByText("These businesses do not exist")).toBeVisible();
   await expect(page.getByRole("link", { name: "Barton Creek Auto Care (Demo)" })).toBeVisible();
 
-  // Open the richest demo business: the workflow stepper and next step are visible
+  // Profile: stepper, next step, summary, structured facts with evidence, gaps
   await page.getByRole("link", { name: "Barton Creek Auto Care (Demo)" }).click();
   await expect(page.getByText("Synthetic demo record").first()).toBeVisible();
   await expect(page.getByText("Next step:")).toBeVisible();
   await expect(page.locator("ol").getByText("In conversation")).toBeVisible();
+  await expect(page.getByText("Independent auto repair shop offering brake")).toBeVisible();
+  await expect(page.getByText("How customers book")).toBeVisible();
+  await expect(page.getByText("phone only").first()).toBeVisible();
+  await expect(page.getByText("Not found on the site").first()).toBeVisible();
 
-  // Findings: verified vs unknown are separate, with evidence
-  await page.getByRole("link", { name: /^Findings/ }).click();
-  await expect(page.getByText("Verified observations · 7")).toBeVisible();
-  await expect(page.getByText("Unknowns · 2")).toBeVisible();
-  await expect(page.getByText("Website asks customers to call to schedule service")).toBeVisible();
-
-  // Opportunities: scores, hypothesis framing, explanations
+  // Opportunities: scores, hypothesis framing, "based on" facts, explanations
   await page.getByRole("link", { name: /^Opportunities/ }).click();
   await expect(page.getByText("Automated estimate follow-up for pending approvals")).toBeVisible();
   await expect(page.getByText("Problem hypothesis").first()).toBeVisible();
+  await expect(page.getByText("Based on").first()).toBeVisible();
   await page.getByText("Why these scores").first().click();
-  await expect(page.getByText("Verified evidence count").first()).toBeVisible();
+  await expect(page.getByText("Evidence cited").first()).toBeVisible();
 
   // Outreach: evidence view, edit and approve
   await page.getByRole("link", { name: /^Outreach/ }).click();
@@ -44,7 +42,6 @@ test("end-to-end demo journey", async ({ page }) => {
   await page.getByRole("button", { name: /Approve for sending/ }).click();
   await expect(page.getByText("Approved", { exact: true })).toBeVisible();
   await expect(page.locator('input[name="subject"]')).toHaveValue("Edited subject line");
-  await expect(page.getByText("edited", { exact: true })).toBeVisible();
 
   // Pipeline rail: stage, activity note, validation signal
   await page.locator('select[name="stage"]').selectOption("contacted");
@@ -59,22 +56,19 @@ test("end-to-end demo journey", async ({ page }) => {
   await page.getByRole("button", { name: "Record", exact: true }).click();
   await expect(page.getByText("Validation signal: confirmed_problem")).toBeVisible();
 
-  // Patterns show the category and the real validation signal
   await page.goto("/patterns");
   await expect(page.getByText("Estimate & quote follow-up").first()).toBeVisible();
   await expect(page.getByText("confirmed problem").first()).toBeVisible();
 
-  // Persistence: the stage advanced to validated and survives reload
   await page.goto("/businesses");
   await page.getByRole("link", { name: "Barton Creek Auto Care (Demo)" }).click();
   await expect(page.locator('select[name="stage"]')).toHaveValue("validated");
 
-  // Insufficient-evidence case is explicit
+  // No-opportunity verdict is explicit
   await page.goto("/businesses");
   await page.getByRole("link", { name: "Northside Transmission & Brake (Demo)" }).click();
-  await expect(page.getByText(/Insufficient evidence of a commercially compelling/).first()).toBeVisible();
+  await expect(page.getByText(/No compelling software opportunity/).first()).toBeVisible();
 
-  // Settings shows live / demo / missing credential distinctions
   await page.goto("/settings");
   await expect(page.getByText("Needs credentials").first()).toBeVisible();
   await expect(page.getByText("Not implemented").first()).toBeVisible();

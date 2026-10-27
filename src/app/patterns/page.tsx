@@ -61,7 +61,7 @@ export default async function PatternsPage() {
                 </div>
                 <div className="grid sm:grid-cols-2 gap-4 text-sm">
                   <div>
-                    <div className="label">Shared verified evidence</div>
+                    <div className="label">Shared profile evidence</div>
                     {g.sharedEvidence.length ? (
                       <ul className="space-y-1 text-xs">
                         {g.sharedEvidence.map(([s, n]) => (
@@ -74,7 +74,7 @@ export default async function PatternsPage() {
                         ))}
                       </ul>
                     ) : (
-                      <p className="text-xs text-warn">No verified observations cited across this group.</p>
+                      <p className="text-xs text-warn">No profile facts cited across this group.</p>
                     )}
                     <div className="label mt-3">Common assumptions</div>
                     <ul className="space-y-1 text-xs text-ink-muted">

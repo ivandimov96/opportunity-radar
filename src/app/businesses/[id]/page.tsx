@@ -6,12 +6,13 @@ import { Badge, Callout, Card, EmptyState, Icon, KeyValue, PageHeader, ScoreRing
 import { AutoRefresh } from "@/components/auto-refresh";
 import { OutreachEditor, type ClaimView } from "@/components/outreach-editor";
 import { OPPORTUNITY_CATEGORIES, getPlaybook, type OpportunityCategory } from "@/lib/industries";
+import { FACT_FIELDS, FACT_GROUPS, factLabel, factValueLabel } from "@/lib/profile/fields";
 import { PIPELINE_STAGES, VALIDATION_SIGNALS, stageLabel } from "@/lib/pipeline/stages";
 import { deriveWorkflow, defaultTabFor } from "@/lib/workflow";
 import { priorityScore } from "@/lib/scoring/score";
-import { addNoteAction, addValidationSignalAction, analyzeBusinessAction, generateDraftAction, researchBusinessAction, setNextActionAction, updateDraftAction, updateStageAction, updateWebsiteAction } from "@/app/actions";
+import { addNoteAction, addValidationSignalAction, generateDraftAction, investigateAction, setNextActionAction, updateDraftAction, updateStageAction, updateWebsiteAction } from "@/app/actions";
 
-const TABS = ["overview", "findings", "opportunities", "outreach", "activity", "pages"] as const;
+const TABS = ["profile", "opportunities", "outreach", "activity", "pages"] as const;
 type Tab = (typeof TABS)[number];
 
 export default async function BusinessPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ tab?: string }> }) {
@@ -21,34 +22,25 @@ export default async function BusinessPage({ params, searchParams }: { params: P
   if (!d) notFound();
   const { business: b } = d;
   const cfg = getConfig();
-  const busy = d.activeJobs.length > 0;
-  const verified = d.observations.filter((o) => o.kind === "verified");
-  const unknowns = d.observations.filter((o) => o.kind === "unknown");
-  const obsById = new Map(d.observations.map((o) => [o.id, o]));
-  const wf = deriveWorkflow({ business: b, stage: d.prospect?.stage ?? "discovered", opportunityCount: d.opportunities.length, draftCount: d.drafts.length, busy });
+  const busy = d.activeJobs.length > 0 || b.status === "queued" || b.status === "investigating";
+  const wf = deriveWorkflow({ business: b, stage: d.prospect?.stage ?? "lead", opportunityCount: d.opportunities.length, draftCount: d.drafts.length, busy });
   const tab: Tab = (TABS as readonly string[]).includes(sp.tab ?? "") ? (sp.tab as Tab) : (defaultTabFor(wf.next.kind) as Tab);
-  const counts: Record<Tab, number | null> = { overview: null, findings: d.observations.length, opportunities: d.opportunities.length, outreach: d.drafts.length, activity: d.activities.length, pages: d.pages.length };
+  const verified = d.facts.filter((f) => f.status === "verified");
+  const gaps = d.facts.filter((f) => f.status === "not_found");
+  const factByKey = new Map(d.facts.map((f) => [f.key, f]));
+  const counts: Record<Tab, number | null> = { profile: d.facts.length, opportunities: d.opportunities.length, outreach: d.drafts.length, activity: d.activities.length, pages: d.pages.length };
   const best = d.opportunities[0];
   const tabHref = (t: Tab) => `/businesses/${b.id}?tab=${t}`;
 
   const PrimaryAction = () => {
     switch (wf.next.kind) {
-      case "research":
-      case "retry_research":
+      case "investigate":
+      case "retry":
         return (
-          <form action={researchBusinessAction}>
+          <form action={investigateAction}>
             <input type="hidden" name="businessId" value={b.id} />
             <button className="btn btn-primary">
-              <Icon name="globe" /> {wf.next.kind === "retry_research" ? "Retry research" : "Research website"}
-            </button>
-          </form>
-        );
-      case "analyze":
-        return (
-          <form action={analyzeBusinessAction}>
-            <input type="hidden" name="businessId" value={b.id} />
-            <button className="btn btn-primary">
-              <Icon name="sparkles" /> Analyze opportunities
+              <Icon name="sparkles" /> {wf.next.kind === "retry" ? "Retry investigation" : "Investigate"}
             </button>
           </form>
         );
@@ -105,31 +97,15 @@ export default async function BusinessPage({ params, searchParams }: { params: P
         }
         actions={
           <>
-            <AutoRefresh active={busy} label={d.activeJobs[0]?.progress?.message ?? d.activeJobs[0]?.type.replace(/_/g, " ")} />
+            <AutoRefresh active={busy} label={b.statusMessage ?? "Investigating"} />
             {!busy && <PrimaryAction />}
-            {!busy && !b.isDemo && (
-              <details className="relative">
-                <summary className="btn btn-ghost">
-                  More <Icon name="chevronDown" className="w-3.5 h-3.5" />
-                </summary>
-                <div className="absolute right-0 mt-1 w-56 surface p-1 z-20 shadow-md">
-                  {b.website && (
-                    <form action={researchBusinessAction}>
-                      <input type="hidden" name="businessId" value={b.id} />
-                      <button className="w-full text-left text-sm px-3 py-2 rounded-md hover:bg-surface-2">Re-research website</button>
-                    </form>
-                  )}
-                  {verified.length > 0 && cfg.ai.enabled && (
-                    <form action={analyzeBusinessAction}>
-                      <input type="hidden" name="businessId" value={b.id} />
-                      <button className="w-full text-left text-sm px-3 py-2 rounded-md hover:bg-surface-2">Re-run analysis</button>
-                    </form>
-                  )}
-                  <Link href={tabHref("pages")} className="block text-sm px-3 py-2 rounded-md hover:bg-surface-2 hover:no-underline text-ink">
-                    Fetched pages
-                  </Link>
-                </div>
-              </details>
+            {!busy && !b.isDemo && b.website && b.status === "profiled" && (
+              <form action={investigateAction}>
+                <input type="hidden" name="businessId" value={b.id} />
+                <button className="btn btn-ghost" title="Fetch the website again and rebuild the profile">
+                  <Icon name="refresh" /> Re-investigate
+                </button>
+              </form>
             )}
           </>
         }
@@ -149,43 +125,20 @@ export default async function BusinessPage({ params, searchParams }: { params: P
         </div>
       </div>
 
-      {d.failedJobs.length > 0 && !busy && wf.next.kind !== "retry_research" && (
+      {(wf.next.kind === "retry" || wf.next.kind === "no_website") && !b.isDemo && (
         <div className="mb-4">
-          <Callout tone="bad" title={`Last ${d.failedJobs[0].type.replace(/_/g, " ")} failed`}>{d.failedJobs[0].error}</Callout>
-        </div>
-      )}
-      {wf.next.kind === "retry_research" && d.failedJobs[0] && (
-        <div className="mb-4">
-          <Callout tone="warn" title="Research failed">
-            {d.failedJobs[0].error}
+          <Callout tone="warn" title={wf.next.kind === "retry" ? `Investigation failed: ${b.statusMessage ?? "unknown error"}` : "No website on record"}>
             <form action={updateWebsiteAction} className="mt-2 flex flex-wrap gap-2 items-center">
               <input type="hidden" name="businessId" value={b.id} />
-              <input className="input max-w-sm" name="website" defaultValue={b.website ?? ""} placeholder="https://correct-website.com" />
-              <label className="text-xs flex items-center gap-1">
-                <input type="checkbox" name="research" defaultChecked /> research after saving
-              </label>
-              <button className="btn btn-sm">Save website</button>
-            </form>
-          </Callout>
-        </div>
-      )}
-      {wf.next.kind === "no_website" && !b.isDemo && (
-        <div className="mb-4">
-          <Callout tone="warn" title="No website on record">
-            <form action={updateWebsiteAction} className="mt-2 flex flex-wrap gap-2 items-center">
-              <input type="hidden" name="businessId" value={b.id} />
-              <input className="input max-w-sm" name="website" placeholder="https://their-website.com" />
-              <label className="text-xs flex items-center gap-1">
-                <input type="checkbox" name="research" defaultChecked /> research after saving
-              </label>
-              <button className="btn btn-sm">Add website</button>
+              <input className="input max-w-sm" name="website" defaultValue={b.website ?? ""} placeholder="https://their-website.com" />
+              <button className="btn btn-sm">Save website &amp; investigate</button>
             </form>
           </Callout>
         </div>
       )}
       {b.isDemo && (
         <div className="mb-4">
-          <Callout tone="demo" title="Synthetic demo record">Findings, opportunities and drafts were seeded to illustrate the product. Live research is disabled here.</Callout>
+          <Callout tone="demo" title="Synthetic demo record">Profile, opportunities and drafts were seeded to illustrate the product. Live investigation is disabled here.</Callout>
         </div>
       )}
 
@@ -193,256 +146,228 @@ export default async function BusinessPage({ params, searchParams }: { params: P
 
       <div className="grid lg:grid-cols-[1fr_300px] gap-5 items-start">
         <div className="min-w-0 space-y-5">
-          {tab === "overview" && (
+          {tab === "profile" && (
             <>
-              <Card title="What this business does" description={d.analysis ? `From the analysis · ${fmtRelative(d.analysis.createdAt)}` : undefined}>
-                {d.analysis?.companySummary ? (
-                  <p className="text-sm leading-relaxed">{d.analysis.companySummary}</p>
-                ) : verified.length ? (
-                  <EmptyState compact icon="sparkles" title="Findings are ready; no summary yet" description={cfg.ai.enabled ? "Run the analysis to get a summary and opportunity hypotheses." : "Analysis needs an Anthropic API key. Review the verified findings meanwhile."} action={<Link href={tabHref("findings")} className="btn btn-sm">See {verified.length} findings</Link>} />
+              <Card title="What this business does" description={d.latest ? `Investigated ${fmtRelative(d.latest.finishedAt ?? d.latest.startedAt)} · ${d.latest.pagesFetched} pages · ${verified.length} verified facts${d.latest.durationMs ? ` · ${(d.latest.durationMs / 1000).toFixed(1)}s` : ""}` : undefined}>
+                {b.summary ? (
+                  <p className="text-sm leading-relaxed">{b.summary}</p>
+                ) : d.facts.length ? (
+                  <p className="text-sm text-ink-muted">{cfg.ai.enabled ? "No summary could be verified from the site." : "Summary needs the AI step (ANTHROPIC_API_KEY). Detected facts are below."}</p>
                 ) : (
-                  <EmptyState compact icon="globe" title="Not researched yet" description={b.website ? "Research fetches the public website and records only what can be verified." : "No website is known; nothing can be fetched."} />
+                  <EmptyState compact icon="sparkles" title="Not investigated yet" description={b.website ? "Investigate to fetch the website, build the profile and analyze opportunities in one step." : "No website is known; nothing can be fetched."} />
                 )}
-                {d.analysis?.noCompellingOpportunity && (
+                {b.verdict === "no_opportunity" && d.latest?.verdictReason && (
                   <div className="mt-4">
-                    <Callout tone="warn" title="Insufficient evidence of a commercially compelling software opportunity">{d.analysis.noOpportunityReason}</Callout>
+                    <Callout tone="warn" title="No compelling software opportunity">{d.latest.verdictReason}</Callout>
                   </div>
                 )}
-              </Card>
-              {d.analysis && (
-                <div className="grid md:grid-cols-2 gap-5">
-                  <Card title="Documented workflows" description="Each cites verified observations.">
-                    {(d.analysis.documentedWorkflows ?? []).length ? (
-                      <ul className="space-y-2 text-sm">
-                        {d.analysis.documentedWorkflows!.map((w, i) => (
-                          <li key={i} className="flex items-start gap-2">
-                            <Icon name="check" className="w-4 h-4 text-ok mt-0.5" />
-                            <span>
-                              {w.name} <span className="text-xs text-ink-faint">· {w.observationIds.length} obs.</span>
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-ink-faint">None documented.</p>
-                    )}
-                  </Card>
-                  <Card title="Existing tools verified" description="Considered before proposing custom work.">
-                    {(d.analysis.existingTools ?? []).length ? (
-                      <div className="flex flex-wrap gap-1.5">
-                        {d.analysis.existingTools!.map((t) => (
-                          <Badge key={t} tone="info">
-                            {t}
-                          </Badge>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="text-sm text-ink-faint">No third-party tools detected on the website.</p>
-                    )}
-                    {(d.analysis.industryWorkflows ?? []).length ? <p className="text-xs text-ink-faint mt-3">Industry workflows considered: {d.analysis.industryWorkflows!.join(" · ")}</p> : null}
-                  </Card>
-                </div>
-              )}
-              {best && (
-                <Card title="Top opportunity" actions={<Link href={tabHref("opportunities")} className="btn btn-sm btn-ghost">All {d.opportunities.length}</Link>}>
-                  <div className="flex gap-4 items-start">
-                    <ScoreRing value={priorityScore(best.attractivenessScore, best.confidenceScore)} label="Priority" />
-                    <div className="min-w-0 flex-1">
-                      <div className="font-medium">{best.title}</div>
-                      <div className="text-xs text-ink-faint mb-1">{OPPORTUNITY_CATEGORIES[best.category as OpportunityCategory] ?? best.category}</div>
-                      <p className="text-sm text-ink-muted">{best.problemHypothesis}</p>
-                    </div>
+                {d.latest?.workflows?.length ? (
+                  <div className="mt-4">
+                    <div className="label">Workflows documented on the site</div>
+                    <ul className="flex flex-wrap gap-1.5">
+                      {d.latest.workflows.map((w, i) => (
+                        <li key={i}>
+                          <Badge tone="info">{w.name}</Badge>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
+                ) : null}
+              </Card>
+              {d.facts.length > 0 && (
+                <Card title="Profile" description="Every field is verified with a quote and source, marked not found after checking the site, or unknown." padded={false}>
+                  {FACT_GROUPS.map((g) => {
+                    const fields = FACT_FIELDS.filter((f) => f.group === g.key && f.key !== "summary");
+                    const rows = fields.map((f) => ({ field: f, fact: factByKey.get(f.key) })).filter((r) => r.fact);
+                    if (!rows.length) return null;
+                    return (
+                      <div key={g.key} className="px-5 py-4 border-b border-line last:border-b-0">
+                        <div className="label mb-2">{g.label}</div>
+                        <dl className="divide-y divide-line">
+                          {rows.map(({ field, fact }) => (
+                            <div key={field.key} className="grid md:grid-cols-[200px_1fr] gap-x-4 gap-y-1 py-2 text-sm">
+                              <dt className="text-ink-muted flex items-center gap-1.5">
+                                {fact!.status === "verified" ? <Icon name="check" className="w-3.5 h-3.5 text-ok" /> : <Icon name="minus" className="w-3.5 h-3.5 text-warn" />}
+                                {field.label}
+                              </dt>
+                              <dd className="min-w-0">
+                                {fact!.status === "verified" ? (
+                                  <>
+                                    <span className="font-medium">{factValueLabel(fact!.value)}</span>
+                                    {(fact!.evidenceQuote || fact!.sourceUrl) && (
+                                      <div className="text-xs text-ink-muted mt-0.5">
+                                        {fact!.evidenceQuote && fact!.evidenceQuote !== fact!.value && <q className="italic">{fact!.evidenceQuote}</q>}{" "}
+                                        {fact!.sourceUrl && (
+                                          <a href={fact!.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 whitespace-nowrap">
+                                            source <Icon name="external" className="w-3 h-3" />
+                                          </a>
+                                        )}
+                                        <Badge className="ml-1" tone={fact!.method === "demo" ? "demo" : fact!.method === "ai" ? "accent" : "neutral"}>{fact!.method === "detected" ? "detected" : fact!.method === "ai" ? "AI · quote verified" : fact!.method}</Badge>
+                                      </div>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="text-warn">Not found on the site{fact!.evidenceQuote ? <span className="text-ink-faint"> · {fact!.evidenceQuote}</span> : null}</span>
+                                )}
+                              </dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </div>
+                    );
+                  })}
                 </Card>
               )}
-            </>
-          )}
-
-          {tab === "findings" && (
-            <>
-              <Card title={`Verified observations · ${verified.length}`} description="Facts backed by a source URL and an evidence quote. AI-extracted items were accepted only when the quote appears verbatim on the page." padded={false}>
-                {verified.length === 0 ? (
-                  <EmptyState icon="globe" title="No verified observations" description={b.website ? "Research the website to collect source-backed findings." : "No website to research."} />
-                ) : (
-                  <div className="divide-y divide-line">
-                    {groupBy(verified, (o) => o.category).map(([cat, items]) => (
-                      <div key={cat} className="px-5 py-4">
-                        <div className="label mb-2">{cat}</div>
-                        <ul className="space-y-3">
-                          {items.map((o) => (
-                            <li key={o.id} id={`obs-${o.id}`} className="grid md:grid-cols-[1fr_1fr] gap-3 text-sm">
-                              <div className="flex items-start gap-2">
-                                <Icon name="check" className="w-4 h-4 text-ok mt-0.5 shrink-0" />
-                                <span>
-                                  {o.statement}{" "}
-                                  <Badge tone={o.method === "demo" ? "demo" : o.method === "ai" ? "accent" : "neutral"}>{o.method === "deterministic" ? "detected" : o.method === "ai" ? "AI · quote verified" : o.method}</Badge>
-                                </span>
-                              </div>
-                              <div className="text-xs text-ink-muted border-l-2 border-line pl-3">
-                                {o.evidenceQuote && <q className="block italic">{o.evidenceQuote}</q>}
-                                {o.sourceUrl && (
-                                  <a href={o.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 mt-1 max-w-full">
-                                    <span className="truncate">{o.sourceUrl.replace(/^https?:\/\//, "")}</span> <Icon name="external" className="w-3 h-3 shrink-0" />
-                                  </a>
-                                )}
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Card>
-              <Card title={`Unknowns · ${unknowns.length}`} description="Operationally relevant things the public information does not establish. They lower confidence, never attractiveness.">
-                {unknowns.length === 0 ? (
-                  <p className="text-sm text-ink-faint">None recorded{cfg.ai.enabled ? "." : " (AI extraction records these; needs an API key)."}</p>
-                ) : (
-                  <ul className="space-y-1.5 text-sm">
-                    {unknowns.map((o) => (
-                      <li key={o.id} className="flex items-start gap-2">
-                        <Icon name="info" className="w-4 h-4 text-warn mt-0.5 shrink-0" /> <span>{o.statement}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Card>
+              {gaps.length > 0 && (
+                <Callout tone="neutral" icon="info" title={`${gaps.length} thing${gaps.length === 1 ? "" : "s"} the site does not establish`}>
+                  {gaps.map((g) => factLabel(g.key)).join(" · ")}. Gaps lower confidence, never attractiveness, and are the starting point for opportunity hypotheses.
+                </Callout>
+              )}
             </>
           )}
 
           {tab === "opportunities" && (
             <>
-              {!d.analysis && <EmptyState icon="sparkles" title="No analysis yet" description={verified.length ? (cfg.ai.enabled ? "Run the analysis to turn findings into scored hypotheses." : "Analysis needs an Anthropic API key.") : "Research the website first."} />}
-              {d.analysis?.noCompellingOpportunity && <Callout tone="warn" title="Insufficient evidence of a commercially compelling software opportunity">{d.analysis.noOpportunityReason}</Callout>}
-              {d.analysis?.validationWarnings?.length ? <p className="text-xs text-ink-faint">Validator notes: {d.analysis.validationWarnings.join(" · ")}</p> : null}
-              {d.opportunities.map((o) => (
-                <Card
-                  key={o.id}
-                  title={
-                    <span className="flex items-center gap-2 flex-wrap">
-                      <span className="text-ink-faint">#{o.rank}</span> {o.title}
-                      <Badge>{OPPORTUNITY_CATEGORIES[o.category as OpportunityCategory] ?? o.category}</Badge>
-                      {o.supportingObservationIds.length === 0 && <Badge tone="warn">hypothesis only</Badge>}
-                    </span>
-                  }
-                  actions={
-                    <div className="flex gap-3">
-                      <ScoreRing value={o.attractivenessScore} label="Attractive" size={46} />
-                      <ScoreRing value={o.confidenceScore} label="Confidence" size={46} tone={o.confidenceScore < 40 ? "warn" : undefined} />
-                    </div>
-                  }
-                >
-                  <div className="grid md:grid-cols-2 gap-5 text-sm">
-                    <div className="space-y-3">
-                      <Field label="Problem hypothesis" hint="to validate">{o.problemHypothesis}</Field>
-                      <Field label="Proposed solution">{o.proposedSolution}</Field>
-                      <Field label="Why not an existing tool or process change" muted>{o.whyNotExistingTool}</Field>
-                      <Field label="Expected value" muted>{o.expectedValue}</Field>
-                      <Field label="Conversation angle" muted>{o.salesAngle}</Field>
-                      <div className="flex gap-2 flex-wrap">
-                        <Badge tone="info">effort: {o.implementationEffort}</Badge>
-                        <Badge tone="info">reusability: {o.reusability}</Badge>
+              {b.status !== "profiled" && <EmptyState icon="sparkles" title="No analysis yet" description={b.website ? "Investigate the business first." : "No website to investigate."} />}
+              {b.verdict === "needs_ai" && <Callout tone="warn" title="Opportunity analysis needs an Anthropic API key">The profile has detected facts; the AI step produces hypotheses, scores and drafts.</Callout>}
+              {b.verdict === "no_opportunity" && <Callout tone="warn" title="No compelling software opportunity">{d.latest?.verdictReason}</Callout>}
+              {d.latest?.warnings?.length ? <p className="text-xs text-ink-faint">Validator notes: {d.latest.warnings.join(" · ")}</p> : null}
+              {d.opportunities.map((o) => {
+                const supportVerified = o.supportingFactKeys.filter((k) => factByKey.get(k)?.status === "verified");
+                const supportGaps = o.supportingFactKeys.filter((k) => factByKey.get(k)?.status === "not_found");
+                return (
+                  <Card
+                    key={o.id}
+                    title={
+                      <span className="flex items-center gap-2 flex-wrap">
+                        <span className="text-ink-faint">#{o.rank}</span> {o.title}
+                        <Badge>{OPPORTUNITY_CATEGORIES[o.category as OpportunityCategory] ?? o.category}</Badge>
+                        {supportVerified.length === 0 && <Badge tone="warn">hypothesis only</Badge>}
+                      </span>
+                    }
+                    actions={
+                      <div className="flex gap-3">
+                        <ScoreRing value={o.attractivenessScore} label="Attractive" size={46} />
+                        <ScoreRing value={o.confidenceScore} label="Confidence" size={46} tone={o.confidenceScore < 40 ? "warn" : undefined} />
                       </div>
-                    </div>
-                    <div className="space-y-3">
-                      <div>
-                        <div className="label">Supporting evidence · {o.supportingObservationIds.length}</div>
-                        {o.supportingObservationIds.length === 0 ? (
-                          <p className="text-xs text-warn">No verified observation supports this hypothesis. Confidence is capped.</p>
-                        ) : (
-                          <ul className="space-y-1.5">
-                            {o.supportingObservationIds.map((oid) => {
-                              const ob = obsById.get(oid);
-                              return (
-                                <li key={oid} className="flex items-start gap-2 text-xs">
-                                  <Icon name="check" className="w-3.5 h-3.5 text-ok mt-0.5 shrink-0" />
-                                  <span>
-                                    {ob?.statement ?? <span className="text-ink-faint">observation removed</span>}{" "}
-                                    {ob?.sourceUrl && (
-                                      <a href={ob.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5">
-                                        source <Icon name="external" className="w-3 h-3" />
-                                      </a>
-                                    )}
-                                  </span>
-                                </li>
-                              );
-                            })}
-                          </ul>
-                        )}
-                      </div>
-                      <ListField label="Assumptions to validate" items={o.assumptions} />
-                      <ListField label="Questions for the business" items={o.validationQuestions} />
-                      <ListField label="Risks" items={o.risks} />
-                    </div>
-                  </div>
-                  <details className="mt-4 group">
-                    <summary className="text-xs text-ink-muted inline-flex items-center gap-1 hover:text-ink">
-                      <Icon name="chevronDown" className="w-3.5 h-3.5 group-open:rotate-180 transition-transform" /> Why these scores
-                    </summary>
-                    <div className="grid md:grid-cols-2 gap-4 mt-3">
-                      {(["attractiveness", "confidence"] as const).map((k) => (
-                        <div key={k} className="rounded-[var(--radius-sm)] border border-line overflow-hidden">
-                          <table className="table text-xs">
-                            <thead>
-                              <tr>
-                                <th>{k}</th>
-                                <th className="text-right">w</th>
-                                <th className="text-right">score</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {o.scoreBreakdown[k].map((f) => (
-                                <tr key={f.factor}>
-                                  <td>
-                                    {f.factor}
-                                    <div className="text-ink-faint">{f.explanation}</div>
-                                  </td>
-                                  <td className="text-right tabular-nums">{f.weight}</td>
-                                  <td className="text-right tabular-nums font-medium">{f.score}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
+                    }
+                  >
+                    <div className="grid md:grid-cols-2 gap-5 text-sm">
+                      <div className="space-y-3">
+                        <Field label="Problem hypothesis" hint="to validate">{o.problemHypothesis}</Field>
+                        <Field label="Proposed solution">{o.proposedSolution}</Field>
+                        <Field label="Why not an existing tool or process change" muted>{o.whyNotExistingTool}</Field>
+                        <Field label="Expected value" muted>{o.expectedValue}</Field>
+                        <Field label="Conversation angle" muted>{o.salesAngle}</Field>
+                        <div className="flex gap-2 flex-wrap">
+                          <Badge tone="info">effort: {o.implementationEffort}</Badge>
+                          <Badge tone="info">reusability: {o.reusability}</Badge>
                         </div>
-                      ))}
+                      </div>
+                      <div className="space-y-3">
+                        <div>
+                          <div className="label">Based on</div>
+                          {o.supportingFactKeys.length === 0 ? (
+                            <p className="text-xs text-warn">No profile fact cited. Confidence is capped.</p>
+                          ) : (
+                            <ul className="space-y-1 text-xs">
+                              {o.supportingFactKeys.map((k) => {
+                                const f = factByKey.get(k);
+                                return (
+                                  <li key={k} className="flex items-start gap-1.5">
+                                    <Icon name={f?.status === "verified" ? "check" : "minus"} className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${f?.status === "verified" ? "text-ok" : "text-warn"}`} />
+                                    <span>
+                                      <span className="font-medium">{factLabel(k)}</span>: {f ? (f.status === "verified" ? factValueLabel(f.value) : "not found on the site") : "no longer established"}
+                                      {f?.sourceUrl && (
+                                        <>
+                                          {" "}
+                                          <a href={f.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5">
+                                            source <Icon name="external" className="w-3 h-3" />
+                                          </a>
+                                        </>
+                                      )}
+                                    </span>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                          )}
+                          {supportGaps.length > 0 && supportVerified.length === 0 && <p className="text-[11px] text-ink-faint mt-1">Supported only by gaps: things the site does not show.</p>}
+                        </div>
+                        <ListField label="Assumptions to validate" items={o.assumptions} />
+                        <ListField label="Questions for the business" items={o.validationQuestions} />
+                        <ListField label="Risks" items={o.risks} />
+                      </div>
                     </div>
-                    {o.scoreBreakdown.notes.length > 0 && <p className="text-xs text-warn mt-2">{o.scoreBreakdown.notes.join(" ")}</p>}
-                  </details>
-                  {!b.isDemo && (
-                    <form action={generateDraftAction} className="mt-4 pt-4 border-t border-line flex flex-wrap items-end gap-2">
-                      <input type="hidden" name="businessId" value={b.id} />
-                      <input type="hidden" name="opportunityId" value={o.id} />
-                      <div>
-                        <label className="label">Style</label>
-                        <select className="select" name="style" defaultValue="concise">
-                          <option value="concise">Concise</option>
-                          <option value="consultative">Consultative</option>
-                          <option value="casual">Casual</option>
-                        </select>
+                    <details className="mt-4 group">
+                      <summary className="text-xs text-ink-muted inline-flex items-center gap-1 hover:text-ink">
+                        <Icon name="chevronDown" className="w-3.5 h-3.5 group-open:rotate-180 transition-transform" /> Why these scores
+                      </summary>
+                      <div className="grid md:grid-cols-2 gap-4 mt-3">
+                        {(["attractiveness", "confidence"] as const).map((k) => (
+                          <div key={k} className="rounded-[var(--radius-sm)] border border-line overflow-hidden">
+                            <table className="table text-xs">
+                              <thead>
+                                <tr>
+                                  <th>{k}</th>
+                                  <th className="text-right">w</th>
+                                  <th className="text-right">score</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {o.scoreBreakdown[k].map((f) => (
+                                  <tr key={f.factor}>
+                                    <td>
+                                      {f.factor}
+                                      <div className="text-ink-faint">{f.explanation}</div>
+                                    </td>
+                                    <td className="text-right tabular-nums">{f.weight}</td>
+                                    <td className="text-right tabular-nums font-medium">{f.score}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        ))}
                       </div>
-                      <div>
-                        <label className="label">Sender name</label>
-                        <input className="input" name="senderName" placeholder="optional" />
-                      </div>
-                      <button className="btn btn-primary" disabled={busy || !cfg.ai.enabled} title={!cfg.ai.enabled ? "Requires ANTHROPIC_API_KEY" : ""}>
-                        <Icon name="mail" /> Draft outreach
-                      </button>
-                    </form>
-                  )}
-                </Card>
-              ))}
+                      {o.scoreBreakdown.notes.length > 0 && <p className="text-xs text-warn mt-2">{o.scoreBreakdown.notes.join(" ")}</p>}
+                    </details>
+                    {!b.isDemo && (
+                      <form action={generateDraftAction} className="mt-4 pt-4 border-t border-line flex flex-wrap items-end gap-2">
+                        <input type="hidden" name="businessId" value={b.id} />
+                        <input type="hidden" name="opportunityId" value={o.id} />
+                        <div>
+                          <label className="label">Style</label>
+                          <select className="select" name="style" defaultValue="concise">
+                            <option value="concise">Concise</option>
+                            <option value="consultative">Consultative</option>
+                            <option value="casual">Casual</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="label">Sender name</label>
+                          <input className="input" name="senderName" placeholder="optional" />
+                        </div>
+                        <button className="btn btn-primary" disabled={busy || !cfg.ai.enabled} title={!cfg.ai.enabled ? "Requires ANTHROPIC_API_KEY" : ""}>
+                          <Icon name="mail" /> Draft outreach
+                        </button>
+                      </form>
+                    )}
+                  </Card>
+                );
+              })}
             </>
           )}
 
           {tab === "outreach" && (
             <>
               <Callout tone="neutral" icon="shield" title="Nothing is sent automatically.">
-                Review the draft, approve it, then send it from your own email. Highlighted phrases show which claims are backed by verified observations.
+                Review the draft, approve it, then send it from your own email. Highlighted phrases show which claims are backed by profile facts.
               </Callout>
-              {d.drafts.length === 0 && <EmptyState icon="mail" title="No drafts yet" description={d.opportunities.length ? "Generate one from an opportunity." : "Analyze the business first to get an opportunity to write about."} action={d.opportunities.length ? <Link href={tabHref("opportunities")} className="btn btn-primary">Go to opportunities</Link> : undefined} />}
+              {d.drafts.length === 0 && <EmptyState icon="mail" title="No drafts yet" description={d.opportunities.length ? "Generate one from an opportunity." : "Investigate the business first to get an opportunity to write about."} action={d.opportunities.length ? <Link href={tabHref("opportunities")} className="btn btn-primary">Go to opportunities</Link> : undefined} />}
               {d.drafts.map((dr) => {
                 const opp = d.opportunities.find((o) => o.id === dr.opportunityId);
-                const claims: ClaimView[] = dr.claims.map((c) => ({ text: c.text, supported: c.observationIds.length > 0, evidence: c.observationIds.map((oid) => ({ statement: obsById.get(oid)?.statement ?? "observation removed", sourceUrl: obsById.get(oid)?.sourceUrl ?? null })) }));
+                const claims: ClaimView[] = dr.claims.map((c) => ({ text: c.text, supported: c.factKeys.length > 0, evidence: c.factKeys.map((k) => ({ statement: `${factLabel(k)}: ${factByKey.get(k)?.status === "verified" ? factValueLabel(factByKey.get(k)?.value) : "not found on the site"}`, sourceUrl: factByKey.get(k)?.sourceUrl ?? null })) }));
                 return (
                   <Card
                     key={dr.id}
@@ -512,7 +437,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
           )}
 
           {tab === "pages" && (
-            <Card title="Fetched pages" description={d.latestRun ? `Latest research run · ${fmtDate(d.latestRun.startedAt)} · ${d.latestRun.pagesFetched} fetched, ${d.latestRun.pagesFailed} failed` : undefined} padded={false}>
+            <Card title="Fetched pages" description={d.latest ? `Latest investigation · ${fmtDate(d.latest.startedAt)} · ${d.latest.pagesFetched} fetched, ${d.latest.pagesFailed} failed${d.latest.model ? ` · model ${d.latest.model} · $${d.latest.costUsd.toFixed(3)}` : ""}` : undefined} padded={false}>
               {d.pages.length === 0 ? (
                 <EmptyState compact icon="file" title="No pages fetched" />
               ) : (
@@ -546,17 +471,16 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                   </table>
                 </div>
               )}
-              {d.latestRun?.notes?.length ? <p className="text-xs text-ink-faint px-5 py-3 border-t border-line">{d.latestRun.notes.join(" · ")}</p> : null}
+              {d.latest?.notes?.length ? <p className="text-xs text-ink-faint px-5 py-3 border-t border-line">{d.latest.notes.join(" · ")}</p> : null}
             </Card>
           )}
         </div>
 
-        {/* ------------------------------------------------------- side rail */}
         <aside className="space-y-4 lg:sticky lg:top-6 min-w-0">
           <Card title="Contact">
             <KeyValue
               rows={[
-                { k: "Email", v: b.email ? <a href={`mailto:${b.email}`}>{b.email}</a> : <span className="text-warn">not verified</span> },
+                { k: "Email", v: b.email ? <a href={`mailto:${b.email}`}>{b.email}</a> : <span className="text-warn">not found</span> },
                 { k: "Phone", v: b.phone ?? <span className="text-ink-faint">unknown</span> },
                 { k: "Website", v: b.website ? <a href={b.website} target="_blank" rel="noreferrer">{b.websiteDomain}</a> : <span className="text-ink-faint">none</span> },
               ]}
@@ -569,7 +493,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                 <ScoreRing value={best.confidenceScore} label="Confidence" size={52} tone={best.confidenceScore < 40 ? "warn" : undefined} />
                 <ScoreRing value={priorityScore(best.attractivenessScore, best.confidenceScore)} label="Priority" size={52} />
               </div>
-              <p className="text-[11px] text-ink-faint mt-3">Best of {d.opportunities.length} opportunit{d.opportunities.length === 1 ? "y" : "ies"}. Attractiveness is how good it would be if true; confidence is how much verified evidence supports it.</p>
+              <p className="text-[11px] text-ink-faint mt-3">Best of {d.opportunities.length}. Attractiveness is how good it would be if true; confidence is how much verified evidence supports it.</p>
             </Card>
           )}
           <Card title="Pipeline">
@@ -577,7 +501,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
               <input type="hidden" name="businessId" value={b.id} />
               <label className="label">Stage</label>
               <div className="flex gap-2">
-                <select className="select" name="stage" defaultValue={d.prospect?.stage ?? "discovered"}>
+                <select className="select" name="stage" defaultValue={d.prospect?.stage ?? "lead"}>
                   {PIPELINE_STAGES.map((s) => (
                     <option key={s.key} value={s.key}>
                       {s.label}
@@ -656,8 +580,8 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                 </li>
               ))}
             </ul>
-            <div className="text-[11px] text-ink-faint mt-3 pt-3 border-t border-line">
-              Research: <StatusPill status={b.researchStatus} /> · Analysis: <StatusPill status={b.analysisStatus} /> · Stage: {stageLabel(d.prospect?.stage ?? "discovered")}
+            <div className="text-[11px] text-ink-faint mt-3 pt-3 border-t border-line flex flex-wrap gap-1 items-center">
+              <StatusPill status={b.status} /> {b.statusMessage && <span>· {b.statusMessage}</span>} <span>· Stage: {stageLabel(d.prospect?.stage ?? "lead")}</span>
             </div>
           </Card>
         </aside>
@@ -691,14 +615,6 @@ function ListField({ label, items }: { label: string; items: string[] }) {
       )}
     </div>
   );
-}
-function groupBy<T>(items: T[], key: (t: T) => string): [string, T[]][] {
-  const m = new Map<string, T[]>();
-  for (const it of items) {
-    const k = key(it);
-    m.set(k, [...(m.get(k) ?? []), it]);
-  }
-  return [...m.entries()];
 }
 function toLocalInput(iso: string) {
   const d = new Date(iso);

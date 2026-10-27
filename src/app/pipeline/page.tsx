@@ -2,7 +2,6 @@ import Link from "next/link";
 import { pipelineBoard } from "@/lib/queries";
 import { Badge, Icon, PageHeader, ScoreRing, fmtRelative } from "@/components/ui";
 import { PIPELINE_STAGES } from "@/lib/pipeline/stages";
-import { priorityScore } from "@/lib/scoring/score";
 
 export default async function PipelinePage() {
   const board = await pipelineBoard();
@@ -28,7 +27,7 @@ export default async function PipelinePage() {
                         <div className="text-sm font-medium text-ink truncate">{r.business.name}</div>
                         <div className="text-[11px] text-ink-faint truncate">{[r.business.city, r.business.websiteDomain].filter(Boolean).join(" · ")}</div>
                       </div>
-                      {r.attractiveness != null && <ScoreRing value={priorityScore(r.attractiveness, r.confidence ?? 0)} size={32} />}
+                      {r.business.priority != null && <ScoreRing value={r.business.priority} size={32} />}
                     </div>
                     <div className="flex items-center gap-1.5 mt-2 flex-wrap">
                       {r.business.isDemo && <Badge tone="demo">demo</Badge>}

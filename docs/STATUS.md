@@ -49,6 +49,14 @@ was migrated to libSQL (Turso-compatible, async). Persistence on Vercel needs
 `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` (founder action; free tier). Until then the
 deployment is a labeled read-only demo.
 
+## Flow v2 (same day, fourth pass) — see D13
+Rebuilt the core flow after founder feedback: one "Investigate" action per business,
+a structured profile of comparable fields with evidence/not-found/unknown status, one
+status + one verdict per business, a 7-stage sales pipeline, faster parallel crawl
+(3–8 s per real business without AI), one model call for profile + opportunities.
+Tests rewritten (49 unit/integration, 3 browser journeys). Pushed to GitHub; NOT
+deployed to Vercel at the founder's request.
+
 ## What was actually tested (executed in this session)
 - `pnpm typecheck`: clean. `pnpm build`: succeeds.
 - `pnpm test`: 51 tests pass (8 files) — normalization, dedupe rules, SSRF guard

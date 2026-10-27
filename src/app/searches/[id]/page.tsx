@@ -6,8 +6,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { getPlaybook } from "@/lib/industries";
 import { stageLabel } from "@/lib/pipeline/stages";
 import { deriveWorkflow } from "@/lib/workflow";
-import { priorityScore } from "@/lib/scoring/score";
-import { rerunSearch, researchSearchResults } from "@/app/actions";
+import { investigateManyAction, rerunSearch } from "@/app/actions";
 
 export default async function SearchDetail({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -15,12 +14,12 @@ export default async function SearchDetail({ params }: { params: Promise<{ id: s
   if (!data) notFound();
   const { search, rows, job } = data;
   const discovering = search.status === "queued" || search.status === "running";
-  const processing = rows.filter((r) => ["queued", "running"].includes(r.business.researchStatus) || ["queued", "running"].includes(r.business.analysisStatus)).length;
+  const processing = rows.filter((r) => ["queued", "investigating"].includes(r.business.status)).length;
   const active = discovering || processing > 0;
-  const researchable = rows.filter((r) => r.business.website && !r.business.isDemo && r.business.researchStatus !== "done").length;
-  const researched = rows.filter((r) => r.business.researchStatus === "done").length;
-  const analyzed = rows.filter((r) => ["done", "insufficient_evidence"].includes(r.business.analysisStatus)).length;
-  const withOpps = rows.filter((r) => (r.oppCount ?? 0) > 0).length;
+  const investigable = rows.filter((r) => r.business.website && !r.business.isDemo && ["new", "failed"].includes(r.business.status)).length;
+  const investigated = rows.filter((r) => r.business.status === "profiled").length;
+  const withOpps = rows.filter((r) => r.business.verdict === "opportunity").length;
+  const noOpp = rows.filter((r) => r.business.verdict === "no_opportunity").length;
 
   return (
     <>
@@ -33,24 +32,23 @@ export default async function SearchDetail({ params }: { params: Promise<{ id: s
         }
         subtitle={
           <>
-            {getPlaybook(search.industry).label} · {[search.city, search.region, search.country].filter(Boolean).join(", ")} · up to {search.maxResults} · sources: {search.providers.join(", ")} · {fmtRelative(search.createdAt)}
+            {getPlaybook(search.industry).label} · {[search.city, search.region, search.country].filter(Boolean).join(", ")} · up to {search.maxResults} · {search.providers.join(", ")} · {fmtRelative(search.createdAt)}
           </>
         }
         actions={
           <>
-            <AutoRefresh active={active} label={discovering ? "Discovering" : `${processing} researching`} />
+            <AutoRefresh active={active} label={discovering ? "Discovering" : `Investigating ${processing}`} />
             <form action={rerunSearch}>
               <input type="hidden" name="searchId" value={search.id} />
               <button className="btn" disabled={active}>
-                <Icon name="refresh" /> Re-run
+                <Icon name="refresh" /> Re-run discovery
               </button>
             </form>
-            {researchable > 0 && (
-              <form action={researchSearchResults}>
+            {investigable > 0 && (
+              <form action={investigateManyAction}>
                 <input type="hidden" name="searchId" value={search.id} />
-                <input type="hidden" name="onlyUnresearched" value="on" />
                 <button className="btn btn-primary" disabled={active}>
-                  <Icon name="globe" /> Research {researchable} unresearched
+                  <Icon name="sparkles" /> Investigate {investigable} remaining
                 </button>
               </form>
             )}
@@ -77,12 +75,12 @@ export default async function SearchDetail({ params }: { params: Promise<{ id: s
           </div>
           <div className="text-xs text-ink-faint">{search.stats?.attribution.join(" · ")}</div>
         </div>
-        {discovering && <div className="relative h-1.5 rounded-full bg-surface-3 overflow-hidden mb-3 progress-indeterminate" />}
+        {active && <div className="relative h-1.5 rounded-full bg-surface-3 overflow-hidden mb-3 progress-indeterminate" />}
         <ol className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
             { label: "Found", n: rows.length, hint: search.stats ? `${search.stats.created} new · ${search.stats.merged} merged${search.stats.skippedNoWebsite ? ` · ${search.stats.skippedNoWebsite} skipped (no site)` : ""}` : "" },
-            { label: "Researched", n: researched, hint: `${rows.length - researched} remaining` },
-            { label: "Analyzed", n: analyzed, hint: `${withOpps} with opportunities` },
+            { label: "Investigated", n: investigated, hint: `${processing} in progress · ${investigable} remaining` },
+            { label: "With opportunity", n: withOpps, hint: `${noOpp} no opportunity` },
             { label: "Draft ready", n: rows.filter((r) => (r.draftCount ?? 0) > 0).length, hint: "outreach drafted" },
           ].map((s, i) => (
             <li key={s.label} className="flex items-start gap-3">
@@ -95,20 +93,9 @@ export default async function SearchDetail({ params }: { params: Promise<{ id: s
             </li>
           ))}
         </ol>
-        {Object.values(search.stats?.providerResults ?? {}).some((p) => p.error) && (
-          <ul className="mt-3 text-xs text-warn">
-            {Object.entries(search.stats?.providerResults ?? {})
-              .filter(([, v]) => v.error)
-              .map(([k, v]) => (
-                <li key={k}>
-                  {k}: {v.error}
-                </li>
-              ))}
-          </ul>
-        )}
       </div>
 
-      <Card title={`Businesses (${rows.length})`} padded={false}>
+      <Card title={`Businesses (${rows.length})`} description="Sorted by priority once investigated." padded={false}>
         {rows.length === 0 ? (
           <EmptyState icon="search" title={discovering ? "Discovering…" : "No businesses found"} description={discovering ? "Results appear here as providers respond." : "Try a broader area, another source, or import a CSV list."} action={!discovering && <Link href="/searches/new" className="btn">New search</Link>} />
         ) : (
@@ -116,52 +103,40 @@ export default async function SearchDetail({ params }: { params: Promise<{ id: s
             <table className="table">
               <thead>
                 <tr>
-                  <th className="w-10">#</th>
                   <th>Business</th>
-                  <th>Progress</th>
-                  <th>Contact</th>
+                  <th>Status</th>
+                  <th>Summary</th>
                   <th>Priority</th>
                   <th>Stage</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
-                  const wf = deriveWorkflow({ business: r.business, stage: r.stage ?? "discovered", opportunityCount: r.oppCount ?? 0, draftCount: r.draftCount ?? 0 });
+                  const wf = deriveWorkflow({ business: r.business, stage: r.stage ?? "lead", opportunityCount: r.oppCount ?? 0, draftCount: r.draftCount ?? 0 });
                   return (
                     <tr key={r.business.id}>
-                      <td className="text-ink-faint tabular-nums">{r.rank}</td>
                       <td>
                         <Link href={`/businesses/${r.business.id}`} className="row-link">
                           {r.business.name}
                         </Link>{" "}
                         {r.business.isDemo && <Badge tone="demo">demo</Badge>} {!r.wasNew && <Badge title="Matched a business from an earlier search">merged</Badge>}
-                        <div className="text-xs text-ink-faint truncate max-w-[320px]">
+                        <div className="text-xs text-ink-faint truncate max-w-[300px]">
                           {r.business.websiteDomain ?? (r.business.website ? "website" : "no website")}
-                          {r.business.street ? ` · ${r.business.street}` : ""}
+                          {r.business.email ? " · email" : r.business.phone ? " · phone" : ""}
                         </div>
                       </td>
                       <td>
                         <div className="flex items-center gap-2">
                           <Stepper steps={wf.steps} compact />
-                          <span className="text-xs text-ink-muted">{wf.next.title}</span>
+                          <StatusPill status={r.business.verdict ?? r.business.status} />
                         </div>
                       </td>
-                      <td className="text-xs">
-                        {r.business.email ? (
-                          <span className="inline-flex items-center gap-1 text-ink">
-                            <Icon name="mail" className="w-3.5 h-3.5 text-ink-faint" /> email
-                          </span>
-                        ) : r.business.phone ? (
-                          <span className="inline-flex items-center gap-1 text-ink-muted">
-                            <Icon name="phone" className="w-3.5 h-3.5 text-ink-faint" /> phone
-                          </span>
-                        ) : (
-                          <span className="text-ink-faint">none verified</span>
-                        )}
+                      <td className="max-w-[360px]">
+                        <div className="text-xs text-ink-muted line-clamp-2">{r.business.summary ?? r.business.statusMessage ?? wf.next.title}</div>
                       </td>
-                      <td>{r.attractiveness != null ? <ScoreRing value={priorityScore(r.attractiveness, r.confidence ?? 0)} size={36} /> : <span className="text-xs text-ink-faint">—</span>}</td>
+                      <td>{r.business.priority != null ? <ScoreRing value={r.business.priority} size={36} /> : <span className="text-xs text-ink-faint">—</span>}</td>
                       <td>
-                        <Badge tone="accent">{stageLabel(r.stage ?? "discovered")}</Badge>
+                        <Badge tone="accent">{stageLabel(r.stage ?? "lead")}</Badge>
                       </td>
                     </tr>
                   );

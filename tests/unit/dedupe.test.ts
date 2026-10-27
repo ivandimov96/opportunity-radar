@@ -54,6 +54,6 @@ describe("upsertCandidate deduplication", () => {
 
   it("never fabricates a website: businesses without one are marked no_website", async () => {
     await upsertCandidate(db, { ...base, website: null }, { industry: "auto_repair" });
-    expect((await db.select().from(businesses).all())[0].researchStatus).toBe("no_website");
+    expect((await db.select().from(businesses).all())[0].status).toBe("no_website");
   });
 });

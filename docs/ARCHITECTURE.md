@@ -33,46 +33,49 @@ src/instrumentation.ts  starts the embedded worker
 ## Data model (SQLite)
 - `searches` → `search_results` ↔ `businesses` ← `business_sources` (one business, many
   provider records; dedupe by provider id → website domain → phone → name+city).
-- `research_runs` → `pages` (fetched text + hash) and `observations`
-  (`kind` verified|unknown, `method` deterministic|ai|manual|demo, evidence quote,
-  source URL, page id).
-- `analyses` → `opportunities` (category taxonomy, hypothesis, solution, cited
-  observation ids, assumptions, validation questions, effort, reusability, risks,
-  AI ratings, attractiveness + confidence + breakdown).
-- `outreach_drafts` (style, body, claims→observation ids, warnings, status, edited flag).
+- `businesses` carries the single investigation state: `status` (new | queued |
+  investigating | profiled | failed | no_website), `verdict` (opportunity |
+  no_opportunity | needs_ai), `summary`, best scores and `priority`.
+- `investigations` → `pages` (fetched text) and `facts` (one row per profile field:
+  `status` verified|not_found|unknown, value, evidence quote, source URL, method
+  detected|ai|manual|demo).
+- `opportunities` (category taxonomy, hypothesis, solution, cited fact keys,
+  assumptions, validation questions, effort, reusability, risks, AI ratings,
+  attractiveness + confidence + breakdown).
+- `outreach_drafts` (style, body, claims→fact keys, warnings, status, edited flag).
 - `prospects` (stage, priority, next action), `activities`, `validation_signals`.
 - `jobs` (type, payload, idempotency key, attempts, backoff, progress), `ai_usage`,
   `geocode_cache`.
 
 ## Processing lifecycle
 1. **Discover** (`discover_search` job): each selected provider returns candidates →
-   normalize → upsert/dedupe → `search_results`; optional auto-research fan-out.
-   One failing provider does not fail the others.
-2. **Research** (`research_business`): crawl homepage + up to N prioritized internal
-   pages (services/booking/about/contact/pricing/fleet/financing/faq) → store pages →
-   deterministic detectors emit verified observations with evidence → (if AI enabled)
-   extraction stage emits observations that are **accepted only if the evidence quote is
-   found verbatim in the cited page**; unknowns stored separately. Previous research
-   observations are superseded.
-3. **Analyze** (`analyze_business`): observations + industry playbook → structured
-   analysis. Validator drops citations to unknown IDs, caps evidence strength for
-   unsupported opportunities, maps unknown categories to `other`, and records
-   `no_compelling_opportunity`. Scoring runs in code; results persist with breakdown.
-4. **Outreach** (`generate_outreach`): opportunity + observations + style → draft with
-   claims; validator flags unsupported claims, missing claim text, placeholders,
-   statistics, emails. Nothing is sent.
-5. **Pipeline**: stages auto-advance forward only (discovered → researched → qualified →
-   outreach_ready); operator sets later stages, notes, next actions, validation signals.
-6. **Patterns**: group opportunities by category × industry; show shared evidence,
-   common assumptions, effort mix, and real validation signals.
+   normalize → upsert/dedupe → `search_results`. With auto-investigate (default on)
+   every new business with a website is queued immediately.
+2. **Investigate** (`investigate_business` job, one per business): crawl the homepage
+   plus up to 4 key pages in parallel → deterministic detection fills precise profile
+   fields (tools from resource hosts, contact channels, booking method; explicit
+   `not_found` for tool fields that were checked) → if AI is enabled, ONE model call
+   returns the remaining profile facts (accepted only when the quote appears verbatim
+   in the cited page), documented workflows, up to 3 opportunity hypotheses citing
+   fact keys, and a verdict → scoring in code → business gets `status=profiled`,
+   `verdict` (opportunity | no_opportunity | needs_ai), summary, priority. Previous
+   facts/opportunities are replaced atomically.
+3. **Outreach** (`generate_outreach`): opportunity + profile facts + style → draft
+   whose claims map to fact keys; validator flags unsupported claims, placeholders,
+   statistics. Nothing is sent.
+4. **Pipeline**: `qualified` is set automatically when an opportunity is found;
+   contacted/in conversation/validated/won/lost are set by the operator (logging a call,
+   email or meeting marks the business contacted).
+5. **Patterns**: opportunities grouped by category × industry with the profile facts
+   they cite, common assumptions, effort mix, and real validation signals.
 
 ## AI design
-- Three narrow stages instead of one agent: cheaper, testable, and each has a
-  code-level validator. Prompts are stable strings (prompt-cached system blocks); all
+- Two model calls per business at most (investigate, outreach), each with a code-level
+  validator; no agent loop. Prompts are stable strings (prompt-cached system blocks); all
   volatile content goes in the user message inside `<website_content>` tags with an
   explicit untrusted-data notice.
-- Model/effort per stage via env (`AI_*_MODEL`, `AI_*_EFFORT`); default
-  `claude-opus-5-5` with low effort for extraction, high for analysis.
+- Model/effort per stage via env (`AI_INVESTIGATE_*`, `AI_OUTREACH_*`); default
+  `claude-opus-5-5`, medium effort for investigation.
 - Spend guard: every call records token usage and estimated cost; work stops at
   `AI_SPEND_LIMIT_USD`. `refusal` and `max_tokens` stop reasons are explicit errors.
 - Failure handling: AI errors mark the stage failed for that business only; the job

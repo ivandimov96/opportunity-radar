@@ -6,7 +6,7 @@ All settings are environment variables; see `.env.example`. None are required.
 | Variable | Purpose |
 |---|---|
 | `ANTHROPIC_API_KEY` | Enables AI stages. Without it: discovery + deterministic research only. |
-| `AI_*_MODEL`, `AI_*_EFFORT` | Model and effort per stage (extraction/analysis/outreach). |
+| `AI_INVESTIGATE_MODEL/EFFORT`, `AI_OUTREACH_MODEL/EFFORT` | Model and effort per stage. |
 | `AI_SPEND_LIMIT_USD` | Hard stop for AI work based on estimated cumulative spend. |
 | `GOOGLE_PLACES_API_KEY` | Enables the Google Places provider (review Google's terms first). |
 | `OVERPASS_ENDPOINTS` | Comma-separated Overpass endpoints tried in order. |

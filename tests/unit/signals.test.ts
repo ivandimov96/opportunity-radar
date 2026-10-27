@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { classifyLink, extractPage } from "@/lib/research/html";
-import { detectSignals } from "@/lib/research/signals";
+import { detectFacts } from "@/lib/research/detect";
 import { parseCsv, csvToCandidates } from "@/lib/discovery/csv";
 import { buildOverpassQuery, elementToCandidate } from "@/lib/discovery/osm";
 
@@ -28,22 +28,26 @@ describe("extractPage", () => {
   });
 });
 
-describe("detectSignals", () => {
-  it("produces verified observations with evidence for tools, cues and contacts", () => {
+describe("detectFacts", () => {
+  it("produces profile facts with evidence for tools, booking method, contacts, and explicit gaps", () => {
     const p = extractPage(html, "https://bartonauto.com/");
-    const obs = detectSignals(p, "https://bartonauto.com/", "home");
-    const statements = obs.map((o) => o.statement);
-    expect(statements).toContain("Website integrates Tawk.to chat (website chat widget)");
-    expect(statements).toContain("Website integrates Wix (website builder/CMS)");
-    expect(statements).toContain("Website asks customers to call to schedule service");
-    expect(statements).toContain("Website advertises free estimates or quotes");
-    expect(statements).toContain("Website mentions fleet or commercial accounts");
-    expect(statements).toContain("Website has a contact/request form");
-    expect(statements).toContain("Public email address listed: service@bartonauto.com");
-    for (const o of obs) {
-      expect(o.evidenceQuote.length).toBeGreaterThan(0);
-      expect(o.sourceUrl).toBe("https://bartonauto.com/");
-    }
+    const facts = detectFacts([{ content: p, url: "https://bartonauto.com/", kind: "home" }]);
+    const byKey = Object.fromEntries(facts.map((f) => [f.key, f]));
+    expect(byKey.chat_tool).toMatchObject({ status: "verified", value: "Tawk.to" });
+    expect(byKey.website_platform).toMatchObject({ status: "verified", value: "Wix" });
+    expect(byKey.booking_method).toMatchObject({ status: "verified", value: "mixed" }); // call to schedule + contact form
+    expect(byKey.booking_method.evidenceQuote).toContain("Call us today to schedule");
+    expect(byKey.contact_form).toMatchObject({ status: "verified", value: "yes" });
+    expect(byKey.email).toMatchObject({ status: "verified", value: "service@bartonauto.com" });
+    expect(byKey.phone).toMatchObject({ status: "verified", value: "5125550101" });
+    expect(byKey.booking_tool.status).toBe("not_found");
+    expect(byKey.review_tool.status).toBe("not_found");
+    for (const f of facts.filter((f) => f.status === "verified")) expect(f.sourceUrl).toBe("https://bartonauto.com/");
+  });
+  it("marks phone-only booking when there is no form or tool", () => {
+    const p = extractPage("<html><body><p>Call us today to schedule your visit.</p></body></html>", "https://x.example/");
+    const facts = detectFacts([{ content: p, url: "https://x.example/", kind: "home" }]);
+    expect(facts.find((f) => f.key === "booking_method")).toMatchObject({ value: "phone_only" });
   });
 });
 
@@ -56,7 +60,7 @@ describe("contact form heuristic & snippets", () => {
     expect(looksLikeContactForm({ fields: ["x1", "x2"], hasTextarea: false, action: null })).toBe(false);
   });
   it("snippets always contain the match and start on a boundary", async () => {
-    const { snippet } = await import("@/lib/research/signals");
+    const { snippet } = await import("@/lib/research/snippet");
     const text = "We are a family shop. Call us today to schedule your appointment and we will take care of you quickly and fairly.";
     const idx = text.indexOf("Call us today");
     const s = snippet(text, idx, "Call us today to schedule".length);

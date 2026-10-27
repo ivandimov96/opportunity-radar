@@ -22,25 +22,6 @@ CREATE TABLE `ai_usage` (
 	`created_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE `analyses` (
-	`id` text PRIMARY KEY NOT NULL,
-	`business_id` text NOT NULL,
-	`research_run_id` text,
-	`status` text DEFAULT 'done' NOT NULL,
-	`model` text,
-	`company_summary` text,
-	`documented_workflows` text,
-	`industry_workflows` text,
-	`existing_tools` text,
-	`no_compelling_opportunity` integer DEFAULT false NOT NULL,
-	`no_opportunity_reason` text,
-	`validation_warnings` text,
-	`created_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
-	FOREIGN KEY (`business_id`) REFERENCES `businesses`(`id`) ON UPDATE no action ON DELETE cascade,
-	FOREIGN KEY (`research_run_id`) REFERENCES `research_runs`(`id`) ON UPDATE no action ON DELETE set null
-);
---> statement-breakpoint
-CREATE INDEX `analyses_business_idx` ON `analyses` (`business_id`);--> statement-breakpoint
 CREATE TABLE `business_sources` (
 	`id` text PRIMARY KEY NOT NULL,
 	`business_id` text NOT NULL,
@@ -75,9 +56,14 @@ CREATE TABLE `businesses` (
 	`lat` real,
 	`lng` real,
 	`first_provider` text NOT NULL,
-	`research_status` text DEFAULT 'not_started' NOT NULL,
-	`analysis_status` text DEFAULT 'not_started' NOT NULL,
-	`last_researched_at` text,
+	`status` text DEFAULT 'new' NOT NULL,
+	`status_message` text,
+	`verdict` text,
+	`summary` text,
+	`best_attractiveness` integer,
+	`best_confidence` integer,
+	`priority` integer,
+	`investigated_at` text,
 	`is_demo` integer DEFAULT false NOT NULL,
 	`created_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
 	`updated_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL
@@ -85,13 +71,53 @@ CREATE TABLE `businesses` (
 --> statement-breakpoint
 CREATE INDEX `businesses_domain_idx` ON `businesses` (`website_domain`);--> statement-breakpoint
 CREATE INDEX `businesses_name_city_idx` ON `businesses` (`name_normalized`,`city`);--> statement-breakpoint
-CREATE INDEX `businesses_industry_idx` ON `businesses` (`industry`);--> statement-breakpoint
+CREATE INDEX `businesses_status_idx` ON `businesses` (`status`);--> statement-breakpoint
+CREATE INDEX `businesses_priority_idx` ON `businesses` (`priority`);--> statement-breakpoint
+CREATE TABLE `facts` (
+	`id` text PRIMARY KEY NOT NULL,
+	`business_id` text NOT NULL,
+	`investigation_id` text,
+	`key` text NOT NULL,
+	`status` text NOT NULL,
+	`value` text,
+	`evidence_quote` text,
+	`source_url` text,
+	`method` text NOT NULL,
+	`created_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
+	FOREIGN KEY (`business_id`) REFERENCES `businesses`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`investigation_id`) REFERENCES `investigations`(`id`) ON UPDATE no action ON DELETE set null
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `facts_business_key` ON `facts` (`business_id`,`key`);--> statement-breakpoint
 CREATE TABLE `geocode_cache` (
 	`key` text PRIMARY KEY NOT NULL,
 	`value` text NOT NULL,
 	`created_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE `investigations` (
+	`id` text PRIMARY KEY NOT NULL,
+	`business_id` text NOT NULL,
+	`status` text DEFAULT 'running' NOT NULL,
+	`started_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
+	`finished_at` text,
+	`duration_ms` integer,
+	`error` text,
+	`pages_fetched` integer DEFAULT 0 NOT NULL,
+	`pages_failed` integer DEFAULT 0 NOT NULL,
+	`facts_verified` integer DEFAULT 0 NOT NULL,
+	`facts_rejected` integer DEFAULT 0 NOT NULL,
+	`model` text,
+	`cost_usd` real DEFAULT 0 NOT NULL,
+	`workflows` text,
+	`verdict` text,
+	`verdict_reason` text,
+	`warnings` text,
+	`notes` text,
+	FOREIGN KEY (`business_id`) REFERENCES `businesses`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX `investigations_business_idx` ON `investigations` (`business_id`);--> statement-breakpoint
 CREATE TABLE `jobs` (
 	`id` text PRIMARY KEY NOT NULL,
 	`type` text NOT NULL,
@@ -111,28 +137,9 @@ CREATE TABLE `jobs` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `jobs_idempotency_idx` ON `jobs` (`idempotency_key`);--> statement-breakpoint
 CREATE INDEX `jobs_status_idx` ON `jobs` (`status`,`scheduled_at`);--> statement-breakpoint
-CREATE TABLE `observations` (
-	`id` text PRIMARY KEY NOT NULL,
-	`business_id` text NOT NULL,
-	`research_run_id` text,
-	`kind` text NOT NULL,
-	`category` text NOT NULL,
-	`statement` text NOT NULL,
-	`evidence_quote` text,
-	`source_url` text,
-	`page_id` text,
-	`method` text NOT NULL,
-	`confidence` real DEFAULT 1 NOT NULL,
-	`created_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
-	FOREIGN KEY (`business_id`) REFERENCES `businesses`(`id`) ON UPDATE no action ON DELETE cascade,
-	FOREIGN KEY (`research_run_id`) REFERENCES `research_runs`(`id`) ON UPDATE no action ON DELETE cascade,
-	FOREIGN KEY (`page_id`) REFERENCES `pages`(`id`) ON UPDATE no action ON DELETE set null
-);
---> statement-breakpoint
-CREATE INDEX `observations_business_idx` ON `observations` (`business_id`);--> statement-breakpoint
 CREATE TABLE `opportunities` (
 	`id` text PRIMARY KEY NOT NULL,
-	`analysis_id` text NOT NULL,
+	`investigation_id` text NOT NULL,
 	`business_id` text NOT NULL,
 	`category` text NOT NULL,
 	`title` text NOT NULL,
@@ -140,7 +147,7 @@ CREATE TABLE `opportunities` (
 	`proposed_solution` text NOT NULL,
 	`why_not_existing_tool` text,
 	`expected_value` text,
-	`supporting_observation_ids` text NOT NULL,
+	`supporting_fact_keys` text NOT NULL,
 	`assumptions` text NOT NULL,
 	`validation_questions` text NOT NULL,
 	`implementation_effort` text NOT NULL,
@@ -153,7 +160,7 @@ CREATE TABLE `opportunities` (
 	`score_breakdown` text NOT NULL,
 	`rank` integer DEFAULT 1 NOT NULL,
 	`created_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
-	FOREIGN KEY (`analysis_id`) REFERENCES `analyses`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`investigation_id`) REFERENCES `investigations`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`business_id`) REFERENCES `businesses`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
@@ -182,7 +189,7 @@ CREATE TABLE `outreach_drafts` (
 CREATE INDEX `outreach_business_idx` ON `outreach_drafts` (`business_id`);--> statement-breakpoint
 CREATE TABLE `pages` (
 	`id` text PRIMARY KEY NOT NULL,
-	`research_run_id` text NOT NULL,
+	`investigation_id` text NOT NULL,
 	`business_id` text NOT NULL,
 	`url` text NOT NULL,
 	`final_url` text,
@@ -190,18 +197,17 @@ CREATE TABLE `pages` (
 	`status_code` integer,
 	`title` text,
 	`text` text,
-	`text_hash` text,
 	`bytes` integer,
 	`error` text,
 	`fetched_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
-	FOREIGN KEY (`research_run_id`) REFERENCES `research_runs`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`investigation_id`) REFERENCES `investigations`(`id`) ON UPDATE no action ON DELETE cascade,
 	FOREIGN KEY (`business_id`) REFERENCES `businesses`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
 CREATE INDEX `pages_business_idx` ON `pages` (`business_id`);--> statement-breakpoint
 CREATE TABLE `prospects` (
 	`business_id` text PRIMARY KEY NOT NULL,
-	`stage` text DEFAULT 'discovered' NOT NULL,
+	`stage` text DEFAULT 'lead' NOT NULL,
 	`priority` text DEFAULT 'normal' NOT NULL,
 	`next_action` text,
 	`next_action_at` text,
@@ -209,22 +215,6 @@ CREATE TABLE `prospects` (
 	FOREIGN KEY (`business_id`) REFERENCES `businesses`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE TABLE `research_runs` (
-	`id` text PRIMARY KEY NOT NULL,
-	`business_id` text NOT NULL,
-	`status` text DEFAULT 'running' NOT NULL,
-	`started_at` text DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')) NOT NULL,
-	`finished_at` text,
-	`error` text,
-	`pages_fetched` integer DEFAULT 0 NOT NULL,
-	`pages_failed` integer DEFAULT 0 NOT NULL,
-	`ai_observations_accepted` integer DEFAULT 0 NOT NULL,
-	`ai_observations_rejected` integer DEFAULT 0 NOT NULL,
-	`notes` text,
-	FOREIGN KEY (`business_id`) REFERENCES `businesses`(`id`) ON UPDATE no action ON DELETE cascade
-);
---> statement-breakpoint
-CREATE INDEX `research_runs_business_idx` ON `research_runs` (`business_id`);--> statement-breakpoint
 CREATE TABLE `search_results` (
 	`search_id` text NOT NULL,
 	`business_id` text NOT NULL,
@@ -245,9 +235,9 @@ CREATE TABLE `searches` (
 	`city` text,
 	`keywords` text,
 	`max_results` integer DEFAULT 50 NOT NULL,
-	`require_website` integer DEFAULT false NOT NULL,
+	`require_website` integer DEFAULT true NOT NULL,
 	`providers` text NOT NULL,
-	`auto_research` integer DEFAULT false NOT NULL,
+	`auto_investigate` integer DEFAULT true NOT NULL,
 	`status` text DEFAULT 'queued' NOT NULL,
 	`stats` text,
 	`error` text,

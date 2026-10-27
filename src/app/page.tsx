@@ -23,7 +23,7 @@ export default async function Overview() {
         <div className="grid md:grid-cols-3 gap-4">
           {[
             { n: 1, icon: "search" as const, title: "Discover businesses", text: "Pick an industry and city. OpenStreetMap works without any credentials; CSV import brings your own list.", cta: <Link href="/searches/new" className="btn btn-primary">Start a search</Link> },
-            { n: 2, icon: "shield" as const, title: "Research with evidence", text: "Each website is crawled politely; every finding keeps its source URL and quote. AI only adds what it can prove.", cta: <Link href="/import" className="btn">Import a CSV</Link> },
+            { n: 2, icon: "shield" as const, title: "Investigate with evidence", text: "One step per business: the website is fetched, a structured profile is built (every fact with its quote and source), and opportunity hypotheses are scored.", cta: <Link href="/import" className="btn">Import a CSV</Link> },
             { n: 3, icon: "sparkles" as const, title: "See it end to end", text: "Load clearly-labeled synthetic data to walk through findings, scored opportunities, drafts and the pipeline.", cta: <form action={seedDemoAction}><button className="btn">Load demo data</button></form> },
           ].map((c) => (
             <div key={c.n} className="surface p-5 flex flex-col">
@@ -52,9 +52,8 @@ export default async function Overview() {
     failed: { icon: "alert" as const, tone: "bad" as const, label: "Failed" },
     draft: { icon: "mail" as const, tone: "accent" as const, label: "Review draft" },
     due: { icon: "clock" as const, tone: "warn" as const, label: "Next action" },
-    ready_analyze: { icon: "sparkles" as const, tone: "info" as const, label: "Ready to analyze" },
     ready_draft: { icon: "note" as const, tone: "info" as const, label: "Ready to draft" },
-    ready_research: { icon: "globe" as const, tone: "info" as const, label: "Ready to research" },
+    ready_investigate: { icon: "sparkles" as const, tone: "info" as const, label: "Investigate" },
   };
 
   return (
@@ -80,7 +79,7 @@ export default async function Overview() {
       )}
 
       <Card title="Funnel" description="Businesses progress left to right. Click a stage to filter." className="mb-5">
-        <ol className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+        <ol className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           {funnel.map((f, i) => (
             <li key={f.key}>
               <Link href={f.href} className="block hover:no-underline group">
@@ -133,7 +132,7 @@ export default async function Overview() {
 
           <Card title="Top opportunities" description="Ranked by priority (60% attractiveness, 40% confidence)." padded={false} actions={<Link href="/businesses?quick=has_opps" className="btn btn-sm btn-ghost">View all</Link>}>
             {s.top.length === 0 ? (
-              <EmptyState compact icon="sparkles" title="No analyzed opportunities yet" description={cfg.ai.enabled ? "Research a business, then run the analysis." : "Analysis needs an Anthropic API key. Demo data shows what this looks like."} />
+              <EmptyState compact icon="sparkles" title="No analyzed opportunities yet" description={cfg.ai.enabled ? "Investigate a business to get scored hypotheses." : "Opportunity analysis needs an Anthropic API key. Demo data shows what this looks like."} />
             ) : (
               <ul className="divide-y divide-line">
                 {s.top.map(({ opp, business }) => (

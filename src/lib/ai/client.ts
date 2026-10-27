@@ -39,7 +39,7 @@ export function getAnthropic(): Anthropic {
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface StructuredCall<S extends z.ZodType> {
-  stage: "extraction" | "analysis" | "outreach";
+  stage: "investigate" | "outreach";
   model: string;
   effort: Effort;
   system: string;

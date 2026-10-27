@@ -9,10 +9,8 @@ const Effort = z.enum(["low", "medium", "high", "xhigh", "max"]);
 
 const EnvSchema = z.object({
   ANTHROPIC_API_KEY: z.string().optional(),
-  AI_EXTRACTION_MODEL: z.string().default("claude-opus-5-5"),
-  AI_EXTRACTION_EFFORT: Effort.default("low"),
-  AI_ANALYSIS_MODEL: z.string().default("claude-opus-5-5"),
-  AI_ANALYSIS_EFFORT: Effort.default("high"),
+  AI_INVESTIGATE_MODEL: z.string().default("claude-opus-5-5"),
+  AI_INVESTIGATE_EFFORT: Effort.default("medium"),
   AI_OUTREACH_MODEL: z.string().default("claude-opus-5-5"),
   AI_OUTREACH_EFFORT: Effort.default("medium"),
   AI_SPEND_LIMIT_USD: z.coerce.number().positive().default(25),
@@ -24,10 +22,10 @@ const EnvSchema = z.object({
     ),
   NOMINATIM_ENDPOINT: z.string().default("https://nominatim.openstreetmap.org"),
   OSM_USER_AGENT: z.string().default("opportunity-radar/0.1 (unconfigured contact)"),
-  RESEARCH_MAX_PAGES: z.coerce.number().int().min(1).max(20).default(6),
+  RESEARCH_MAX_PAGES: z.coerce.number().int().min(1).max(12).default(5),
   RESEARCH_PAGE_BYTES_LIMIT: z.coerce.number().int().default(1_500_000),
-  RESEARCH_FETCH_TIMEOUT_MS: z.coerce.number().int().default(15_000),
-  RESEARCH_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
+  RESEARCH_FETCH_TIMEOUT_MS: z.coerce.number().int().default(10_000),
+  RESEARCH_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(4),
   DATABASE_PATH: z.string().default("./data/radar.db"),
   /** Hosted libSQL/Turso database (persistent in the cloud). When set, DATABASE_PATH is ignored. */
   TURSO_DATABASE_URL: z.string().optional(),
@@ -86,11 +84,11 @@ export function integrationStatus() {
   const c = getConfig();
   return {
     anthropic: {
-      label: "Anthropic Claude (research extraction, analysis, outreach)",
+      label: "Anthropic Claude (profile extraction, opportunity analysis, outreach)",
       status: c.ai.enabled ? ("live" as const) : ("missing_credentials" as const),
       detail: c.ai.enabled
-        ? `Models: extraction=${c.AI_EXTRACTION_MODEL}/${c.AI_EXTRACTION_EFFORT}, analysis=${c.AI_ANALYSIS_MODEL}/${c.AI_ANALYSIS_EFFORT}, outreach=${c.AI_OUTREACH_MODEL}/${c.AI_OUTREACH_EFFORT}. Spend guard $${c.AI_SPEND_LIMIT_USD}.`
-        : "Set ANTHROPIC_API_KEY to enable AI stages. Discovery and website fetching still work; demo data illustrates the full workflow.",
+        ? `Models: investigate=${c.AI_INVESTIGATE_MODEL}/${c.AI_INVESTIGATE_EFFORT}, outreach=${c.AI_OUTREACH_MODEL}/${c.AI_OUTREACH_EFFORT}. Spend guard $${c.AI_SPEND_LIMIT_USD}.`
+        : "Set ANTHROPIC_API_KEY to enable the AI part of investigations (profile fields from page text, opportunity hypotheses) and outreach drafts. Discovery, website fetching and detected facts still work.",
     },
     osm: {
       label: "OpenStreetMap discovery (Overpass + Nominatim)",
@@ -112,7 +110,7 @@ export function integrationStatus() {
     websiteResearch: {
       label: "Website research (bounded crawler)",
       status: "live" as const,
-      detail: `Fetches up to ${c.RESEARCH_MAX_PAGES} pages per business, respects robots.txt, ${c.RESEARCH_FETCH_TIMEOUT_MS}ms timeout, SSRF-guarded.`,
+      detail: `Fetches the homepage plus up to ${c.RESEARCH_MAX_PAGES - 1} key pages per business in parallel, respects robots.txt, ${c.RESEARCH_FETCH_TIMEOUT_MS}ms timeout, SSRF-guarded.`,
     },
     demo: {
       label: "Demo data (synthetic)",

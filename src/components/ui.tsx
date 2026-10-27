@@ -25,13 +25,17 @@ export function Badge({ tone = "neutral", children, title, dot, className = "" }
 }
 
 const STATUS: Record<string, { tone: Tone; label: string; pulse?: boolean }> = {
-  not_started: { tone: "neutral", label: "Not started" },
+  new: { tone: "neutral", label: "Not investigated" },
   queued: { tone: "info", label: "Queued", pulse: true },
+  investigating: { tone: "accent", label: "Investigating", pulse: true },
   running: { tone: "accent", label: "Running", pulse: true },
+  profiled: { tone: "ok", label: "Investigated" },
   done: { tone: "ok", label: "Done" },
   failed: { tone: "bad", label: "Failed" },
   no_website: { tone: "warn", label: "No website" },
-  insufficient_evidence: { tone: "warn", label: "Insufficient evidence" },
+  opportunity: { tone: "ok", label: "Opportunity" },
+  no_opportunity: { tone: "warn", label: "No opportunity" },
+  needs_ai: { tone: "warn", label: "AI pending" },
   cancelled: { tone: "neutral", label: "Cancelled" },
   draft: { tone: "accent", label: "Draft" },
   approved: { tone: "ok", label: "Approved" },

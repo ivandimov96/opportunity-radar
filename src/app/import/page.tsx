@@ -48,7 +48,8 @@ export default async function ImportPage({ searchParams }: { searchParams: Promi
               </div>
             </div>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" name="autoResearch" className="accent-[var(--accent)]" /> Research and analyze imported businesses that have a website
+              <input type="hidden" name="autoInvestigate" value="off" />
+              <input type="checkbox" name="autoInvestigate" value="on" defaultChecked className="accent-[var(--accent)]" /> Investigate imported businesses that have a website
             </label>
             <button className="btn btn-primary btn-lg">
               <Icon name="upload" /> Import

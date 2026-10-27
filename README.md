@@ -7,7 +7,7 @@ grounded outreach, and track prospects through a pipeline — while keeping veri
 facts, hypotheses, and unknowns strictly separate.
 
 ```
-Discover → Research → Verified findings → Opportunity hypotheses → Score → Outreach draft → Pipeline → Validation → Patterns
+Discover → Investigate (profile with evidence + scored opportunity hypotheses + verdict) → Outreach draft → Pipeline → Validation → Patterns
 ```
 
 ## Status (2026-10-27)
@@ -18,10 +18,10 @@ Discover → Research → Verified findings → Opportunity hypotheses → Score
 | Business discovery via Google Places API (New) | Implemented from the official REST reference, **not exercised live** (no key). |
 | CSV import | Live, tested. |
 | Deduplication across searches/providers | Live, unit-tested. |
-| Website research (bounded crawler, robots.txt, SSRF guard) | Live, tested with mocked HTTP; security guard unit-tested. |
-| Deterministic finding detection (tools, cues, contacts) | Live, tested. |
-| AI extraction with verbatim-quote grounding | Implemented, validation logic tested; **requires `ANTHROPIC_API_KEY`**; not exercised against the live API in this repo. |
-| AI opportunity analysis + explainable scoring | Implemented, validation + scoring tested; requires API key. |
+| Investigation: parallel bounded crawl (robots.txt, SSRF guard) + structured profile | Live; 3–8 s per real business without AI; security guard unit-tested. |
+| Deterministic profile facts (tools, contact channels, booking method, explicit gaps) | Live, tested. |
+| AI profile completion + opportunity analysis in one grounded call | Implemented, validation logic tested; **requires `ANTHROPIC_API_KEY`**; not exercised against the live API in this repo. |
+| Explainable scoring (attractiveness vs confidence) | Live, tested. |
 | Outreach drafts with claim→evidence mapping | Implemented, validation tested; requires API key. **No sending** (by design). |
 | Sales pipeline, notes, next actions, validation signals | Live, e2e-tested. |
 | Recurring opportunity patterns | Live (category grouping), e2e-tested. |

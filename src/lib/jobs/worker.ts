@@ -6,12 +6,11 @@
 import { getConfig } from "@/lib/config";
 import { ProviderError } from "@/lib/discovery/types";
 import { claimNextJob, completeJob, failJob, recoverStaleJobs, updateJobProgress, type JobRow, type JobType } from "./queue";
-import { handleAnalyzeBusiness, handleDiscoverSearch, handleGenerateOutreach, handleResearchBusiness, NonRetryableError, type ProgressFn } from "./handlers";
+import { handleDiscoverSearch, handleGenerateOutreach, handleInvestigateBusiness, NonRetryableError, type ProgressFn } from "./handlers";
 
 const HANDLERS: Record<JobType, (job: JobRow, progress: ProgressFn) => Promise<void>> = {
   discover_search: handleDiscoverSearch,
-  research_business: handleResearchBusiness,
-  analyze_business: handleAnalyzeBusiness,
+  investigate_business: handleInvestigateBusiness,
   generate_outreach: handleGenerateOutreach,
 };
 

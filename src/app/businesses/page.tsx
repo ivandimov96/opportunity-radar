@@ -1,18 +1,18 @@
 import Link from "next/link";
 import { listBusinesses, type BusinessFilters } from "@/lib/queries";
-import { Badge, Card, EmptyState, Icon, PageHeader, ScoreRing, Stepper, fmtRelative } from "@/components/ui";
+import { Badge, Card, EmptyState, Icon, PageHeader, ScoreRing, Stepper, StatusPill, fmtRelative } from "@/components/ui";
 import { listPlaybooks } from "@/lib/industries";
 import { PIPELINE_STAGES, stageLabel } from "@/lib/pipeline/stages";
 import { deriveWorkflow } from "@/lib/workflow";
-import { priorityScore } from "@/lib/scoring/score";
+import { investigateManyAction } from "@/app/actions";
 
-const QUICK: { key: BusinessFilters["quick"] | ""; label: string; icon: "list" | "globe" | "sparkles" | "target" | "mail" | "minus" }[] = [
+const QUICK: { key: BusinessFilters["quick"] | ""; label: string; icon: "list" | "sparkles" | "target" | "mail" | "minus" | "alert" }[] = [
   { key: "", label: "All", icon: "list" },
-  { key: "needs_research", label: "Needs research", icon: "globe" },
-  { key: "needs_analysis", label: "Needs analysis", icon: "sparkles" },
-  { key: "has_opps", label: "Has opportunities", icon: "target" },
-  { key: "drafts", label: "Has drafts", icon: "mail" },
-  { key: "insufficient", label: "Insufficient evidence", icon: "minus" },
+  { key: "needs_investigation", label: "Not investigated", icon: "sparkles" },
+  { key: "has_opps", label: "Has opportunity", icon: "target" },
+  { key: "drafts", label: "Has draft", icon: "mail" },
+  { key: "no_opportunity", label: "No opportunity", icon: "minus" },
+  { key: "failed", label: "Failed", icon: "alert" },
 ];
 
 export default async function BusinessesPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
@@ -21,10 +21,9 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
     q: sp.q || undefined,
     industry: sp.industry || undefined,
     stage: sp.stage || undefined,
-    research: sp.research || undefined,
-    analysis: sp.analysis || undefined,
-    minAttr: sp.minAttr ? Number(sp.minAttr) : undefined,
-    minConf: sp.minConf ? Number(sp.minConf) : undefined,
+    status: sp.status || undefined,
+    verdict: sp.verdict || undefined,
+    minPriority: sp.minPriority ? Number(sp.minPriority) : undefined,
     website: (sp.website as "yes" | "no") || undefined,
     demo: (sp.demo as "hide" | "only") || undefined,
     quick: (sp.quick as BusinessFilters["quick"]) || undefined,
@@ -37,17 +36,30 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
     const s = p.toString();
     return `/businesses${s ? `?${s}` : ""}`;
   };
-  const advancedActive = Boolean(f.industry || f.stage || f.research || f.analysis || f.minAttr || f.minConf || f.website || f.demo);
+  const advancedActive = Boolean(f.industry || f.stage || f.status || f.verdict || f.minPriority || f.website || f.demo);
+  const investigable = rows.filter((r) => r.business.website && !r.business.isDemo && ["new", "failed"].includes(r.business.status));
 
   return (
     <>
       <PageHeader
         title="Businesses"
-        subtitle="Every discovered business, deduplicated across searches. Each row shows where it is in the workflow and what comes next."
+        subtitle="Every discovered business, deduplicated across searches, ranked by opportunity priority. One action per business: investigate."
         actions={
-          <a href="/api/export" className="btn">
-            <Icon name="download" /> Export CSV
-          </a>
+          <>
+            {investigable.length > 0 && (
+              <form action={investigateManyAction}>
+                {investigable.map((r) => (
+                  <input key={r.business.id} type="hidden" name="businessId" value={r.business.id} />
+                ))}
+                <button className="btn btn-primary">
+                  <Icon name="sparkles" /> Investigate {investigable.length} shown
+                </button>
+              </form>
+            )}
+            <a href="/api/export" className="btn">
+              <Icon name="download" /> Export CSV
+            </a>
+          </>
         }
       />
       <div className="flex flex-wrap items-center gap-2 mb-3">
@@ -67,8 +79,6 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
           </div>
           <select className="select w-auto" name="sort" defaultValue={sp.sort ?? "priority"}>
             <option value="priority">Sort: priority</option>
-            <option value="attractiveness">Sort: attractiveness</option>
-            <option value="confidence">Sort: confidence</option>
             <option value="updated">Sort: recently updated</option>
             <option value="name">Sort: name</option>
           </select>
@@ -81,7 +91,7 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
           <summary className="text-xs text-ink-muted inline-flex items-center gap-1 hover:text-ink">
             <Icon name="chevronDown" className="w-3.5 h-3.5" /> More filters {advancedActive && <Badge tone="accent">active</Badge>}
           </summary>
-          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-2 mt-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 mt-3">
             <select className="select" name="industry" defaultValue={sp.industry ?? ""}>
               <option value="">Any industry</option>
               {listPlaybooks().map((p) => (
@@ -98,24 +108,21 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
                 </option>
               ))}
             </select>
-            <select className="select" name="research" defaultValue={sp.research ?? ""}>
-              <option value="">Any research</option>
-              {["not_started", "queued", "running", "done", "failed", "no_website"].map((s) => (
+            <select className="select" name="status" defaultValue={sp.status ?? ""}>
+              <option value="">Any status</option>
+              {["new", "queued", "investigating", "profiled", "failed", "no_website"].map((s) => (
                 <option key={s} value={s}>
-                  Research: {s.replace(/_/g, " ")}
+                  {s.replace(/_/g, " ")}
                 </option>
               ))}
             </select>
-            <select className="select" name="analysis" defaultValue={sp.analysis ?? ""}>
-              <option value="">Any analysis</option>
-              {["not_started", "done", "insufficient_evidence", "failed"].map((s) => (
-                <option key={s} value={s}>
-                  Analysis: {s.replace(/_/g, " ")}
-                </option>
-              ))}
+            <select className="select" name="verdict" defaultValue={sp.verdict ?? ""}>
+              <option value="">Any verdict</option>
+              <option value="opportunity">Opportunity</option>
+              <option value="no_opportunity">No opportunity</option>
+              <option value="needs_ai">AI pending</option>
             </select>
-            <input className="input" name="minAttr" type="number" min={0} max={100} placeholder="Min attractiveness" defaultValue={sp.minAttr} />
-            <input className="input" name="minConf" type="number" min={0} max={100} placeholder="Min confidence" defaultValue={sp.minConf} />
+            <input className="input" name="minPriority" type="number" min={0} max={100} placeholder="Min priority" defaultValue={sp.minPriority} />
             <select className="select" name="website" defaultValue={sp.website ?? ""}>
               <option value="">Website: any</option>
               <option value="yes">Has website</option>
@@ -139,16 +146,16 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
               <thead>
                 <tr>
                   <th>Business</th>
-                  <th>Workflow</th>
-                  <th>Next</th>
+                  <th>Status</th>
+                  <th>Summary</th>
                   <th>Priority</th>
-                  <th>Stage</th>
+                  <th>Stage · next</th>
                   <th>Updated</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r) => {
-                  const wf = deriveWorkflow({ business: r.business, stage: r.stage ?? "discovered", opportunityCount: r.oppCount ?? 0, draftCount: r.draftCount ?? 0 });
+                  const wf = deriveWorkflow({ business: r.business, stage: r.stage ?? "lead", opportunityCount: r.oppCount ?? 0, draftCount: r.draftCount ?? 0 });
                   return (
                     <tr key={r.business.id}>
                       <td>
@@ -158,38 +165,29 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
                           </Link>
                           {r.business.isDemo && <Badge tone="demo">demo</Badge>}
                         </div>
-                        <div className="text-xs text-ink-faint truncate max-w-[300px]">
+                        <div className="text-xs text-ink-faint truncate max-w-[260px]">
                           {[r.business.city, r.business.region].filter(Boolean).join(", ")}
                           {r.business.websiteDomain ? ` · ${r.business.websiteDomain}` : r.business.website ? "" : " · no website"}
                         </div>
                       </td>
                       <td>
-                        <Stepper steps={wf.steps} compact />
+                        <div className="flex items-center gap-2">
+                          <Stepper steps={wf.steps} compact />
+                          <StatusPill status={r.business.verdict ?? r.business.status} />
+                        </div>
                       </td>
-                      <td className="max-w-[260px]">
-                        <div className="text-xs text-ink truncate">{wf.next.title}</div>
+                      <td className="max-w-[360px]">
+                        <div className="text-xs text-ink-muted line-clamp-2">{r.business.summary ?? r.business.statusMessage ?? wf.next.title}</div>
+                      </td>
+                      <td>{r.business.priority != null ? <ScoreRing value={r.business.priority} size={36} /> : <span className="text-xs text-ink-faint">—</span>}</td>
+                      <td className="max-w-[220px]">
+                        <Badge tone="accent">{stageLabel(r.stage ?? "lead")}</Badge>
                         {r.nextAction && (
-                          <div className="text-[11px] text-ink-faint truncate">
+                          <div className="text-[11px] text-ink-faint truncate mt-0.5">
                             → {r.nextAction}
                             {r.nextActionAt ? ` · ${fmtRelative(r.nextActionAt)}` : ""}
                           </div>
                         )}
-                      </td>
-                      <td>
-                        {r.attractiveness != null ? (
-                          <div className="flex items-center gap-2">
-                            <ScoreRing value={priorityScore(r.attractiveness, r.confidence ?? 0)} size={36} />
-                            <span className="text-[11px] text-ink-faint leading-tight">
-                              A {r.attractiveness}
-                              <br />C {r.confidence}
-                            </span>
-                          </div>
-                        ) : (
-                          <span className="text-xs text-ink-faint">—</span>
-                        )}
-                      </td>
-                      <td>
-                        <Badge tone="accent">{stageLabel(r.stage ?? "discovered")}</Badge>
                       </td>
                       <td className="text-xs text-ink-faint whitespace-nowrap">{fmtRelative(r.business.updatedAt)}</td>
                     </tr>

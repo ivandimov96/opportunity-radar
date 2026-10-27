@@ -82,3 +82,18 @@ Choice: `@libsql/client` + Drizzle libsql driver. Same SQLite dialect and migrat
 `file:` URL locally, `libsql://` Turso URL in the cloud; the whole data layer became
 async. Trade-offs: every query is now awaited; one more hosted service (Turso free tier)
 for cloud persistence. Revisit when: multi-tenant scale suggests Postgres.
+
+## D13 — Flow v2: one investigation per business, structured profile (2026-10-27)
+Context: the founder found the first flow hard to follow (research/analysis/pipeline as
+three overlapping state machines, four jobs to click through) and the data noisy (a
+flat list of regex hits). Choice: a single `investigate_business` job per business
+(fetch → detect → one model call for profile + opportunities → score → verdict); a
+fixed profile of ~27 comparable fields (`src/lib/profile/fields.ts`), each
+verified-with-quote, not-found, or unknown; one `status` + one `verdict` on the
+business; sales stages reduced to lead → qualified → contacted → … Deterministic
+detection limited to precise signals (tools from resource hosts, contact channels,
+booking method); the model fills the rest under quote grounding. Crawl: homepage + up
+to 4 key pages fetched in parallel, 10 s timeouts. Measured: 3–8 s per real business
+without AI (was 15–20 s). Trade-offs: a rewrite of the data layer and pages; profile
+fields are a fixed vocabulary (extend in one file). Revisit when: real AI output shows
+fields that are consistently empty or missing.

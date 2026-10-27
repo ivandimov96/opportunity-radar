@@ -8,7 +8,7 @@ import { getDb } from "@/db/client";
 import { jobs } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
 
-export type JobType = "discover_search" | "research_business" | "analyze_business" | "generate_outreach";
+export type JobType = "discover_search" | "investigate_business" | "generate_outreach";
 export type JobRow = typeof jobs.$inferSelect;
 
 export async function enqueueJob(type: JobType, payload: Record<string, unknown>, opts: { idempotencyKey?: string; maxAttempts?: number; delayMs?: number } = {}): Promise<{ id: string; created: boolean }> {

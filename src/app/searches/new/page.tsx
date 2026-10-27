@@ -82,13 +82,15 @@ export default async function NewSearchPage({ searchParams }: { searchParams: Pr
               <div className="grid md:grid-cols-3 gap-4 pt-2">
                 <div>
                   <label className="label">Maximum results</label>
-                  <input className="input" type="number" name="maxResults" defaultValue={50} min={1} max={500} />
+                  <input className="input" type="number" name="maxResults" defaultValue={25} min={1} max={500} />
                 </div>
                 <label className="flex items-center gap-2 text-sm md:pt-6">
-                  <input type="checkbox" name="requireWebsite" defaultChecked className="accent-[var(--accent)]" /> Only businesses with a website
+                  <input type="hidden" name="requireWebsite" value="off" />
+                  <input type="checkbox" name="requireWebsite" value="on" defaultChecked className="accent-[var(--accent)]" /> Only businesses with a website
                 </label>
                 <label className="flex items-center gap-2 text-sm md:pt-6">
-                  <input type="checkbox" name="autoResearch" className="accent-[var(--accent)]" /> Auto-research every result
+                  <input type="hidden" name="autoInvestigate" value="off" />
+                  <input type="checkbox" name="autoInvestigate" value="on" defaultChecked className="accent-[var(--accent)]" /> Investigate every result automatically
                 </label>
               </div>
             </div>
@@ -107,8 +109,8 @@ export default async function NewSearchPage({ searchParams }: { searchParams: Pr
             <ol className="space-y-3 text-sm">
               {[
                 ["Discover", "Businesses are fetched from the selected sources, normalized, and merged with anything you already have."],
-                ["Research", "With auto-research on (or on demand), each website is crawled politely for up to 6 pages. Findings keep their source."],
-                ["Analyze", cfg.ai.enabled ? "The AI proposes opportunity hypotheses with scores, or concludes the evidence is insufficient." : "Needs an Anthropic API key. Without it you still get deterministic findings and contacts."],
+                ["Investigate", "Each website is fetched (homepage + key pages in parallel), a structured profile is built with evidence, and opportunities are analyzed and scored, all in one step per business."],
+                ["Decide", cfg.ai.enabled ? "Every business ends with a verdict: opportunity hypotheses with scores, or an explicit no-opportunity." : "Without an Anthropic API key you get detected facts and contacts; the verdict waits for AI."],
                 ["Reach out", "Generate an evidence-mapped draft, review it, and send it yourself."],
               ].map(([t, d], i) => (
                 <li key={t} className="flex gap-3">

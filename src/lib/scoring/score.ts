@@ -29,8 +29,11 @@ export interface ScoreInput {
   aiRatings: { value: number; feasibility: number; evidenceStrength: number; buyingReadiness: number }; // 1..5
   implementationEffort: "small" | "medium" | "large";
   reusability: "low" | "medium" | "high";
-  supportingObservationCount: number;
-  totalVerifiedObservations: number;
+  /** Verified facts cited by the opportunity. */
+  supportingVerifiedCount: number;
+  /** "Not found" gaps cited by the opportunity (weaker evidence than a verified fact). */
+  supportingGapCount: number;
+  totalVerifiedFacts: number;
   pagesResearched: number;
   assumptionCount: number;
   contact: { email: boolean; phone: boolean; contactForm: boolean };
@@ -62,22 +65,22 @@ export function scoreOpportunity(input: ScoreInput): { attractiveness: number; c
   const attractiveness = clamp(attractivenessFactors.reduce((s, f) => s + f.weight * f.score, 0));
 
   // ------------------------------------------------------------- confidence
-  const n = input.supportingObservationCount;
-  const evidenceCount = n === 0 ? 5 : n === 1 ? 40 : n === 2 ? 65 : n === 3 ? 80 : 90;
-  if (n === 0) notes.push("No verified observation cites this opportunity: treat as a hypothesis only.");
+  const n = input.supportingVerifiedCount + Math.min(2, input.supportingGapCount) * 0.5;
+  const evidenceCount = n === 0 ? 5 : n < 1.5 ? 40 : n < 2.5 ? 65 : n < 3.5 ? 80 : 90;
+  if (input.supportingVerifiedCount === 0) notes.push(input.supportingGapCount ? "Supported only by gaps (things not found on the site): treat as a hypothesis to validate." : "No verified fact cites this opportunity: treat as a hypothesis only.");
   const evidenceStrength = rating(input.aiRatings.evidenceStrength);
   const depth = input.pagesResearched === 0 ? 0 : input.pagesResearched === 1 ? 35 : input.pagesResearched <= 3 ? 65 : 90;
   if (input.pagesResearched <= 1) notes.push("Research depth is shallow (one page or fewer).");
   const assumptionLoad = clamp(100 - Math.min(5, input.assumptionCount) * 15);
 
   const confidenceFactors = [
-    { factor: "Verified evidence count", weight: CONFIDENCE_WEIGHTS.evidence_count, score: evidenceCount, explanation: `${n} verified observation(s) cited out of ${input.totalVerifiedObservations} total.` },
+    { factor: "Evidence cited", weight: CONFIDENCE_WEIGHTS.evidence_count, score: evidenceCount, explanation: `${input.supportingVerifiedCount} verified fact(s) and ${input.supportingGapCount} gap(s) cited; ${input.totalVerifiedFacts} facts verified in total.` },
     { factor: "Evidence strength", weight: CONFIDENCE_WEIGHTS.evidence_strength, score: evidenceStrength, explanation: `Analyst evidence-strength rating ${input.aiRatings.evidenceStrength}/5.` },
     { factor: "Research depth", weight: CONFIDENCE_WEIGHTS.research_depth, score: depth, explanation: `${input.pagesResearched} page(s) researched.` },
     { factor: "Assumption load", weight: CONFIDENCE_WEIGHTS.assumption_load, score: assumptionLoad, explanation: `${input.assumptionCount} explicit assumption(s) must be validated.` },
   ];
   let confidence = clamp(confidenceFactors.reduce((s, f) => s + f.weight * f.score, 0));
-  if (n === 0) confidence = Math.min(confidence, 35);
+  if (input.supportingVerifiedCount === 0) confidence = Math.min(confidence, input.supportingGapCount ? 45 : 35);
 
   return { attractiveness, confidence, breakdown: { attractiveness: attractivenessFactors, confidence: confidenceFactors, notes } };
 }

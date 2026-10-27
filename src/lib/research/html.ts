@@ -14,6 +14,8 @@ export interface PageContent {
   resourceHosts: string[]; // script/iframe/link hosts, for tool detection
   forms: { action: string | null; fields: string[]; hasTextarea: boolean }[];
   hasChatWidget: boolean;
+  /** First 4000 chars of raw HTML, for platform fingerprints (never shown to the model). */
+  rawHtmlSample?: string;
 }
 
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
@@ -114,7 +116,7 @@ export function extractPage(html: string, baseUrl: string): PageContent {
   for (const m of text.match(EMAIL_RE) ?? []) emails.add(m.toLowerCase());
   const hasChatWidget = [...resourceHosts].some((h) => /tawk\.to|intercom|drift\.com|livechat|tidio|podium|birdeye|hubspot|crisp\.chat|zendesk|smith\.ai/.test(h));
 
-  return { title, metaDescription, text, links, emails: [...emails], phones: [...phones], resourceHosts: [...resourceHosts], forms, hasChatWidget };
+  return { title, metaDescription, text, links, emails: [...emails], phones: [...phones], resourceHosts: [...resourceHosts], forms, hasChatWidget, rawHtmlSample: html.slice(0, 4000) };
 }
 
 export type PageKind = "home" | "about" | "services" | "contact" | "pricing" | "booking" | "faq" | "fleet" | "financing" | "reviews" | "other";

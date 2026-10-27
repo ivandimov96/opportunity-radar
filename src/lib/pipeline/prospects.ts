@@ -2,9 +2,9 @@ import { desc, eq } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { activities, prospects, validationSignals } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
-import { PIPELINE_STAGE_KEYS, type PipelineStage, type ValidationSignalType } from "./stages";
+import { CONTACTED_STAGES, PIPELINE_STAGE_KEYS, type PipelineStage, type ValidationSignalType } from "./stages";
 
-export async function ensureProspect(businessId: string, stage: PipelineStage = "discovered") {
+export async function ensureProspect(businessId: string, stage: PipelineStage = "lead") {
   const db = await getDb();
   const existing = await db.select().from(prospects).where(eq(prospects.businessId, businessId)).get();
   if (existing) return existing;
@@ -23,8 +23,7 @@ export async function advanceStageIfBehind(businessId: string, target: PipelineS
   const p = await ensureProspect(businessId);
   const cur = PIPELINE_STAGE_KEYS.indexOf(p.stage as PipelineStage);
   const tgt = PIPELINE_STAGE_KEYS.indexOf(target);
-  const terminal = ["contacted", "in_conversation", "validated", "won", "lost", "disqualified"];
-  if (terminal.includes(p.stage)) return;
+  if ([...CONTACTED_STAGES, "disqualified"].includes(p.stage as PipelineStage)) return;
   if (tgt > cur) {
     await db.update(prospects).set({ stage: target, updatedAt: nowIso() }).where(eq(prospects.businessId, businessId)).run();
     await logActivity(businessId, "stage_change", `Stage set to ${target}: ${reason}`, { from: p.stage, to: target, automatic: true });

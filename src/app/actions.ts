@@ -1,15 +1,16 @@
 "use server";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { getDb } from "@/db/client";
-import { businesses, outreachDrafts, searches, searchResults } from "@/db/schema";
+import { businesses, outreachDrafts, prospects, searches, searchResults } from "@/db/schema";
 import { csvToCandidates, upsertCandidate, type DiscoveryProviderKey } from "@/lib/discovery";
+import { normalizeWebsite, websiteDomain } from "@/lib/discovery/normalize";
 import { newId, nowIso } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { kickWorker } from "@/lib/jobs/kick";
-import { enqueueAnalysis, enqueueOutreach, enqueueResearch } from "@/lib/jobs/handlers";
+import { enqueueInvestigation, enqueueOutreach } from "@/lib/jobs/handlers";
 import { addValidationSignal, ensureProspect, logActivity, setNextAction, setStage } from "@/lib/pipeline/prospects";
 import { PIPELINE_STAGE_KEYS, type PipelineStage, type ValidationSignalType } from "@/lib/pipeline/stages";
 import { seedDemo } from "@/db/seed-demo";
@@ -25,32 +26,33 @@ const SearchInput = z.object({
   country: z.string().min(2).max(2).default("US"),
   region: z.string().max(80).optional(),
   city: z.string().max(80).optional(),
-  maxResults: z.coerce.number().int().min(1).max(500).default(50),
+  maxResults: z.coerce.number().int().min(1).max(500).default(25),
   requireWebsite: z.boolean(),
-  autoResearch: z.boolean(),
+  autoInvestigate: z.boolean(),
   providers: z.array(z.enum(["osm", "google_places", "demo"])).min(1),
 });
 
 export async function createSearch(fd: FormData) {
   const parsed = SearchInput.safeParse({
-    name: str(fd, "name") || `${str(fd, "industry")} in ${str(fd, "city") || str(fd, "region") || str(fd, "country")}`,
+    name: str(fd, "name") || `${str(fd, "industry").replace(/_/g, " ")} · ${str(fd, "city") || str(fd, "region") || str(fd, "country")}`,
     industry: str(fd, "industry"),
     categoryQuery: str(fd, "categoryQuery") || undefined,
     keywords: str(fd, "keywords") || undefined,
     country: str(fd, "country").toUpperCase() || "US",
     region: str(fd, "region") || undefined,
     city: str(fd, "city") || undefined,
-    maxResults: str(fd, "maxResults") || 50,
-    requireWebsite: fd.get("requireWebsite") === "on",
-    autoResearch: fd.get("autoResearch") === "on",
+    maxResults: str(fd, "maxResults") || 25,
+    requireWebsite: fd.get("requireWebsite") !== "off",
+    autoInvestigate: fd.get("autoInvestigate") !== "off",
     providers: fd.getAll("providers").map(String),
   });
   if (!parsed.success) redirect(`/searches/new?error=${encodeURIComponent(parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "))}`);
   const v = parsed.data;
   const id = newId();
-  await (await getDb())
+  const db = await getDb();
+  await db
     .insert(searches)
-    .values({ id, name: v.name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoResearch: v.autoResearch, providers: v.providers as DiscoveryProviderKey[], status: "queued", isDemo: v.providers.length === 1 && v.providers[0] === "demo" })
+    .values({ id, name: v.name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoInvestigate: v.autoInvestigate, providers: v.providers as DiscoveryProviderKey[], status: "queued", isDemo: v.providers.length === 1 && v.providers[0] === "demo" })
     .run();
   await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
   kickWorker();
@@ -59,46 +61,42 @@ export async function createSearch(fd: FormData) {
 
 export async function rerunSearch(fd: FormData) {
   const id = str(fd, "searchId");
-  await (await getDb()).update(searches).set({ status: "queued", error: null, updatedAt: nowIso() }).where(eq(searches.id, id)).run();
+  const db = await getDb();
+  await db.update(searches).set({ status: "queued", error: null, updatedAt: nowIso() }).where(eq(searches.id, id)).run();
   await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
   kickWorker();
   revalidatePath(`/searches/${id}`);
 }
 
-export async function researchBusinessAction(fd: FormData) {
+export async function investigateAction(fd: FormData) {
   const id = str(fd, "businessId");
-  const analyze = fd.get("analyze") !== "off";
-  await enqueueResearch(id, { analyze });
+  await enqueueInvestigation(id);
   kickWorker();
   revalidatePath(`/businesses/${id}`);
 }
 
-export async function analyzeBusinessAction(fd: FormData) {
-  const id = str(fd, "businessId");
-  await enqueueAnalysis(id);
-  kickWorker();
-  revalidatePath(`/businesses/${id}`);
-}
-
-export async function researchSearchResults(fd: FormData) {
-  const searchId = str(fd, "searchId");
-  const onlyNew = fd.get("onlyUnresearched") === "on";
+/** Investigate every un-investigated business with a website in a search (or in a list of ids). */
+export async function investigateManyAction(fd: FormData) {
   const db = await getDb();
-  const rows = await db.select({ business: businesses }).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, searchId)).all();
+  const searchId = str(fd, "searchId");
+  const ids = fd.getAll("businessId").map(String).filter(Boolean);
+  const includeDone = fd.get("includeDone") === "on";
+  let targets: { id: string; website: string | null; status: string; isDemo: boolean }[] = [];
+  if (searchId) {
+    targets = (await db.select({ id: businesses.id, website: businesses.website, status: businesses.status, isDemo: businesses.isDemo }).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, searchId)).all());
+  } else if (ids.length) {
+    targets = await db.select({ id: businesses.id, website: businesses.website, status: businesses.status, isDemo: businesses.isDemo }).from(businesses).where(inArray(businesses.id, ids)).all();
+  }
   let n = 0;
-  for (const { business } of rows) {
-    if (!business.website || business.isDemo) continue;
-    if (onlyNew && business.researchStatus === "done") continue;
-    await enqueueResearch(business.id, { analyze: true });
+  for (const t of targets) {
+    if (!t.website || t.isDemo) continue;
+    if (!includeDone && t.status === "profiled") continue;
+    if (t.status === "queued" || t.status === "investigating") continue;
+    await enqueueInvestigation(t.id);
     n++;
   }
-  if (n > 0) kickWorker();
-  revalidatePath(`/searches/${searchId}`);
-  if (n === 0) logActivityNoop();
-}
-
-function logActivityNoop() {
-  /* nothing queued: all results already researched or have no website */
+  if (n) kickWorker();
+  revalidatePath(searchId ? `/searches/${searchId}` : "/businesses");
 }
 
 export async function generateDraftAction(fd: FormData) {
@@ -120,7 +118,8 @@ export async function updateDraftAction(fd: FormData) {
   const subject = str(fd, "subject");
   const body = str(fd, "body");
   const edited = subject !== (cur.subject ?? "") || body !== cur.body;
-  await db.update(outreachDrafts)
+  await db
+    .update(outreachDrafts)
     .set({ subject, body, status: ["draft", "approved", "archived"].includes(status) ? status : cur.status, editedByUser: cur.editedByUser || edited, updatedAt: nowIso() })
     .where(eq(outreachDrafts.id, id))
     .run();
@@ -147,9 +146,8 @@ export async function addNoteAction(fd: FormData) {
   await logActivity(businessId, type, content);
   if (type !== "note") {
     const db = await getDb();
-    const { prospects } = await import("@/db/schema");
     const p = await db.select().from(prospects).where(eq(prospects.businessId, businessId)).get();
-    if (p && ["discovered", "researched", "qualified", "outreach_ready"].includes(p.stage)) await setStage(businessId, "contacted", `${type} logged`);
+    if (p && ["lead", "qualified"].includes(p.stage)) await setStage(businessId, "contacted", `${type} logged`);
   }
   revalidatePath(`/businesses/${businessId}`);
 }
@@ -173,13 +171,26 @@ export async function addValidationSignalAction(fd: FormData) {
   revalidatePath("/patterns");
 }
 
+export async function updateWebsiteAction(fd: FormData) {
+  const id = str(fd, "businessId");
+  const website = normalizeWebsite(str(fd, "website"));
+  const db = await getDb();
+  await db.update(businesses).set({ website, websiteDomain: websiteDomain(website), status: website ? "new" : "no_website", statusMessage: website ? null : "No website on record", updatedAt: nowIso() }).where(eq(businesses.id, id)).run();
+  await logActivity(id, "note", website ? `Website set to ${website}` : "Website cleared");
+  if (website && fd.get("investigate") !== "off") {
+    await enqueueInvestigation(id);
+    kickWorker();
+  }
+  revalidatePath(`/businesses/${id}`);
+}
+
 export async function importCsvAction(fd: FormData) {
   const file = fd.get("file");
   const industry = str(fd, "industry") || "generic";
   const country = (str(fd, "country") || "US").toUpperCase();
   const city = str(fd, "city") || null;
   const region = str(fd, "region") || null;
-  const autoResearch = fd.get("autoResearch") === "on";
+  const autoInvestigate = fd.get("autoInvestigate") !== "off";
   if (!(file instanceof File) || file.size === 0) redirect("/import?error=Choose%20a%20CSV%20file");
   if (file.size > 5_000_000) redirect("/import?error=File%20too%20large%20(5MB%20max)");
   const text = await file.text();
@@ -187,10 +198,11 @@ export async function importCsvAction(fd: FormData) {
   if (!candidates.length) redirect(`/import?error=${encodeURIComponent(errors.join("; ") || "No rows found")}`);
   const db = await getDb();
   const id = newId();
-  await db.insert(searches).values({ id, name: `CSV import: ${file.name}`, industry, country, region, city, maxResults: candidates.length, providers: ["csv"], requireWebsite: false, autoResearch, status: "done", stats: { providerResults: { csv: { found: candidates.length, error: errors.length ? `${errors.length} row error(s): ${errors.slice(0, 3).join("; ")}` : undefined } }, created: 0, merged: 0, skippedNoWebsite: 0, total: 0, attribution: ["Operator-supplied CSV import"] } }).run();
+  await db.insert(searches).values({ id, name: `CSV import: ${file.name}`, industry, country, region, city, maxResults: candidates.length, providers: ["csv"], requireWebsite: false, autoInvestigate, status: "done", stats: { providerResults: { csv: { found: candidates.length, error: errors.length ? `${errors.length} row error(s): ${errors.slice(0, 3).join("; ")}` : undefined } }, created: 0, merged: 0, skippedNoWebsite: 0, total: 0, attribution: ["Operator-supplied CSV import"] } }).run();
   let created = 0;
   let merged = 0;
   let rank = 0;
+  let queued = 0;
   for (const c of candidates) {
     const r = await upsertCandidate(db, c, { industry, searchId: id });
     rank++;
@@ -198,29 +210,18 @@ export async function importCsvAction(fd: FormData) {
     else merged++;
     await db.insert(searchResults).values({ searchId: id, businessId: r.businessId, rank, wasNew: r.wasNew }).onConflictDoNothing().run();
     await ensureProspect(r.businessId);
-    if (autoResearch) {
-      const b = await db.select({ website: businesses.website }).from(businesses).where(eq(businesses.id, r.businessId)).get();
-      if (b?.website) await enqueueResearch(r.businessId, { analyze: true });
+    if (autoInvestigate) {
+      const b = await db.select({ website: businesses.website, status: businesses.status }).from(businesses).where(eq(businesses.id, r.businessId)).get();
+      if (b?.website && b.status !== "profiled") {
+        await enqueueInvestigation(r.businessId);
+        queued++;
+      }
     }
   }
   const s = (await db.select().from(searches).where(eq(searches.id, id)).get())!;
   await db.update(searches).set({ stats: { ...s.stats!, created, merged, total: rank } }).where(eq(searches.id, id)).run();
-  if (autoResearch) kickWorker();
+  if (queued) kickWorker();
   redirect(`/searches/${id}`);
-}
-
-export async function updateWebsiteAction(fd: FormData) {
-  const id = str(fd, "businessId");
-  const { normalizeWebsite, websiteDomain } = await import("@/lib/discovery/normalize");
-  const website = normalizeWebsite(str(fd, "website"));
-  const db = await getDb();
-  await db.update(businesses).set({ website, websiteDomain: websiteDomain(website), researchStatus: website ? "not_started" : "no_website", updatedAt: nowIso() }).where(eq(businesses.id, id)).run();
-  await logActivity(id, "note", website ? `Website set to ${website}` : "Website cleared");
-  if (website && fd.get("research") === "on") {
-    await enqueueResearch(id, { analyze: true });
-    kickWorker();
-  }
-  revalidatePath(`/businesses/${id}`);
 }
 
 export async function seedDemoAction() {
@@ -231,7 +232,8 @@ export async function seedDemoAction() {
 
 export async function deleteBusinessAction(fd: FormData) {
   const id = str(fd, "businessId");
-  await (await getDb()).delete(businesses).where(eq(businesses.id, id)).run();
+  const db = await getDb();
+  await db.delete(businesses).where(eq(businesses.id, id)).run();
   revalidatePath("/businesses");
   redirect("/businesses");
 }

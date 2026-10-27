@@ -5,15 +5,16 @@ Every screen answers three questions without scrolling: **where is this business
 funnel**, **what is the single next action**, and **why should I trust what I see**.
 
 Implemented as:
-- `src/lib/workflow.ts` derives, for any business, five step states
-  (Discovered → Researched → Analyzed → Outreach → In conversation) and one recommended
-  next action with a reason. Lists show it as a 5-dot mini stepper + "Next" column; the
+- `src/lib/workflow.ts` derives, for any business, four step states
+  (Found → Investigated → Outreach → In conversation) and one recommended next action
+  with a reason. Investigation is a single action; its result is a verdict. Lists show it as a 5-dot mini stepper + "Next" column; the
   profile shows the full stepper, a "Next step" banner and a context-dependent primary
   button. Nothing else in the UI decides what to do next.
 - The overview is an inbox ("Needs your attention": failures, drafts to review, due
   actions, businesses ready for the next stage) above a 7-stage funnel with counts.
-- Evidence is always one hop away: findings show the quote and source link beside each
-  observation; opportunities list the observations they cite; the outreach editor
+- Evidence is always one hop away: the profile shows each field verified with its
+  quote and source, or explicitly "not found on the site"; opportunities list the
+  profile facts they are based on; the outreach editor
   highlights supported (green) and unsupported (amber) claims inline, with a claims →
   evidence panel. Scores are rings with a "Why these scores" breakdown.
 - Empty states say what the state means and offer the one action that changes it.
