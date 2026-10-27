@@ -18,7 +18,7 @@ export type UpsertOutcome = { businessId: string; wasNew: boolean; matchedBy?: "
 export async function upsertCandidate(
   db: Db,
   c: BusinessCandidate,
-  ctx: { industry: string; searchId?: string | null; isDemo?: boolean },
+  ctx: { industry: string; searchId?: string | null; isDemo?: boolean; fixedId?: string },
 ): Promise<UpsertOutcome> {
   const website = normalizeWebsite(c.website);
   const domain = websiteDomain(website);
@@ -106,7 +106,7 @@ export async function upsertCandidate(
     return { businessId: existingId, wasNew: false, matchedBy };
   }
 
-  const id = newId();
+  const id = ctx.fixedId ?? newId();
   await db.insert(businesses)
     .values({
       id,
