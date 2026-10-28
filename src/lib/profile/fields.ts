@@ -5,7 +5,7 @@
  * old free-form observation list and makes businesses easy to compare.
  */
 export type FactStatus = "verified" | "not_found" | "unknown";
-export type FactGroup = "business" | "operations" | "tools" | "contact";
+export type FactGroup = "business" | "operations" | "tools" | "contact" | "footprint";
 
 export interface FactField {
   key: string;
@@ -25,6 +25,7 @@ export const FACT_FIELDS = [
   { key: "certifications", label: "Certifications", group: "business", hint: "ASE, NATE, licenses, manufacturer certifications named on the site." },
   { key: "warranty", label: "Warranty", group: "business", hint: "Warranty terms on work (e.g. 24 month / 24k miles)." },
   { key: "reviews_on_site", label: "Reviews / testimonials shown", group: "business", hint: "Whether the site shows reviews or testimonials.", options: ["yes", "no"] },
+  { key: "multi_location", label: "Multiple locations", group: "business", hint: "Whether the site presents several locations (a location finder, 'our locations').", options: ["yes", "no"] },
   { key: "booking_method", label: "How customers book", group: "operations", hint: "The primary way the site asks customers to book or request service.", options: ["phone_only", "walk_in", "online_form", "online_booking", "mixed"] },
   { key: "estimate_policy", label: "Estimates & pricing", group: "operations", hint: "Free estimates, quote on request, published prices, diagnostic fee.", options: ["free_estimates", "quote_on_request", "prices_published", "diagnostic_fee"] },
   { key: "customer_updates", label: "Customer status updates", group: "operations", hint: "How customers are kept informed: text/SMS, email, phone, digital inspection reports." },
@@ -45,6 +46,14 @@ export const FACT_FIELDS = [
   { key: "phone", label: "Public phone", group: "contact", hint: "A public phone number on the site." },
   { key: "contact_form", label: "Contact / request form", group: "contact", hint: "Whether the site has a contact or request form.", options: ["yes", "no"] },
   { key: "social_profiles", label: "Social profiles", group: "contact", hint: "Facebook, Instagram, Google Business links." },
+  { key: "address", label: "Address on site", group: "contact", hint: "Postal address as published on the site (structured data or contact page)." },
+  { key: "website_health", label: "Website health", group: "footprint", hint: "HTTPS, mobile viewport, homepage size and response time (measured, not from text)." },
+  { key: "website_updated", label: "Website last updated", group: "footprint", hint: "Latest copyright year or dated content found on the site." },
+  { key: "domain_registered", label: "Domain registered", group: "footprint", hint: "Domain registration year from the public RDAP record." },
+  { key: "site_first_seen", label: "Site first archived", group: "footprint", hint: "Year of the first Internet Archive capture of the domain." },
+  { key: "email_provider", label: "Email hosting", group: "footprint", hint: "Email provider from DNS MX records (Google Workspace, Microsoft 365, ...)." },
+  { key: "email_senders", label: "Email sending services", group: "footprint", hint: "Marketing/transactional senders authorized in the domain's SPF record." },
+  { key: "permit_since", label: "Business permit since", group: "footprint", hint: "First sales date on the state sales tax permit (public registry)." },
 ] as const satisfies readonly FactField[];
 
 export type FactKey = (typeof FACT_FIELDS)[number]["key"];
@@ -55,10 +64,11 @@ export const FACT_GROUPS: { key: FactGroup; label: string }[] = [
   { key: "operations", label: "How they operate" },
   { key: "tools", label: "Tools in use" },
   { key: "contact", label: "Contact channels" },
+  { key: "footprint", label: "Online footprint (off-site records)" },
 ];
 
 /** Keys where "not found" is itself a useful signal (a gap hypothesis base). */
-export const GAP_KEYS: FactKey[] = ["booking_tool", "chat_tool", "customer_updates", "maintenance_plans", "fleet_program", "financing", "review_tool", "contact_form", "email"];
+export const GAP_KEYS: FactKey[] = ["booking_tool", "chat_tool", "customer_updates", "maintenance_plans", "fleet_program", "financing", "review_tool", "contact_form", "email", "reviews_on_site", "estimate_policy"];
 
 export function factLabel(key: string) {
   return FACT_BY_KEY[key]?.label ?? key.replace(/_/g, " ");

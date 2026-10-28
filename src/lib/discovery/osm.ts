@@ -11,21 +11,22 @@ import { eq } from "drizzle-orm";
 import { getConfig } from "@/lib/config";
 import { getDb } from "@/db/client";
 import { geocodeCache } from "@/db/schema";
-import { getPlaybook } from "@/lib/industries";
+import { getPlaybook, selectorsFor } from "@/lib/industries";
 import type { BusinessCandidate, DiscoveryProvider, DiscoveryQuery, ProviderResult } from "./types";
 import { ProviderError } from "./types";
 
 export const OSM_ATTRIBUTION = "© OpenStreetMap contributors (ODbL)";
 
 type BBox = { south: number; west: number; north: number; east: number };
+export type GeoArea = BBox & { displayName: string; lat: number; lon: number };
 
-async function geocodeArea(q: DiscoveryQuery, signal?: AbortSignal): Promise<BBox & { displayName: string }> {
+export async function geocodeArea(q: DiscoveryQuery, signal?: AbortSignal): Promise<GeoArea> {
   const cfg = getConfig();
   const parts = [q.city, q.region, q.country].filter(Boolean).join(", ");
   const key = `nominatim:${parts.toLowerCase()}`;
   const db = await getDb();
   const cached = await db.select().from(geocodeCache).where(eq(geocodeCache.key, key)).get();
-  if (cached) return cached.value as BBox & { displayName: string };
+  if (cached && typeof (cached.value as GeoArea).lat === "number") return cached.value as GeoArea;
 
   const url = new URL("/search", cfg.NOMINATIM_ENDPOINT);
   url.searchParams.set("q", parts);
@@ -36,11 +37,11 @@ async function geocodeArea(q: DiscoveryQuery, signal?: AbortSignal): Promise<BBo
     signal: signal ?? AbortSignal.timeout(20_000),
   });
   if (!res.ok) throw new ProviderError(`Nominatim HTTP ${res.status}`, "osm", res.status === 429 || res.status >= 500);
-  const data = (await res.json()) as { boundingbox: string[]; display_name: string }[];
+  const data = (await res.json()) as { boundingbox: string[]; display_name: string; lat: string; lon: string }[];
   if (!data.length) throw new ProviderError(`Could not geocode location "${parts}"`, "osm");
   const [s, n, w, e] = data[0].boundingbox.map(Number);
-  const value = { south: s, north: n, west: w, east: e, displayName: data[0].display_name };
-  await db.insert(geocodeCache).values({ key, value }).onConflictDoNothing().run();
+  const value: GeoArea = { south: s, north: n, west: w, east: e, displayName: data[0].display_name, lat: Number(data[0].lat), lon: Number(data[0].lon) };
+  await db.insert(geocodeCache).values({ key, value }).onConflictDoUpdate({ target: geocodeCache.key, set: { value } }).run();
   return value;
 }
 
@@ -53,29 +54,34 @@ type OverpassElement = {
   tags?: Record<string, string>;
 };
 
-export function buildOverpassQuery(selectors: string[], bbox: BBox, keywords?: string | null): string {
-  const b = `${bbox.south},${bbox.west},${bbox.north},${bbox.east}`;
+export function buildOverpassQuery(selectors: string[], where: BBox | { aroundLat: number; aroundLon: number; radiusM: number }, keywords?: string | null, nameRegex?: string | null): string {
+  const scope = "aroundLat" in where ? `(around:${Math.round(where.radiusM)},${where.aroundLat},${where.aroundLon})` : `(${where.south},${where.west},${where.north},${where.east})`;
   const kw = keywords?.trim() ? `["name"~"${keywords.trim().replace(/["\\]/g, "")}",i]` : "";
-  const body = selectors.map((sel) => `nwr${sel}["name"]${kw}(${b});`).join("\n");
-  return `[out:json][timeout:60];\n(\n${body}\n);\nout center tags;`;
+  const lines = selectors.map((sel) => `nwr${sel}["name"]${kw}${scope};`);
+  if (nameRegex) {
+    // Second net: businesses whose name says what they do but whose tags do not (common in map data).
+    const re = `["name"~"${nameRegex.replace(/["\\]/g, "")}",i]`;
+    lines.push(`nwr${re}["shop"]["shop"!~"^(car|car_parts|fuel)$"]${kw}${scope};`, `nwr${re}["craft"]${kw}${scope};`, `nwr${re}["office"]${kw}${scope};`);
+  }
+  return `[out:json][timeout:45];\n(\n${lines.join("\n")}\n);\nout center tags;`;
 }
 
+/** One attempt per mirror first (bounded ~1 min each), then a second round; never more than ~8 minutes in total. */
 async function runOverpass(query: string, signal?: AbortSignal, onProgress?: (m: string) => void): Promise<OverpassElement[]> {
   const cfg = getConfig();
   let lastErr: Error | null = null;
-  for (const endpoint of cfg.overpassEndpoints) {
-    for (let attempt = 1; attempt <= 2; attempt++) {
+  for (let round = 1; round <= 2; round++) {
+    for (const endpoint of cfg.overpassEndpoints) {
       try {
-        onProgress?.(`Querying ${new URL(endpoint).hostname} (attempt ${attempt})`);
+        onProgress?.(`Querying ${new URL(endpoint).hostname} (round ${round})`);
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "User-Agent": cfg.OSM_USER_AGENT, "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({ data: query }),
-          signal: signal ?? AbortSignal.timeout(90_000),
+          signal: signal ?? AbortSignal.timeout(60_000),
         });
         if (res.status === 429 || res.status === 504 || res.status === 502 || res.status === 503) {
           lastErr = new ProviderError(`Overpass ${new URL(endpoint).hostname} HTTP ${res.status}`, "osm", true);
-          await new Promise((r) => setTimeout(r, attempt * 5_000));
           continue;
         }
         if (!res.ok) throw new ProviderError(`Overpass HTTP ${res.status}`, "osm", false);
@@ -86,6 +92,7 @@ async function runOverpass(query: string, signal?: AbortSignal, onProgress?: (m:
         if (err instanceof ProviderError && !err.retryable) throw err;
       }
     }
+    if (round === 1) await new Promise((r) => setTimeout(r, 10_000));
   }
   throw new ProviderError(`All Overpass endpoints failed: ${lastErr?.message ?? "unknown"}`, "osm", true);
 }
@@ -128,21 +135,58 @@ export const osmProvider: DiscoveryProvider = {
   async discover(q, opts): Promise<ProviderResult> {
     const notes: string[] = [];
     const playbook = getPlaybook(q.industry);
-    const selectors = playbook.osmSelectors;
+    const { osmSelectors: selectors } = selectorsFor(playbook, q.segments ?? []);
+    const nameRegex = q.segments?.length ? null : (playbook.osmNameRegex ?? null);
     if (!selectors.length) {
       throw new ProviderError(`No OpenStreetMap selectors configured for industry "${q.industry}"`, "osm");
     }
     if (!q.city && !q.region) throw new ProviderError("OpenStreetMap discovery needs at least a city or region", "osm");
-    const area = await geocodeArea(q, opts?.signal);
-    notes.push(`Geocoded area: ${area.displayName}`);
-    const query = buildOverpassQuery(selectors, area, q.keywords);
+    const radius = q.areaMode === "radius" && q.radiusKm ? q.radiusKm : null;
+    let where: BBox | { aroundLat: number; aroundLon: number; radiusM: number };
+    let areaName: string;
+    if (radius && q.lat != null && q.lng != null) {
+      // Center supplied by the form's city picker: no geocoding call needed.
+      areaName = `${[q.city, q.region].filter(Boolean).join(", ")} (${q.lat}, ${q.lng})`;
+      notes.push(`Radius ${radius} km around ${areaName}`);
+      where = { aroundLat: q.lat, aroundLon: q.lng, radiusM: radius * 1000 };
+    } else {
+      const area = await geocodeArea(q, opts?.signal);
+      areaName = area.displayName;
+      notes.push(radius ? `Geocoded center: ${area.displayName} (${radius} km radius)` : `Geocoded area: ${area.displayName}`);
+      where = radius ? { aroundLat: area.lat, aroundLon: area.lon, radiusM: radius * 1000 } : area;
+    }
+    // Precise tag query first (cheap for the shared servers); the name-pattern net only when the result is thin.
+    const query = buildOverpassQuery(selectors, where, q.keywords);
     const elements = await runOverpass(query, opts?.signal, opts?.onProgress);
     let candidates = elements.map((e) => elementToCandidate(e, q.country)).filter((c): c is BusinessCandidate => !!c);
-    notes.push(`Overpass returned ${candidates.length} named places`);
+    notes.push(`Overpass returned ${candidates.length} named places from tag selectors`);
+    if (nameRegex && candidates.length < q.maxResults) {
+      try {
+        opts?.onProgress?.("Few tagged results; running the name-pattern net");
+        const extra = await runOverpass(buildOverpassQuery([], where, q.keywords, nameRegex), opts?.signal, opts?.onProgress);
+        const known = new Set(candidates.map((c) => c.providerId));
+        let added = 0;
+        for (const el of extra) {
+          const c = elementToCandidate(el, q.country);
+          if (c && !known.has(c.providerId)) {
+            candidates.push(c);
+            added++;
+          }
+        }
+        notes.push(`Name-pattern net added ${added} place(s)`);
+      } catch (err) {
+        notes.push(`Name-pattern net skipped: ${(err as Error).message}`);
+      }
+    }
+    if (playbook.excludeNameRegex) {
+      const before = candidates.length;
+      candidates = candidates.filter((c) => !playbook.excludeNameRegex!.test(c.name));
+      if (before !== candidates.length) notes.push(`Dropped ${before - candidates.length} adjacent businesses by name (tint, detailing, towing…)`);
+    }
     // Fill city/region from the query when OSM address tags are missing (common).
     candidates = candidates.map((c) => ({ ...c, city: c.city ?? q.city ?? null, region: c.region ?? q.region ?? null }));
     // Prefer entries with websites first so the operator gets researchable businesses.
     candidates.sort((a, b) => Number(Boolean(b.website)) - Number(Boolean(a.website)));
-    return { provider: "osm", candidates, attribution: OSM_ATTRIBUTION, notes };
+    return { provider: "osm", candidates, attribution: OSM_ATTRIBUTION, notes, area: areaName };
   },
 };

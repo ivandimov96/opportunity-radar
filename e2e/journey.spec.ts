@@ -29,8 +29,9 @@ test("end-to-end demo journey", async ({ page }) => {
   // Opportunities: scores, hypothesis framing, "based on" facts, explanations
   await page.getByRole("link", { name: /^Opportunities/ }).click();
   await expect(page.getByText("Automated estimate follow-up for pending approvals")).toBeVisible();
-  await expect(page.getByText("Problem hypothesis").first()).toBeVisible();
-  await expect(page.getByText("Based on").first()).toBeVisible();
+  await expect(page.getByText("What problem might exist").first()).toBeVisible();
+  await expect(page.getByText("What we observed").first()).toBeVisible();
+  await expect(page.getByText("How we could validate it").first()).toBeVisible();
   await page.getByText("Why these scores").first().click();
   await expect(page.getByText("Evidence cited").first()).toBeVisible();
 
@@ -76,9 +77,55 @@ test("end-to-end demo journey", async ({ page }) => {
 
 test("new search form lists live providers and credential gaps", async ({ page }) => {
   await page.goto("/searches/new");
-  await expect(page.getByText("OpenStreetMap", { exact: true })).toBeVisible();
-  await expect(page.getByText(/Google Places API \(New\)/)).toBeVisible();
+  await expect(page.getByText("OpenStreetMap", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/Google Places API \(New\)/).first()).toBeVisible();
   await expect(page.getByText(/GOOGLE_PLACES_API_KEY not set/)).toBeVisible();
+});
+
+test("search form validates inline, keeps values, suggests cities by state, and starts a filtered demo search", async ({ page }) => {
+  await page.goto("/searches/new");
+  // Sub-type chips narrow the search and are reflected in the live summary.
+  await page.getByRole("button", { name: /Tire shops/ }).click();
+  await expect(page.getByText(/1 of 6 sub-types/)).toBeVisible();
+  // City suggestions follow the selected state (bundled GeoNames data, no network).
+  await page.locator('select[name="region"]').selectOption("MN");
+  const city = page.locator('input[name="city"]');
+  await city.fill("Aus");
+  await expect(page.getByRole("option", { name: /Austin, MN/ })).toBeVisible();
+  await page.getByRole("option", { name: /Austin, MN/ }).click();
+  await expect(city).toHaveValue("Austin");
+  await expect(page.getByText(/Center 43\.6666/)).toBeVisible();
+  // Invalid: no city, bad radius.
+  await city.fill("");
+  await page.getByLabel("Radius around the center").check();
+  await page.locator('input[name="radiusKm"]').fill("500");
+  await page.locator('input[name="maxResults"]').fill("7");
+  await page.getByRole("button", { name: /Start discovery/ }).click();
+  await expect(page.getByText(/things? to fix/)).toBeVisible();
+  await expect(page.getByText(/A radius needs a city/)).toBeVisible();
+  await expect(page.getByText(/Radius must be at most 100 km/)).toBeVisible();
+  await expect(page.locator('input[name="maxResults"]')).toHaveValue("7");
+  await expect(page.locator('select[name="region"]')).toHaveValue("MN");
+  await expect(page.getByRole("button", { name: /Tire shops/ })).toHaveAttribute("aria-pressed", "true");
+  // Texas registry is only offered for Texas.
+  await expect(page.getByRole("checkbox", { name: /Texas sales tax permits/ })).toBeDisabled();
+  // Fix: demo source only needs no place.
+  await page.getByLabel("Whole city / region area").check();
+  await page.getByRole("checkbox", { name: /OpenStreetMap/ }).uncheck();
+  for (const name of [/^Overture Maps/, /^Texas sales tax/]) {
+    const box = page.getByRole("checkbox", { name });
+    if ((await box.count()) && (await box.isEnabled()) && (await box.isChecked())) await box.uncheck();
+  }
+  await page.getByRole("checkbox", { name: /Demo/ }).check();
+  await page.getByRole("checkbox", { name: /Must have a phone number/ }).check();
+  await page.getByRole("button", { name: /Start discovery/ }).click();
+  await page.waitForURL(/\/searches\/[0-9a-f-]+$/);
+  await expect(page.getByText(/phone required/).first()).toBeVisible();
+  await expect(page.getByText(/Tire shops/).first()).toBeVisible();
+  await expect(page.getByText(/\d+ new · \d+ merged/)).toBeVisible({ timeout: 15000 }); // discovery finished; stats rendered (demo records already exist from the first journey)
+  await page.getByText(/Discovery details/).click();
+  await expect(page.getByText(/Ranking: \d+ candidate/)).toBeVisible();
+  await expect(page.getByRole("link", { name: /Export CSV/ })).toHaveAttribute("href", /\/api\/export\?searchId=/);
 });
 
 test("mobile layout exposes navigation and the primary action", async ({ page }) => {
@@ -89,4 +136,30 @@ test("mobile layout exposes navigation and the primary action", async ({ page })
   await page.getByRole("button", { name: "Close menu" }).click();
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(width).toBeLessThanOrEqual(390);
+});
+
+test("list pages share one table model: search, sort, date range, pagination; system page shows jobs", async ({ page }) => {
+  await page.goto("/businesses?pageSize=10");
+  await expect(page.getByRole("columnheader", { name: /Priority/ })).toBeVisible();
+  await page.locator("th").getByRole("link", { name: "Business" }).click(); // sort by name
+  await expect(page).toHaveURL(/sort=name/);
+  await expect(page.getByRole("columnheader", { name: /^Business/ })).toHaveAttribute("aria-sort", /ascending|descending/);
+  await page.getByLabel("Search").fill("barton");
+  await page.getByRole("button", { name: "Apply" }).click();
+  await expect(page).toHaveURL(/q=barton/);
+  await expect(page.getByRole("link", { name: /Barton Creek Auto Care/ })).toBeVisible();
+  await page.getByLabel("From date").fill("2000-01-01");
+  await page.getByLabel("To date").fill("2000-01-02");
+  await page.getByRole("button", { name: "Apply" }).click();
+  await expect(page.getByText(/No businesses match/)).toBeVisible();
+  await page.getByRole("link", { name: "Reset" }).click();
+  await expect(page.getByText(/of \d+ businesses/)).toBeVisible();
+  await page.goto("/searches");
+  await expect(page.getByLabel("Search")).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: /Created/ })).toBeVisible();
+  await page.goto("/system");
+  await expect(page.getByRole("heading", { name: "System" })).toBeVisible();
+  await expect(page.getByText(/Recent jobs/)).toBeVisible();
+  await expect(page.getByText(/discover search|investigate business|No jobs yet/).first()).toBeVisible();
+  await expect(page.getByText(/Source health/)).toBeVisible();
 });

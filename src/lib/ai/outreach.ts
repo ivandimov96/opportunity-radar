@@ -62,7 +62,6 @@ export async function generateOutreach(business: { id: string; name: string; cit
   const cfg = getConfig();
   const result = await callStructured({
     stage: "outreach",
-    model: cfg.AI_OUTREACH_MODEL,
     effort: cfg.AI_OUTREACH_EFFORT,
     system: OUTREACH_SYSTEM,
     user: buildOutreachInput(business, opportunity, facts, style, senderName),

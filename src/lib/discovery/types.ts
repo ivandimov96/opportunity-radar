@@ -2,7 +2,7 @@
  * Provider-agnostic discovery contracts. Every provider returns the same
  * candidate shape; normalization and deduplication happen downstream.
  */
-export type DiscoveryProviderKey = "osm" | "google_places" | "csv" | "demo";
+export type DiscoveryProviderKey = "overture" | "osm" | "google_places" | "tx_permits" | "csv" | "demo";
 
 export interface DiscoveryQuery {
   industry: string; // playbook key
@@ -13,6 +13,13 @@ export interface DiscoveryQuery {
   city?: string | null;
   maxResults: number;
   requireWebsite: boolean;
+  /** Playbook segment keys; empty = all. */
+  segments?: string[];
+  areaMode?: "area" | "radius";
+  radiusKm?: number;
+  /** Center for radius mode when already known (Google adapter); OSM geocodes itself. */
+  lat?: number | null;
+  lng?: number | null;
 }
 
 export interface BusinessCandidate {
@@ -33,6 +40,12 @@ export interface BusinessCandidate {
   sourceUrl?: string | null;
   attribution: string;
   raw?: Record<string, unknown>;
+  /** open | closed | unknown when the source knows. */
+  operatingStatus?: string | null;
+  /** Brand the source attaches to the place (chains). */
+  brand?: string | null;
+  /** Social profile URLs the source lists. */
+  socials?: string[];
 }
 
 export interface ProviderResult {
@@ -40,6 +53,8 @@ export interface ProviderResult {
   candidates: BusinessCandidate[];
   attribution: string;
   notes: string[];
+  /** Resolved area description, when the provider geocoded one. */
+  area?: string | null;
 }
 
 export interface DiscoveryProvider {

@@ -19,6 +19,7 @@ const groups: { title: string; items: { href: string; label: string; icon: IconN
     title: "System",
     items: [
       { href: "/import", label: "Import CSV", icon: "upload", hint: "Bring your own list" },
+      { href: "/system", label: "System", icon: "bolt", hint: "Jobs & source health" },
       { href: "/settings", label: "Settings", icon: "settings", hint: "Integrations & limits" },
     ],
   },

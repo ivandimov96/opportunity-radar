@@ -11,19 +11,23 @@ const PRICING: Record<string, { input: number; output: number; cacheRead: number
   "claude-sonnet-5": { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
   "claude-haiku-5-5": { input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125 },
   "claude-fable-5-1": { input: 10, output: 50, cacheRead: 0.25, cacheWrite: 12.5 },
+  // OpenAI list prices (USD per million tokens) as published 2026-10; cached input billed at the cacheRead rate.
+  "gpt-5": { input: 1.25, output: 10, cacheRead: 0.125, cacheWrite: 0 },
+  "gpt-5-mini": { input: 0.25, output: 2, cacheRead: 0.025, cacheWrite: 0 },
+  "gpt-5-nano": { input: 0.05, output: 0.4, cacheRead: 0.005, cacheWrite: 0 },
 };
 
 export function estimateCostUsd(model: string, u: { input: number; output: number; cacheRead: number; cacheWrite: number }) {
-  const p = PRICING[model] ?? { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
+  const p = PRICING[model.replace(/^[a-z]+:/, "")] ?? { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
   return (u.input * p.input + u.output * p.output + u.cacheRead * p.cacheRead + u.cacheWrite * p.cacheWrite) / 1_000_000;
 }
 
-export async function recordUsage(args: { stage: string; model: string; businessId?: string | null; input: number; output: number; cacheRead: number; cacheWrite: number }) {
+export async function recordUsage(args: { stage: string; model: string; provider?: string; businessId?: string | null; input: number; output: number; cacheRead: number; cacheWrite: number }) {
   const cost = estimateCostUsd(args.model, args);
   const db = await getDb();
   await db
     .insert(aiUsage)
-    .values({ id: newId(), stage: args.stage, model: args.model, businessId: args.businessId ?? null, inputTokens: args.input, outputTokens: args.output, cacheReadTokens: args.cacheRead, cacheWriteTokens: args.cacheWrite, estimatedCostUsd: cost })
+    .values({ id: newId(), stage: args.stage, model: args.provider ? `${args.provider}:${args.model}` : args.model, businessId: args.businessId ?? null, inputTokens: args.input, outputTokens: args.output, cacheReadTokens: args.cacheRead, cacheWriteTokens: args.cacheWrite, estimatedCostUsd: cost })
     .run();
   return cost;
 }

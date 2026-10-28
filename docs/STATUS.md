@@ -57,7 +57,79 @@ status + one verdict per business, a 7-stage sales pipeline, faster parallel cra
 Tests rewritten (49 unit/integration, 3 browser journeys). Pushed to GitHub; NOT
 deployed to Vercel at the founder's request.
 
-## What was actually tested (executed in this session)
+## Research engine v3 (same day, fifth pass) — see D14 and docs/RESEARCH.md
+Rebuilt how a business is researched after the founder asked for the best algorithm
+with fallbacks and prioritization: lead score + chain detection at discovery; website
+finder with phone/name verification (also for dead recorded sites); crawl fallbacks
+(root, scheme/www variants, sitemap); off-site keyless footprint (RDAP, DNS MX/SPF,
+Internet Archive); deterministic facts from resources, schema.org JSON-LD and
+main-content text cues (43 profile fields incl. an "online footprint" group); a rule
+engine giving a verdict without AI; model hypotheses kept and complemented by rules.
+UI: lead score rings before investigation, chain badges and filter, rule-based/AI
+badges on opportunities, website-finder states. Tests: 73 unit/integration pass.
+Live (no AI): 12 independents re-investigated in 46 s total (1.3–9.4 s each),
+11 profiled with rule-based opportunities, 1 dead domain recovered by a verified guess,
+1 failed (domain no longer resolves, no alternative found); 3/15 and 10/40 OSM results
+flagged as chains; OSM Austin auto repair: 205 places, 94 with website, 17 with a phone
+but no website; 0/5 of those located by domain guesses alone (web search needs a Brave
+key; DuckDuckGo answered automated queries with a bot challenge). Not committed and not
+deployed (founder approval pending).
+
+## Search start (same day, sixth pass)
+Rebuilt how a search starts: business type with sub-types (segments per playbook,
+mapped to OpenStreetMap selectors / Google queries), whole-area or radius mode
+(Overpass `around`, geocoded center cached), sources, discovery filters with skip
+counts (chains, phone, website, known), result cap, auto-investigation threshold and
+limit. One shared input schema (`src/lib/search-input.ts`) drives the server action,
+the client form (`useActionState`: inline field errors, submitted values preserved,
+pending state, live summary of what will run and what is collected) and the tests.
+Searches list/detail show the filter summary, resolved area and skip counts.
+Found and fixed a production-only database lock (D15): local SQLite now uses one
+connection per process, atomic job claims and batched writes. Tests: 80 unit/integration
+and 4 browser journeys pass (including the new filtered-search journey).
+
+## Free improvements (same day, seventh pass) — see D16
+Texas sales tax permit registry as a discovery source (NAICS per sub-type, title-cased
+names, permit dates → `permit_since` fact); template outreach drafts without AI;
+keyless website finder improvements (email domain, more variants, DNS pre-check,
+address verification). Settings, search form, lists and badges updated.
+
+## Location picker and ranked discovery (same day, eighth pass)
+US state dropdown + city typeahead from bundled GeoNames places (16k cities, CC BY),
+radius centers without geocoding; Texas registry offered only for Texas. Discovery
+rewritten as collect → score → rank → store (cap keeps the best), lead hints (hours,
+years trading, outlets per owner), OpenStreetMap name-pattern net, leftover source
+records merged. Search form sidebar removed (compact summary line instead).
+
+Nationwide live checks (OpenStreetMap only): Raleigh NC home services 20 found/12
+listed (775 s, overloaded public server), Boise ID dental 55/12 (49 s), Denver CO radius
+search timed out on every public mirror in the first attempt. Response: two more
+Overpass mirrors by default, the name-pattern net demoted to a second pass that only runs
+when the precise query is thin, dealer detection by name/domain, adjacent businesses
+(tint, detailing, towing) dropped by name.
+
+## Audit-driven rebuild (2026-10-28) — see docs/AUDIT.md, D17–D22
+Overture Maps Places is the primary discovery source (DuckDB over the public S3 release,
+cached per area; measured: Denver 1,019 candidates, Austin 1,591 in 3.9 s, Phoenix landscaping
+173, Raleigh dental 297, listed businesses with website/phone/email throughout); brand and
+open/closed status feed chain detection and closed-business skipping; lead reasons persisted
+and shown in a "Found by" panel. Research: headless-browser fallback for JavaScript-only sites,
+per-site politeness (2 in flight), page renderer tracking, research age and staleness, a
+coverage block with the investigation log, per-job timeouts. Opportunities: `insufficient_evidence`
+verdict; the card reads observed → problem → why it matters → software → evidence → unknown →
+validate; patterns show recurring hypotheses and evidence strength. AI: provider abstraction
+(Anthropic + OpenAI) behind one structured-output contract, tested with injected transports.
+UX: shared table model (search, sort, date range, pagination) on businesses, searches, search
+results and pipeline; System page with jobs (retry/cancel) and source health. A code review of the
+whole change set before the merge found ten defects, all fixed with tests: job timeouts now abort
+the handler and fail the business/search; dead-worker recovery is host-scoped; pattern counts used
+mismatched keys; generic chain words (budget, enterprise, target) excluded independents; failed
+businesses were not re-queued on a rerun; the finder never verified domain guesses after many
+search hits and could throw on a region with regex characters; the "insufficient evidence"
+threshold counted measured keys; cancelling a queued job left its search "discovering" forever;
+two vendor-email lists disagreed. Tests: 116 unit/integration, 5 browser journeys.
+
+## What was actually tested (executed in the first session)
 - `pnpm typecheck`: clean. `pnpm build`: succeeds.
 - `pnpm test`: 51 tests pass (8 files) — normalization, dedupe rules, SSRF guard
   (private ranges, URL shapes, DNS rebinding), HTML extraction, signal detection,

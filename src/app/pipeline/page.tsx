@@ -2,13 +2,33 @@ import Link from "next/link";
 import { pipelineBoard } from "@/lib/queries";
 import { Badge, Icon, PageHeader, ScoreRing, fmtRelative } from "@/components/ui";
 import { PIPELINE_STAGES } from "@/lib/pipeline/stages";
+import { FilterBar } from "@/components/table";
+import { parseTableParams } from "@/lib/table";
+import { listPlaybooks } from "@/lib/industries";
 
-export default async function PipelinePage() {
-  const board = await pipelineBoard();
+export default async function PipelinePage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
+  const sp = await searchParams;
+  const t = parseTableParams(sp, { defaultSort: "priority", sortable: ["priority"] });
+  const board = await pipelineBoard({ q: t.q || undefined, industry: sp.industry || undefined, demo: (sp.demo as "hide" | "only") || undefined });
   const total = Object.values(board).reduce((a, b) => a + b.length, 0);
   return (
     <>
       <PageHeader title="Pipeline" subtitle="Prospects by stage. Research and analysis advance businesses automatically up to “outreach ready”; you move them from there based on real conversations." actions={<span className="text-xs text-ink-muted">{total} prospects</span>} />
+      <FilterBar basePath="/pipeline" sp={sp} params={t} placeholder="Search prospects by name, city or domain">
+        <select className="select w-auto" name="industry" defaultValue={sp.industry ?? ""}>
+          <option value="">Any industry</option>
+          {listPlaybooks().map((p) => (
+            <option key={p.key} value={p.key}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        <select className="select w-auto" name="demo" defaultValue={sp.demo ?? ""}>
+          <option value="">Real + demo</option>
+          <option value="hide">Hide demo</option>
+          <option value="only">Demo only</option>
+        </select>
+      </FilterBar>
       <div className="flex gap-3 overflow-x-auto pb-3 scrollbar-thin -mx-4 px-4 md:-mx-8 md:px-8">
         {PIPELINE_STAGES.map((s) => {
           const items = board[s.key] ?? [];

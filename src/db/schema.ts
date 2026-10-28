@@ -18,6 +18,8 @@ export const searches = sqliteTable("searches", {
   requireWebsite: integer("require_website", { mode: "boolean" }).notNull().default(true),
   providers: json<string[]>("providers").notNull(),
   autoInvestigate: integer("auto_investigate", { mode: "boolean" }).notNull().default(true),
+  /** Discovery filters and automation settings (see src/lib/search-input.ts). Null = defaults. */
+  filters: json<SearchFilters>("filters"),
   status: text("status").notNull().default("queued"), // queued|running|done|failed
   stats: json<SearchStats>("stats"),
   error: text("error"),
@@ -27,12 +29,43 @@ export const searches = sqliteTable("searches", {
 });
 
 export type SearchStats = {
-  providerResults: Record<string, { found: number; error?: string }>;
+  providerResults: Record<string, { found: number; error?: string; durationMs?: number }>;
+  /** Everything the sources and the ranking step reported, in order (geocoded area, counts, drops, merges). */
+  notes?: string[];
+  durationMs?: number;
+  /** Candidates collected from all sources before filters, and after filters/ranking. */
+  candidates?: number;
+  ranked?: number;
   created: number;
   merged: number;
   skippedNoWebsite: number;
+  skippedNoPhone?: number;
+  skippedChains?: number;
+  skippedKnown?: number;
+  skippedClosed?: number;
+  queuedForInvestigation?: number;
+  area?: string | null;
   total: number;
   attribution: string[];
+};
+
+export type SearchFilters = {
+  /** Playbook segment keys (sub-types of the industry). Empty = all segments. */
+  segments: string[];
+  /** Whole geocoded city/region area, or a radius around its center. */
+  areaMode: "area" | "radius";
+  radiusKm: number;
+  requirePhone: boolean;
+  excludeChains: boolean;
+  /** Skip businesses already known from earlier searches (they are still merged, just not listed as results). */
+  skipKnown: boolean;
+  /** Only auto-investigate candidates with at least this lead score. */
+  minLeadScore: number;
+  /** Auto-investigate at most this many (best leads first); null = all. */
+  autoInvestigateLimit: number | null;
+  /** City center picked from the typeahead (GeoNames); lets radius searches skip geocoding. */
+  centerLat?: number | null;
+  centerLon?: number | null;
 };
 
 // --------------------------------------------------------------- businesses
@@ -69,6 +102,18 @@ export const businesses = sqliteTable(
     bestConfidence: integer("best_confidence"),
     priority: integer("priority"),
     investigatedAt: text("investigated_at"),
+    /** Pre-investigation ranking (0-100): how worth researching this candidate looks from discovery data alone. */
+    leadScore: integer("lead_score"),
+    /** independent | chain | unknown — chains/franchises are deprioritized, never hidden. */
+    kind: text("kind").notNull().default("unknown"),
+    /** Where the website URL came from: provider key, found_search, found_guess, found_email, manual. */
+    websiteSource: text("website_source"),
+    /** Why this candidate ranked where it did at discovery (lead score reasons), for the "Found by" panel. */
+    leadReasons: json<string[]>("lead_reasons"),
+    /** open | closed | unknown, from the discovery source (Overture operating_status). */
+    operatingStatus: text("operating_status"),
+    /** Brand name when the source marks the place as part of a brand (chains). */
+    brand: text("brand"),
     isDemo: integer("is_demo", { mode: "boolean" }).notNull().default(false),
     createdAt: text("created_at").notNull().default(now()),
     updatedAt: text("updated_at").notNull().default(now()),
@@ -155,6 +200,8 @@ export const pages = sqliteTable(
     text: text("text"),
     bytes: integer("bytes"),
     error: text("error"),
+    /** static (plain HTTP fetch) | browser (headless Chromium fallback for JavaScript-only pages). */
+    renderer: text("renderer").notNull().default("static"),
     fetchedAt: text("fetched_at").notNull().default(now()),
   },
   (t) => [index("pages_business_idx").on(t.businessId)],
@@ -208,6 +255,8 @@ export const opportunities = sqliteTable(
     confidenceScore: integer("confidence_score").notNull(),
     scoreBreakdown: json<ScoreBreakdown>("score_breakdown").notNull(),
     rank: integer("rank").notNull().default(1),
+    /** rules = deterministic pattern from verified facts/gaps; ai = model hypothesis (fact-cited); demo. */
+    source: text("source").notNull().default("ai"),
     createdAt: text("created_at").notNull().default(now()),
   },
   (t) => [index("opportunities_business_idx").on(t.businessId), index("opportunities_category_idx").on(t.category)],
@@ -318,6 +367,16 @@ export const aiUsage = sqliteTable("ai_usage", {
   cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
   cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
   estimatedCostUsd: real("estimated_cost_usd").notNull(),
+  createdAt: text("created_at").notNull().default(now()),
+});
+
+/** Cached discovery pulls from bulk open data (Overture): one row per release × area × category set, 30-day TTL. */
+export const placeCache = sqliteTable("place_cache", {
+  key: text("key").primaryKey(),
+  release: text("release").notNull(),
+  rows: json<Record<string, unknown>[]>("rows").notNull(),
+  rowCount: integer("row_count").notNull().default(0),
+  durationMs: integer("duration_ms"),
   createdAt: text("created_at").notNull().default(now()),
 });
 

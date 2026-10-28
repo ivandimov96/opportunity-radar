@@ -63,6 +63,8 @@ estimated cumulative spend is reached.
 ## Documentation
 
 - [docs/STRATEGY.md](docs/STRATEGY.md) — target users, problem, differentiation, pilot market, validation strategy
+- [docs/AUDIT.md](docs/AUDIT.md) — 2026-10-28 audit, findings and target architecture
+- [docs/RESEARCH.md](docs/RESEARCH.md) — how a business is researched: lead score, website finder, crawl fallbacks, off-site footprint, deterministic facts, rules
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — stack, components, data model, processing lifecycle, AI design, security
 - [docs/DECISIONS.md](docs/DECISIONS.md) — decision log with alternatives and trade-offs
 - [docs/STATUS.md](docs/STATUS.md) — implementation status, tests executed, known limitations, next priorities
@@ -77,3 +79,5 @@ estimated cumulative spend is reached.
 - **No bulk sending.** Drafts are reviewed and sent by a human.
 - **Untrusted web content.** Website text is data, never instructions; fetching is SSRF-guarded, bounded, and robots-respecting.
 - **Demo data is always labeled** and uses reserved `.example` domains.
+
+City suggestions use data from [GeoNames](https://www.geonames.org/) (CC BY 4.0); discovery data from Overture Maps Foundation (CDLA-Permissive 2.0), OpenStreetMap contributors (ODbL) and the Texas Comptroller open data portal.

@@ -97,3 +97,117 @@ to 4 key pages fetched in parallel, 10 s timeouts. Measured: 3–8 s per real bu
 without AI (was 15–20 s). Trade-offs: a rewrite of the data layer and pages; profile
 fields are a fixed vocabulary (extend in one file). Revisit when: real AI output shows
 fields that are consistently empty or missing.
+
+## D14 — Research engine v3: locate, footprint, detect, rules (2026-10-27)
+Context: the founder asked for the best possible research algorithm with explicit
+fallbacks and prioritization. The v2 engine dropped OSM entries without a website,
+ranked chains like independents, relied on the (unconfigured) model for most facts and
+only looked at the website itself.
+Alternatives: paid enrichment APIs (Google Places details, Yelp, Clearbit-style) —
+cost, caching restrictions, no evidence trail; headless-browser rendering — slow,
+fragile; keyless search engines — DuckDuckGo's HTML endpoint answered automated queries
+with a bot challenge in live checks.
+Choice (docs/RESEARCH.md): lead score + chain detection before research; a website
+finder (Brave Search when keyed, name-based domain guesses otherwise) that stores a URL
+only after verifying the business phone or name + city on the page, also used when a
+recorded site is dead; crawl fallbacks (root, scheme/www variants, sitemap); off-site
+keyless records (RDAP year, DNS MX/SPF, Internet Archive first capture) in parallel with
+the crawl; deterministic facts from resources, schema.org JSON-LD and main-content text
+cues with explicit gaps; a rule engine that produces cautious hypotheses without a
+model (weak gap-only rules capped); model hypotheses always kept when AI runs, rules
+fill the rest (max 5). Measured on 12 real Austin shops: 1.3–9.4 s each, 7–22 verified
+facts, 11/12 with a rule-based verdict, 1 dead site recovered via a verified guess;
+0/5 no-website shops located without a search key.
+Trade-offs: more moving parts per investigation (all optional and bounded); rule wording
+is templated; chain lists need maintenance per industry. Revisit when: a Brave key is
+configured (measure finder hit-rate), and when AI runs on real shops (compare rule vs
+model hypotheses, retire rules the model consistently contradicts).
+
+## D15 — Local SQLite: one connection per process, no multi-statement transactions (2026-10-27)
+Context: with `@libsql/client` 0.18 a `file:` database is a pool of connections. The
+driver's busy wait is synchronous, so when a job-claim transaction held the write lock
+on one connection and a handler wrote on another, the handler's busy wait blocked the
+event loop and the transaction could not commit until the wait failed (observed with
+transaction tracing: 10.4 s, then SQLITE_BUSY). Per-connection PRAGMAs only reached one
+pooled connection.
+Alternatives: busy timeout in the client config (still blocks the loop); a single
+connection with transactions (statements issued during a transaction are rejected);
+retry wrappers around every statement.
+Choice: `concurrency: 1` for local files; job claiming is a single atomic
+`UPDATE … WHERE id IN (SELECT … LIMIT 1) RETURNING`; the investigation result is written
+with `db.batch` (statements run back to back on the connection). Remote Turso keeps the
+default client. Trade-offs: statements serialize per process (fine for one operator +
+one worker); any future `db.transaction` on a local file must be avoided.
+Revisit when: moving to Turso everywhere or to Postgres.
+
+## D16 — Free improvements over paid APIs: Texas permit registry, template drafts (2026-10-27)
+Context: the founder chose to proceed without paying for Google Places, Brave Search or
+model calls. Choice: (1) the Texas Comptroller's Active Sales Tax Permit Holders open
+dataset as a discovery provider (NAICS + city; names, addresses, permit dates; no
+phone/website) — roughly double the map coverage for the pilot market and a verified
+"permit since" fact; (2) template outreach drafts grounded in verified facts and gaps,
+claim-mapped and validated like model drafts, so the funnel works end to end without a
+key; (3) a keyless website finder that tries the business email domain, more name
+variants with DNS pre-checks, and address-based verification for registry records.
+Trade-offs: registry records need the finder or manual entry for a website; template
+wording is fixed; Texas only (other states have similar registries to add later).
+Revisit when: keys are approved (Brave for the finder, Anthropic for richer drafts).
+
+## D17 — Overture Maps Places as the primary discovery source (2026-10-28)
+Context: public Overpass mirrors timed out unpredictably (Denver, Phoenix) and map coverage
+was thin (Austin: ~200 places, 94 with a website). Alternatives: paid place APIs (Google,
+Foursquare, Yelp: cost, caching limits), self-hosted Overpass (operations), state registries
+(no contact data, one state at a time).
+Measured: Overture places (open data, CDLA-Permissive 2.0) read with DuckDB straight from the
+public S3 release: Denver 8 km box 1,037 automotive places in 8.6 s, Austin city 1,624 in
+3.9 s, Phoenix landscaping 173, Raleigh dental 297; listed businesses had websites, phones and
+emails in every case; brand and open/closed fields come free.
+Choice: `overture` provider (DuckDB `@duckdb/node-api`, httpfs over S3, per-area cache in
+`place_cache`, 30-day TTL), default-selected; OpenStreetMap kept as a secondary net; Texas
+registry as an extra; category mapping per playbook segment. Disabled on serverless hosts
+(native binary, long-lived process) where OpenStreetMap remains.
+Trade-offs: a native dependency; first query per area reads tens of MB; monthly releases need
+`OVERTURE_RELEASE` bumps (the cache key includes the release). Revisit when: hosting moves to
+serverless only, or a cheaper regional extract pipeline is set up.
+
+## D18 — Headless-browser render as a bounded fallback (2026-10-28)
+Static fetches miss JavaScript-only sites. Choice: when the static homepage has < 400 chars of
+main text and the HTML is script-heavy, render it once in headless Chromium (Playwright, 15 s,
+images/fonts/media blocked, SSRF rules applied to sub-requests, TLS errors ignored because only
+public text is read), record `renderer=browser` on the page row; key pages are rendered only
+when the homepage needed it. Local hosts only. Trade-offs: Chromium memory; a few seconds per
+such site. Revisit when: a measured share of sites still yields thin text.
+
+## D19 — "Insufficient evidence" is a verdict (2026-10-28)
+When fewer than 5 facts about the business itself are verified (7 for a single-page site;
+measured keys such as site health, dates and email hosting exist for nearly every reachable
+site and do not count), the investigation says so instead of ranking hypotheses built on gaps. Rule patterns still run and are kept as
+weak hypotheses, labeled. Why: a missing website feature is a reason to ask, not a finding;
+the operator must see when the site simply did not show enough.
+
+## D20 — Model providers behind one structured-output contract (2026-10-28)
+Alternatives: Anthropic-only (status quo); an abstraction library (LangChain-style); separate
+code paths per provider. Choice: a small `ModelProvider` interface (system, user, Zod schema,
+effort → validated output, usage, stop reason) with two implementations: Anthropic via the SDK's
+structured outputs, OpenAI via the Responses API over fetch with a strict JSON schema derived
+from the same Zod schema. The shared client owns provider selection (`AI_PROVIDER` or the first
+configured key), the spend guard, schema validation, cost accounting (`provider:model` in usage
+rows) and refusal/truncation errors. Prompts, quote-grounding and citation validation are
+unchanged and provider-independent. No key is required for anything else; mock outputs are
+never shown as research. Revisit when: a key is available and both providers are measured on
+the same shops.
+
+## D21 — One table model for every list page (2026-10-28)
+Alternatives: a client-side data grid library; per-page bespoke filters (status quo). Choice:
+URL-param model (`q`, `sort`, `dir`, `page`, `pageSize`, `from`, `to`, `dateField`) parsed by
+`src/lib/table.ts`, server-side filtering/sorting/paging in the queries, and shared server
+components (`FilterBar`, `SortHeader`, `Pagination`, `TableEmpty`). Applied to businesses
+(dates: discovered, investigated, updated), searches (created), search results (search within,
+sort), pipeline (search, industry, demo). Why: links are shareable, no client state, consistent
+behavior, works at thousands of rows. Date pickers only where a date has a practical meaning.
+
+## D22 — A System page for jobs and source health (2026-10-28)
+Jobs were invisible outside counts. Choice: `/system` lists recent jobs with status, attempts,
+timing, outcome and retry/cancel; source health aggregates each discovery provider's runs,
+failures, candidates and average time over recent searches; worker status and capabilities at
+a glance. Settings stays configuration-only.

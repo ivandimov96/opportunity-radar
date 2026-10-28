@@ -1,11 +1,15 @@
 import { osmProvider } from "./osm";
 import { googlePlacesProvider } from "./google-places";
 import { demoProvider } from "./demo";
+import { txPermitsProvider } from "./tx-permits";
+import { overtureProvider } from "./overture";
 import type { DiscoveryProvider, DiscoveryProviderKey } from "./types";
 
 export const PROVIDERS: Record<Exclude<DiscoveryProviderKey, "csv">, DiscoveryProvider> = {
+  overture: overtureProvider,
   osm: osmProvider,
   google_places: googlePlacesProvider,
+  tx_permits: txPermitsProvider,
   demo: demoProvider,
 };
 

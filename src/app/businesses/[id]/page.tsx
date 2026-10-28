@@ -8,7 +8,7 @@ import { OutreachEditor, type ClaimView } from "@/components/outreach-editor";
 import { OPPORTUNITY_CATEGORIES, getPlaybook, type OpportunityCategory } from "@/lib/industries";
 import { FACT_FIELDS, FACT_GROUPS, factLabel, factValueLabel } from "@/lib/profile/fields";
 import { PIPELINE_STAGES, VALIDATION_SIGNALS, stageLabel } from "@/lib/pipeline/stages";
-import { deriveWorkflow, defaultTabFor } from "@/lib/workflow";
+import { deriveWorkflow, isResearchStale, researchAgeDays, defaultTabFor } from "@/lib/workflow";
 import { priorityScore } from "@/lib/scoring/score";
 import { addNoteAction, addValidationSignalAction, generateDraftAction, investigateAction, setNextActionAction, updateDraftAction, updateStageAction, updateWebsiteAction } from "@/app/actions";
 
@@ -127,12 +127,19 @@ export default async function BusinessPage({ params, searchParams }: { params: P
 
       {(wf.next.kind === "retry" || wf.next.kind === "no_website") && !b.isDemo && (
         <div className="mb-4">
-          <Callout tone="warn" title={wf.next.kind === "retry" ? `Investigation failed: ${b.statusMessage ?? "unknown error"}` : "No website on record"}>
+          <Callout tone="warn" title={wf.next.kind === "retry" ? `Investigation failed: ${b.statusMessage ?? "unknown error"}` : "No website could be located"}>
+            {wf.next.kind === "no_website" && <p className="text-sm">{wf.next.description}</p>}
             <form action={updateWebsiteAction} className="mt-2 flex flex-wrap gap-2 items-center">
               <input type="hidden" name="businessId" value={b.id} />
               <input className="input max-w-sm" name="website" defaultValue={b.website ?? ""} placeholder="https://their-website.com" />
               <button className="btn btn-sm">Save website &amp; investigate</button>
             </form>
+            {wf.next.kind === "no_website" && (
+              <form action={investigateAction} className="mt-2">
+                <input type="hidden" name="businessId" value={b.id} />
+                <button className="btn btn-sm btn-ghost"><Icon name="refresh" /> Retry the website finder</button>
+              </form>
+            )}
           </Callout>
         </div>
       )}
@@ -154,7 +161,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                 ) : d.facts.length ? (
                   <p className="text-sm text-ink-muted">{cfg.ai.enabled ? "No summary could be verified from the site." : "Summary needs the AI step (ANTHROPIC_API_KEY). Detected facts are below."}</p>
                 ) : (
-                  <EmptyState compact icon="sparkles" title="Not investigated yet" description={b.website ? "Investigate to fetch the website, build the profile and analyze opportunities in one step." : "No website is known; nothing can be fetched."} />
+                  <EmptyState compact icon="sparkles" title="Not investigated yet" description={b.website ? "Investigate to fetch the website and public records, build the profile and analyze opportunities in one step." : b.status === "no_website" ? "No website could be located; add one if you know it." : "No website on record: investigating will first try to locate one."} />
                 )}
                 {b.verdict === "no_opportunity" && d.latest?.verdictReason && (
                   <div className="mt-4">
@@ -174,6 +181,42 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                   </div>
                 ) : null}
               </Card>
+              {d.latest && (
+                <Card title="Research coverage" description={`What was actually read${b.investigatedAt ? ` · ${researchAgeDays(b.investigatedAt)} day(s) ago` : ""}${isResearchStale(b.investigatedAt) ? " · stale, consider re-investigating" : ""}`}>
+                  <div className="grid sm:grid-cols-4 gap-3 text-sm">
+                    {[
+                      { k: "Pages read", v: `${d.pages.filter((p) => !p.error).length} of ${d.pages.length}` },
+                      { k: "Rendered in browser", v: String(d.pages.filter((p) => p.renderer === "browser").length) },
+                      { k: "Facts verified", v: String(d.facts.filter((f) => f.status === "verified").length) },
+                      { k: "Off-site records", v: String(d.facts.filter((f) => ["domain_registered", "site_first_seen", "email_provider", "email_senders", "permit_since"].includes(f.key) && f.status === "verified").length) },
+                    ].map((x) => (
+                      <div key={x.k}>
+                        <div className="text-xs text-ink-muted">{x.k}</div>
+                        <div className="font-semibold tabular-nums">{x.v}</div>
+                      </div>
+                    ))}
+                  </div>
+                  {d.pages.some((p) => p.error) && (
+                    <ul className="text-xs text-ink-muted mt-3 space-y-0.5">
+                      {d.pages.filter((p) => p.error).map((p) => (
+                        <li key={p.id} className="truncate">
+                          <span className="text-warn">{p.error}</span> · {p.url}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {(d.latest.notes?.length ?? 0) > 0 && (
+                    <details className="mt-3 text-xs">
+                      <summary className="cursor-pointer text-ink-muted">Investigation log ({d.latest.notes!.length})</summary>
+                      <ol className="list-decimal pl-4 mt-1 space-y-0.5 text-ink-muted">
+                        {d.latest.notes!.map((n, i) => (
+                          <li key={i}>{n}</li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
+                </Card>
+              )}
               {d.facts.length > 0 && (
                 <Card title="Profile" description="Every field is verified with a quote and source, marked not found after checking the site, or unknown." padded={false}>
                   {FACT_GROUPS.map((g) => {
@@ -228,9 +271,10 @@ export default async function BusinessPage({ params, searchParams }: { params: P
 
           {tab === "opportunities" && (
             <>
-              {b.status !== "profiled" && <EmptyState icon="sparkles" title="No analysis yet" description={b.website ? "Investigate the business first." : "No website to investigate."} />}
-              {b.verdict === "needs_ai" && <Callout tone="warn" title="Opportunity analysis needs an Anthropic API key">The profile has detected facts; the AI step produces hypotheses, scores and drafts.</Callout>}
+              {b.status !== "profiled" && <EmptyState icon="sparkles" title="No analysis yet" description={b.website ? "Investigate the business first." : b.status === "no_website" ? "No website could be located." : "Investigate: the website finder runs first."} />}
+              {b.verdict === "needs_ai" && <Callout tone="warn" title="No rule-based pattern matched; AI analysis pending">The profile has detected facts and off-site records, but none of the deterministic patterns applied. The AI step (needs ANTHROPIC_API_KEY) reads the full pages for subtler hypotheses.</Callout>}
               {b.verdict === "no_opportunity" && <Callout tone="warn" title="No compelling software opportunity">{d.latest?.verdictReason}</Callout>}
+              {b.verdict === "insufficient_evidence" && <Callout tone="warn" title="Insufficient evidence to recommend anything">{d.latest?.verdictReason} Hypotheses below, if any, rest on gaps and should be read as questions, not findings.</Callout>}
               {d.latest?.warnings?.length ? <p className="text-xs text-ink-faint">Validator notes: {d.latest.warnings.join(" · ")}</p> : null}
               {d.opportunities.map((o) => {
                 const supportVerified = o.supportingFactKeys.filter((k) => factByKey.get(k)?.status === "verified");
@@ -243,6 +287,8 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                         <span className="text-ink-faint">#{o.rank}</span> {o.title}
                         <Badge>{OPPORTUNITY_CATEGORIES[o.category as OpportunityCategory] ?? o.category}</Badge>
                         {supportVerified.length === 0 && <Badge tone="warn">hypothesis only</Badge>}
+                        {o.source === "rules" && <Badge tone="info" title="Deterministic pattern over verified facts and gaps; no model involved">rule-based</Badge>}
+                        {o.source === "ai" && <Badge tone="accent" title="Model hypothesis; every cited fact was verified in code">AI</Badge>}
                       </span>
                     }
                     actions={
@@ -253,50 +299,64 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                     }
                   >
                     <div className="grid md:grid-cols-2 gap-5 text-sm">
-                      <div className="space-y-3">
-                        <Field label="Problem hypothesis" hint="to validate">{o.problemHypothesis}</Field>
-                        <Field label="Proposed solution">{o.proposedSolution}</Field>
-                        <Field label="Why not an existing tool or process change" muted>{o.whyNotExistingTool}</Field>
-                        <Field label="Expected value" muted>{o.expectedValue}</Field>
-                        <Field label="Conversation angle" muted>{o.salesAngle}</Field>
-                        <div className="flex gap-2 flex-wrap">
-                          <Badge tone="info">effort: {o.implementationEffort}</Badge>
-                          <Badge tone="info">reusability: {o.reusability}</Badge>
-                        </div>
-                      </div>
-                      <div className="space-y-3">
-                        <div>
-                          <div className="label">Based on</div>
-                          {o.supportingFactKeys.length === 0 ? (
-                            <p className="text-xs text-warn">No profile fact cited. Confidence is capped.</p>
-                          ) : (
-                            <ul className="space-y-1 text-xs">
-                              {o.supportingFactKeys.map((k) => {
-                                const f = factByKey.get(k);
+                      <div className="space-y-4">
+                        <Step n={1} label="What we observed">
+                          {supportVerified.length ? (
+                            <ul className="space-y-1.5 text-xs">
+                              {supportVerified.map((k) => {
+                                const f = factByKey.get(k)!;
                                 return (
-                                  <li key={k} className="flex items-start gap-1.5">
-                                    <Icon name={f?.status === "verified" ? "check" : "minus"} className={`w-3.5 h-3.5 mt-0.5 shrink-0 ${f?.status === "verified" ? "text-ok" : "text-warn"}`} />
-                                    <span>
-                                      <span className="font-medium">{factLabel(k)}</span>: {f ? (f.status === "verified" ? factValueLabel(f.value) : "not found on the site") : "no longer established"}
-                                      {f?.sourceUrl && (
-                                        <>
-                                          {" "}
-                                          <a href={f.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5">
-                                            source <Icon name="external" className="w-3 h-3" />
-                                          </a>
-                                        </>
-                                      )}
-                                    </span>
+                                  <li key={k}>
+                                    <span className="font-medium">{factLabel(k)}:</span> {factValueLabel(f.value)}
+                                    {f.evidenceQuote && f.evidenceQuote !== f.value && <q className="block italic text-ink-muted mt-0.5">{f.evidenceQuote}</q>}
+                                    {f.sourceUrl && (
+                                      <a href={f.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 ml-1">
+                                        source <Icon name="external" className="w-3 h-3" />
+                                      </a>
+                                    )}
                                   </li>
                                 );
                               })}
                             </ul>
+                          ) : (
+                            <p className="text-xs text-warn">Nothing verified supports this one; it rests on what the site does not show.</p>
                           )}
-                          {supportGaps.length > 0 && supportVerified.length === 0 && <p className="text-[11px] text-ink-faint mt-1">Supported only by gaps: things the site does not show.</p>}
-                        </div>
-                        <ListField label="Assumptions to validate" items={o.assumptions} />
-                        <ListField label="Questions for the business" items={o.validationQuestions} />
-                        <ListField label="Risks" items={o.risks} />
+                        </Step>
+                        <Step n={2} label="What problem might exist" hint="hypothesis, not a finding">
+                          <p>{o.problemHypothesis}</p>
+                        </Step>
+                        <Step n={3} label="Why it matters">
+                          <p className="text-ink-muted">{o.expectedValue ?? "Value mechanism not stated."}</p>
+                        </Step>
+                        <Step n={4} label="What software could help">
+                          <p>{o.proposedSolution}</p>
+                          {o.whyNotExistingTool && <p className="text-xs text-ink-muted mt-1">Why not an existing tool or a process change: {o.whyNotExistingTool}</p>}
+                          <div className="flex gap-2 flex-wrap mt-2">
+                            <Badge tone="info">effort: {o.implementationEffort}</Badge>
+                            <Badge tone="info">reusability: {o.reusability}</Badge>
+                          </div>
+                        </Step>
+                      </div>
+                      <div className="space-y-4">
+                        <Step n={5} label="Evidence" hint={`${supportVerified.length} verified · ${supportGaps.length} gap${supportGaps.length === 1 ? "" : "s"}`}>
+                          {supportGaps.length > 0 && (
+                            <p className="text-xs text-ink-muted">
+                              Not shown on the site: {supportGaps.map((k) => factLabel(k).toLowerCase()).join(", ")}. A gap is a reason to ask, never proof of a problem.
+                            </p>
+                          )}
+                          {o.supportingFactKeys.length === 0 && <p className="text-xs text-warn">No profile fact cited. Confidence is capped.</p>}
+                          {o.supportingFactKeys.some((k) => !factByKey.get(k)) && <p className="text-xs text-ink-faint">Some cited facts are no longer established after re-investigation.</p>}
+                        </Step>
+                        <Step n={6} label="What remains unknown">
+                          <ListField label="Assumptions" items={o.assumptions} />
+                          <div className="mt-2">
+                            <ListField label="Risks" items={o.risks} />
+                          </div>
+                        </Step>
+                        <Step n={7} label="How we could validate it">
+                          <ListField label="Questions for the business" items={o.validationQuestions} />
+                          {o.salesAngle && <p className="text-xs text-ink-muted mt-2">Conversation angle: {o.salesAngle}</p>}
+                        </Step>
                       </div>
                     </div>
                     <details className="mt-4 group">
@@ -348,8 +408,8 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                           <label className="label">Sender name</label>
                           <input className="input" name="senderName" placeholder="optional" />
                         </div>
-                        <button className="btn btn-primary" disabled={busy || !cfg.ai.enabled} title={!cfg.ai.enabled ? "Requires ANTHROPIC_API_KEY" : ""}>
-                          <Icon name="mail" /> Draft outreach
+                        <button className="btn btn-primary" disabled={busy} title={!cfg.ai.enabled ? "Template draft from verified facts (AI not configured)" : ""}>
+                          <Icon name="mail" /> {cfg.ai.enabled ? "Draft outreach" : "Draft outreach (template)"}
                         </button>
                       </form>
                     )}
@@ -376,7 +436,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                         <span className="capitalize">{dr.style}</span> draft <StatusPill status={dr.status} /> {dr.editedByUser && <Badge>edited</Badge>}
                       </span>
                     }
-                    description={opp ? `For: ${opp.title}` : undefined}
+                    description={<span>{opp ? `For: ${opp.title}` : ""} <Badge tone={dr.model === "template" ? "info" : "accent"} title={dr.model === "template" ? "Built from verified facts and gaps without a model" : `Model: ${dr.model ?? "unknown"}`}>{dr.model === "template" ? "template draft" : "AI draft"}</Badge></span>}
                     actions={
                       <span className="text-xs text-ink-faint inline-flex items-center gap-1">
                         <Icon name="mail" className="w-3.5 h-3.5" /> {dr.toEmail ?? "no verified email"} · {fmtRelative(dr.createdAt)}
@@ -482,7 +542,8 @@ export default async function BusinessPage({ params, searchParams }: { params: P
               rows={[
                 { k: "Email", v: b.email ? <a href={`mailto:${b.email}`}>{b.email}</a> : <span className="text-warn">not found</span> },
                 { k: "Phone", v: b.phone ?? <span className="text-ink-faint">unknown</span> },
-                { k: "Website", v: b.website ? <a href={b.website} target="_blank" rel="noreferrer">{b.websiteDomain}</a> : <span className="text-ink-faint">none</span> },
+                { k: "Website", v: b.website ? <span>{" "}<a href={b.website} target="_blank" rel="noreferrer">{b.websiteDomain}</a>{b.websiteSource && /^found_/.test(b.websiteSource) && <Badge className="ml-1" tone="info" title="Located by the website finder and verified against the business phone/name">{b.websiteSource === "found_search" ? "found via search" : "found via domain guess"}</Badge>}</span> : <span className="text-ink-faint">none</span> },
+                { k: "Kind", v: <span>{b.kind === "chain" ? <Badge tone="neutral">chain / franchise</Badge> : b.kind === "independent" ? "independent" : "unknown"}{b.leadScore != null && <span className="text-ink-faint"> · lead score {b.leadScore}</span>}</span> },
               ]}
             />
           </Card>
@@ -560,12 +621,35 @@ export default async function BusinessPage({ params, searchParams }: { params: P
               </ul>
             )}
           </Card>
+          <Card title="Found by" description="Why this business is in Radar and how it ranked before research.">
+            <ul className="text-xs space-y-1.5">
+              {d.foundBy.map((f) => (
+                <li key={f.searchId} className="flex items-center gap-1.5 min-w-0">
+                  <Link href={`/searches/${f.searchId}`} className="truncate">
+                    {f.name}
+                  </Link>
+                  <span className="text-ink-faint shrink-0">#{f.rank} · {fmtRelative(f.createdAt)}</span>
+                </li>
+              ))}
+              {d.foundBy.length === 0 && <li className="text-ink-faint">Not from a search (imported or demo).</li>}
+            </ul>
+            <div className="text-xs mt-3 pt-3 border-t border-line space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="text-ink-muted">Lead score</span>
+                {b.leadScore != null ? <ScoreRing value={b.leadScore} size={28} tone="neutral" /> : <span className="text-ink-faint">—</span>}
+                <span className="text-ink-muted">{b.kind === "chain" ? "chain / franchise" : b.kind}</span>
+                {b.operatingStatus && b.operatingStatus !== "unknown" && <Badge tone={b.operatingStatus === "closed" ? "bad" : "ok"}>{b.operatingStatus}</Badge>}
+                {b.brand && <Badge tone="neutral" title="Brand attached by the discovery source">{b.brand}</Badge>}
+              </div>
+              {(b.leadReasons?.length ?? 0) > 0 && <div className="text-ink-faint">{b.leadReasons!.join(" · ")}</div>}
+            </div>
+          </Card>
           <Card title="Sources">
             <ul className="text-xs space-y-2">
               {d.sources.map((s) => (
                 <li key={s.id}>
                   <div className="flex items-center gap-1.5">
-                    <Badge tone={s.provider === "demo" ? "demo" : "neutral"}>{s.provider === "osm" ? "OpenStreetMap" : s.provider}</Badge>
+                    <Badge tone={s.provider === "demo" ? "demo" : "neutral"}>{s.provider === "overture" ? "Overture Maps" : s.provider === "osm" ? "OpenStreetMap" : s.provider === "tx_permits" ? "Texas permits" : s.provider === "google_places" ? "Google Places" : s.provider}</Badge>
                     {s.sourceUrl ? (
                       <a href={s.sourceUrl} target="_blank" rel="noreferrer" className="truncate">
                         {s.providerId}
@@ -590,6 +674,19 @@ export default async function BusinessPage({ params, searchParams }: { params: P
   );
 }
 
+function Step({ n, label, hint, children }: { n: number; label: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <div className="flex gap-3">
+      <span className="w-5 h-5 rounded-full bg-accent-soft text-accent-text text-[11px] font-semibold grid place-items-center shrink-0 mt-0.5">{n}</span>
+      <div className="min-w-0 flex-1">
+        <div className="label">
+          {label} {hint && <span className="normal-case font-normal text-ink-faint">({hint})</span>}
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
 function Field({ label, hint, children, muted }: { label: string; hint?: string; children: React.ReactNode; muted?: boolean }) {
   return (
     <div>

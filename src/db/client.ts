@@ -33,11 +33,15 @@ function migrationsFolder() {
 
 async function open(target: { url: string; authToken?: string; local: boolean }): Promise<Db> {
   if (target.local && target.url.startsWith("file:")) fs.mkdirSync(path.dirname(target.url.slice(5)), { recursive: true });
-  const client = createClient({ url: target.url, authToken: target.authToken, intMode: "number" });
-  if (target.local) {
-    await client.execute("PRAGMA journal_mode = WAL").catch(() => {});
-    await client.execute("PRAGMA busy_timeout = 5000").catch(() => {});
-  }
+  // Local files use ONE connection per process. The driver's busy wait is synchronous (it blocks
+  // the event loop), so two pooled connections contending for SQLite's single write lock inside one
+  // process can starve each other (observed: a job-claim transaction held open for the whole busy
+  // timeout while a handler's write spun). With one connection every statement is queued
+  // asynchronously by the pool instead. Consequence: no multi-statement transactions anywhere
+  // (a statement issued while a transaction holds the connection is rejected); atomic multi-row
+  // writes use `db.batch`, which runs its statements back to back on the connection.
+  const client = createClient({ url: target.url, authToken: target.authToken, intMode: "number", ...(target.local ? { concurrency: 1 } : {}) });
+  if (target.local) await client.execute("PRAGMA journal_mode = WAL").catch(() => {});
   await client.execute("PRAGMA foreign_keys = ON").catch(() => {});
   const db = drizzle(client, { schema });
   await migrate(db, { migrationsFolder: migrationsFolder() });

@@ -1,10 +1,10 @@
 "use server";
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { z } from "zod";
 import { getDb } from "@/db/client";
-import { businesses, outreachDrafts, prospects, searches, searchResults } from "@/db/schema";
+import { getConfig } from "@/lib/config";
+import { businesses, jobs, outreachDrafts, prospects, searches, searchResults } from "@/db/schema";
 import { csvToCandidates, upsertCandidate, type DiscoveryProviderKey } from "@/lib/discovery";
 import { normalizeWebsite, websiteDomain } from "@/lib/discovery/normalize";
 import { newId, nowIso } from "@/lib/ids";
@@ -15,44 +15,22 @@ import { addValidationSignal, ensureProspect, logActivity, setNextAction, setSta
 import { PIPELINE_STAGE_KEYS, type PipelineStage, type ValidationSignalType } from "@/lib/pipeline/stages";
 import { seedDemo } from "@/db/seed-demo";
 import type { OutreachStyle } from "@/lib/ai/prompts";
+import { parseSearchForm, type RawSearchValues, type SearchFieldErrors } from "@/lib/search-input";
 
 const str = (fd: FormData, k: string) => (fd.get(k)?.toString() ?? "").trim();
 
-const SearchInput = z.object({
-  name: z.string().min(1).max(120),
-  industry: z.string().min(1),
-  categoryQuery: z.string().max(200).optional(),
-  keywords: z.string().max(200).optional(),
-  country: z.string().min(2).max(2).default("US"),
-  region: z.string().max(80).optional(),
-  city: z.string().max(80).optional(),
-  maxResults: z.coerce.number().int().min(1).max(500).default(25),
-  requireWebsite: z.boolean(),
-  autoInvestigate: z.boolean(),
-  providers: z.array(z.enum(["osm", "google_places", "demo"])).min(1),
-});
+export type CreateSearchState = { errors: SearchFieldErrors; values: RawSearchValues } | null;
 
-export async function createSearch(fd: FormData) {
-  const parsed = SearchInput.safeParse({
-    name: str(fd, "name") || `${str(fd, "industry").replace(/_/g, " ")} · ${str(fd, "city") || str(fd, "region") || str(fd, "country")}`,
-    industry: str(fd, "industry"),
-    categoryQuery: str(fd, "categoryQuery") || undefined,
-    keywords: str(fd, "keywords") || undefined,
-    country: str(fd, "country").toUpperCase() || "US",
-    region: str(fd, "region") || undefined,
-    city: str(fd, "city") || undefined,
-    maxResults: str(fd, "maxResults") || 25,
-    requireWebsite: fd.get("requireWebsite") !== "off",
-    autoInvestigate: fd.get("autoInvestigate") !== "off",
-    providers: fd.getAll("providers").map(String),
-  });
-  if (!parsed.success) redirect(`/searches/new?error=${encodeURIComponent(parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "))}`);
-  const v = parsed.data;
+/** Validates the search form; returns field errors (re-rendering the form with the submitted values) or starts discovery and redirects. */
+export async function createSearch(_prev: CreateSearchState, fd: FormData): Promise<CreateSearchState> {
+  const parsed = parseSearchForm(fd);
+  if (!parsed.ok) return { errors: parsed.errors, values: parsed.raw };
+  const { values: v, filters, name } = parsed;
   const id = newId();
   const db = await getDb();
   await db
     .insert(searches)
-    .values({ id, name: v.name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoInvestigate: v.autoInvestigate, providers: v.providers as DiscoveryProviderKey[], status: "queued", isDemo: v.providers.length === 1 && v.providers[0] === "demo" })
+    .values({ id, name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoInvestigate: v.autoInvestigate, filters, providers: v.providers as DiscoveryProviderKey[], status: "queued", isDemo: v.providers.length === 1 && v.providers[0] === "demo" })
     .run();
   await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
   kickWorker();
@@ -81,15 +59,21 @@ export async function investigateManyAction(fd: FormData) {
   const searchId = str(fd, "searchId");
   const ids = fd.getAll("businessId").map(String).filter(Boolean);
   const includeDone = fd.get("includeDone") === "on";
-  let targets: { id: string; website: string | null; status: string; isDemo: boolean }[] = [];
+  const includeChains = fd.get("includeChains") === "on";
+  const cols = { id: businesses.id, website: businesses.website, status: businesses.status, isDemo: businesses.isDemo, leadScore: businesses.leadScore, kind: businesses.kind };
+  let targets: { id: string; website: string | null; status: string; isDemo: boolean; leadScore: number | null; kind: string }[] = [];
   if (searchId) {
-    targets = (await db.select({ id: businesses.id, website: businesses.website, status: businesses.status, isDemo: businesses.isDemo }).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, searchId)).all());
+    targets = await db.select(cols).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, searchId)).all();
   } else if (ids.length) {
-    targets = await db.select({ id: businesses.id, website: businesses.website, status: businesses.status, isDemo: businesses.isDemo }).from(businesses).where(inArray(businesses.id, ids)).all();
+    targets = await db.select(cols).from(businesses).where(inArray(businesses.id, ids)).all();
   }
+  // Best leads first: the queue is FIFO, so enqueue order is investigation order.
+  targets.sort((a, b) => (b.leadScore ?? 0) - (a.leadScore ?? 0));
   let n = 0;
   for (const t of targets) {
-    if (!t.website || t.isDemo) continue;
+    if (t.isDemo) continue;
+    if (t.kind === "chain" && !includeChains) continue;
+    if (!t.website && !getConfig().RESEARCH_FIND_WEBSITE) continue;
     if (!includeDone && t.status === "profiled") continue;
     if (t.status === "queued" || t.status === "investigating") continue;
     await enqueueInvestigation(t.id);
@@ -236,4 +220,32 @@ export async function deleteBusinessAction(fd: FormData) {
   await db.delete(businesses).where(eq(businesses.id, id)).run();
   revalidatePath("/businesses");
   redirect("/businesses");
+}
+
+/** Requeue a failed job (attempt counter reset) so it runs again. */
+export async function retryJobAction(fd: FormData) {
+  const id = str(fd, "jobId");
+  const db = await getDb();
+  await db.update(jobs).set({ status: "queued", attempts: 0, error: null, lockedBy: null, scheduledAt: nowIso() }).where(and(eq(jobs.id, id), inArray(jobs.status, ["failed", "queued"]))).run();
+  kickWorker();
+  revalidatePath("/system");
+}
+
+/** Cancel a queued job: it is marked failed with an explicit reason and never picked up. */
+export async function cancelJobAction(fd: FormData) {
+  const id = str(fd, "jobId");
+  const db = await getDb();
+  const job = await db.select().from(jobs).where(eq(jobs.id, id)).get();
+  const res = await db.update(jobs).set({ status: "failed", error: "Cancelled by the operator", finishedAt: nowIso(), lockedBy: null }).where(and(eq(jobs.id, id), eq(jobs.status, "queued"))).run();
+  if (job && res.rowsAffected) {
+    // What the job was for must not look "in progress" forever.
+    if (job.type === "discover_search") {
+      await db.update(searches).set({ status: "failed", error: "Cancelled by the operator", updatedAt: nowIso() }).where(and(eq(searches.id, String(job.payload.searchId)), eq(searches.status, "queued"))).run();
+    } else if (job.type === "investigate_business") {
+      const businessId = String(job.payload.businessId);
+      const biz = await db.select({ investigatedAt: businesses.investigatedAt }).from(businesses).where(eq(businesses.id, businessId)).get();
+      await db.update(businesses).set({ status: biz?.investigatedAt ? "profiled" : "new", statusMessage: "Investigation cancelled by the operator", updatedAt: nowIso() }).where(and(eq(businesses.id, businessId), eq(businesses.status, "queued"))).run();
+    }
+  }
+  revalidatePath("/system");
 }

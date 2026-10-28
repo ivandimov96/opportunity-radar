@@ -4,6 +4,7 @@ import { businesses, businessSources } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
 import type { BusinessCandidate } from "./types";
 import { normalizeCity, normalizeEmail, normalizeName, normalizePhone, normalizeWebsite, websiteDomain } from "./normalize";
+import { leadScore } from "@/lib/scoring/lead";
 
 export type UpsertOutcome = { businessId: string; wasNew: boolean; matchedBy?: "provider_id" | "domain" | "name_city" | "phone" };
 
@@ -18,7 +19,7 @@ export type UpsertOutcome = { businessId: string; wasNew: boolean; matchedBy?: "
 export async function upsertCandidate(
   db: Db,
   c: BusinessCandidate,
-  ctx: { industry: string; searchId?: string | null; isDemo?: boolean; fixedId?: string },
+  ctx: { industry: string; searchId?: string | null; isDemo?: boolean; fixedId?: string; leadReasons?: string[] },
 ): Promise<UpsertOutcome> {
   const website = normalizeWebsite(c.website);
   const domain = websiteDomain(website);
@@ -74,6 +75,7 @@ export async function upsertCandidate(
       .set({
         website: cur.website ?? website,
         websiteDomain: cur.websiteDomain ?? domain,
+        websiteSource: cur.website ? cur.websiteSource : website ? c.provider : null,
         phone: cur.phone ?? phone,
         email: cur.email ?? email,
         street: cur.street ?? c.street ?? null,
@@ -84,6 +86,9 @@ export async function upsertCandidate(
         lat: cur.lat ?? c.lat ?? null,
         lng: cur.lng ?? c.lng ?? null,
         category: cur.category ?? c.category ?? null,
+        operatingStatus: c.operatingStatus && c.operatingStatus !== "unknown" ? c.operatingStatus : cur.operatingStatus,
+        brand: cur.brand ?? c.brand ?? null,
+        leadReasons: ctx.leadReasons ?? cur.leadReasons,
         updatedAt: ts,
       })
       .where(eq(businesses.id, existingId))
@@ -107,9 +112,16 @@ export async function upsertCandidate(
   }
 
   const id = ctx.fixedId ?? newId();
+  const lead = leadScore({ name: c.name, industry: ctx.industry, website, phone, email, street: c.street, city, category: c.category });
   await db.insert(businesses)
     .values({
       id,
+      leadScore: lead.score,
+      kind: lead.kind,
+      websiteSource: website ? c.provider : null,
+      leadReasons: ctx.leadReasons ?? lead.reasons,
+      operatingStatus: c.operatingStatus ?? null,
+      brand: c.brand ?? null,
       name: c.name.trim(),
       nameNormalized,
       industry: ctx.industry,

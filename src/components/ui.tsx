@@ -40,6 +40,7 @@ const STATUS: Record<string, { tone: Tone; label: string; pulse?: boolean }> = {
   draft: { tone: "accent", label: "Draft" },
   approved: { tone: "ok", label: "Approved" },
   archived: { tone: "neutral", label: "Archived" },
+  insufficient_evidence: { tone: "warn", label: "Insufficient evidence" },
 };
 export function StatusPill({ status, label }: { status: string; label?: string }) {
   const m = STATUS[status] ?? { tone: "neutral" as Tone, label: status.replace(/_/g, " ") };

@@ -6,9 +6,10 @@
 import { getConfig } from "@/lib/config";
 import { ProviderError } from "@/lib/discovery/types";
 import { claimNextJob, completeJob, failJob, recoverStaleJobs, updateJobProgress, type JobRow, type JobType } from "./queue";
-import { handleDiscoverSearch, handleGenerateOutreach, handleInvestigateBusiness, NonRetryableError, type ProgressFn } from "./handlers";
+import os from "node:os";
+import { handleDiscoverSearch, handleGenerateOutreach, handleInvestigateBusiness, markJobTimedOut, NonRetryableError, type ProgressFn } from "./handlers";
 
-const HANDLERS: Record<JobType, (job: JobRow, progress: ProgressFn) => Promise<void>> = {
+const HANDLERS: Record<JobType, (job: JobRow, progress: ProgressFn, signal: AbortSignal) => Promise<void>> = {
   discover_search: handleDiscoverSearch,
   investigate_business: handleInvestigateBusiness,
   generate_outreach: handleGenerateOutreach,
@@ -34,13 +35,44 @@ export async function runJob(job: JobRow) {
     return;
   }
   try {
-    await handler(job, progress);
+    const limit = JOB_TIMEOUT_MS[job.type] ?? 10 * 60_000;
+    // The timeout aborts the handler's network work through the signal; handlers check it before persisting.
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const run = handler(job, progress, controller.signal);
+    void run.catch(() => {}); // an abandoned run that later rejects must not become an unhandled rejection
+    await Promise.race([
+      run,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const err = new JobTimeoutError(`Job exceeded ${Math.round(limit / 60_000)} min and was abandoned`);
+          controller.abort(err);
+          reject(err);
+        }, limit);
+      }),
+    ]).finally(() => clearTimeout(timer));
     await completeJob(job.id);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = describeError(err);
     const outcome = await failJob(job, msg, isRetryable(err));
+    if (err instanceof JobTimeoutError) await markJobTimedOut(job, msg).catch(() => {});
     console.warn(`[worker] job ${job.type}/${job.id} ${outcome}: ${msg}`);
   }
+}
+
+/** Upper bound per job type; a hung external call must not hold a worker slot forever. */
+export const JOB_TIMEOUT_MS: Record<string, number> = { discover_search: 20 * 60_000, investigate_business: 10 * 60_000, generate_outreach: 5 * 60_000 };
+export class JobTimeoutError extends Error {}
+
+/** Message plus the cause chain (database driver errors hide the real reason in `cause`). */
+export function describeError(err: unknown): string {
+  const parts: string[] = [];
+  let cur: unknown = err;
+  for (let i = 0; i < 4 && cur; i++) {
+    parts.push(cur instanceof Error ? cur.message : String(cur));
+    cur = cur instanceof Error ? cur.cause : undefined;
+  }
+  return parts.filter((p, i) => p && parts.indexOf(p) === i).join(" ← ");
 }
 
 /** Process queued jobs until none are claimable. Used by tests and the CLI. */
@@ -58,7 +90,7 @@ export async function drainQueue(types: JobType[] = Object.keys(HANDLERS) as Job
 export function startWorker(opts: { pollMs?: number } = {}) {
   if (g.__radarWorker?.running) return g.__radarWorker;
   const cfg = getConfig();
-  const state: WorkerState = { running: true, active: 0, id: `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}` };
+  const state: WorkerState = { running: true, active: 0, id: `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}@${os.hostname()}` };
   g.__radarWorker = state;
   const maxConcurrent = cfg.RESEARCH_CONCURRENCY;
   void recoverStaleJobs().catch((err) => console.warn("[worker] stale recovery failed", err));

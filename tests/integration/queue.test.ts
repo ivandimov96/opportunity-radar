@@ -1,3 +1,4 @@
+import os from "node:os";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useTempDb } from "../helpers";
 import { claimNextJob, completeJob, enqueueJob, failJob, recoverStaleJobs } from "@/lib/jobs/queue";
@@ -42,6 +43,17 @@ describe("job queue", () => {
     await enqueueJob("generate_outreach", { businessId: "b" });
     const j = (await claimNextJob("w", ["generate_outreach"]))!;
     expect(await failJob(j, "bad input", false)).toBe("failed");
+  });
+
+  it("requeues jobs locked by a dead worker process on this machine only", async () => {
+    const a = await enqueueJob("generate_outreach", { businessId: "dead-local" });
+    const b = await enqueueJob("generate_outreach", { businessId: "other-host" });
+    await claimNextJob(`worker-999999-abc123@${os.hostname()}`, ["generate_outreach"]);
+    await claimNextJob("worker-999999-abc123@some-other-machine", ["generate_outreach"]);
+    expect(await recoverStaleJobs()).toBe(1);
+    const rows = await db.select().from(jobs).all();
+    expect(rows.find((r) => r.id === a.id)?.status).toBe("queued");
+    expect(rows.find((r) => r.id === b.id)?.status).toBe("running"); // a shared database: another host's worker may still be alive
   });
 
   it("recovers stale running jobs", async () => {

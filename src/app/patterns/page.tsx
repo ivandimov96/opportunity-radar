@@ -8,7 +8,7 @@ export default async function PatternsPage() {
   const max = Math.max(1, ...groups.map((g) => g.businesses));
   return (
     <>
-      <PageHeader title="Recurring patterns" subtitle="Opportunity hypotheses grouped by category and industry. A pattern becomes a product candidate only when real conversations confirm it." />
+      <PageHeader title="Recurring patterns" subtitle="Opportunity hypotheses grouped by category and industry, with the evidence that recurs. A pattern becomes a product candidate only when real conversations confirm it." />
       <div className="mb-5">
         <Callout tone="neutral" icon="info">
           <strong>Hypotheses are not demand.</strong> The left side of each card counts what the analysis proposed; the right side counts what businesses actually told you.
@@ -61,6 +61,19 @@ export default async function PatternsPage() {
                 </div>
                 <div className="grid sm:grid-cols-2 gap-4 text-sm">
                   <div>
+                    <div className="label">Recurring hypotheses</div>
+                    <ul className="space-y-1 text-xs mb-3">
+                      {g.hypotheses.map(([t, n]) => (
+                        <li key={t} className="flex justify-between gap-2">
+                          <span className="truncate">{t}</span>
+                          <span className="text-ink-faint shrink-0">×{n}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="flex gap-1.5 flex-wrap mb-3">
+                      <Badge tone="info" title="Share of hypotheses that come from deterministic rules rather than the model">{g.ruleShare}% rule-based</Badge>
+                      <Badge tone={g.strongShare >= 50 ? "ok" : "warn"} title="Share of hypotheses backed by at least one verified fact (not only gaps)">{g.strongShare}% with verified evidence</Badge>
+                    </div>
                     <div className="label">Shared profile evidence</div>
                     {g.sharedEvidence.length ? (
                       <ul className="space-y-1 text-xs">

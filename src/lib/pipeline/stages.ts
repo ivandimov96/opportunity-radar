@@ -26,5 +26,5 @@ export type ValidationSignalType = (typeof VALIDATION_SIGNALS)[number]["key"];
 
 export const BUSINESS_STATUSES = ["new", "queued", "investigating", "profiled", "failed", "no_website"] as const;
 export type BusinessStatus = (typeof BUSINESS_STATUSES)[number];
-export const VERDICTS = ["opportunity", "no_opportunity", "needs_ai"] as const;
+export const VERDICTS = ["opportunity", "no_opportunity", "needs_ai", "insufficient_evidence"] as const;
 export type Verdict = (typeof VERDICTS)[number];

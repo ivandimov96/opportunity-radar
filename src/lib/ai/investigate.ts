@@ -80,7 +80,6 @@ export async function investigateWithModel(business: { id: string; name: string;
   const cfg = getConfig();
   const result = await callStructured({
     stage: "investigate",
-    model: cfg.AI_INVESTIGATE_MODEL,
     effort: cfg.AI_INVESTIGATE_EFFORT,
     system: investigateSystem(getPlaybook(business.industry)),
     user: buildInvestigationInput(business, pages, detected),
@@ -97,7 +96,7 @@ export function validateInvestigation(data: Investigation, pages: PageForModel[]
   const facts = new Map<FactKey, ValidatedFact>();
   // Detected facts are authoritative for their keys.
   for (const d of detected) facts.set(d.key, { key: d.key, status: d.status === "unknown" ? "not_found" : d.status, value: d.value, evidenceQuote: d.evidenceQuote, sourceUrl: d.sourceUrl });
-  const detectedVerified = new Set(detected.filter((d) => d.status === "verified").map((d) => d.key));
+  const detectedVerified = new Set(detected.filter((d) => d.status === "verified" && d.key !== "summary").map((d) => d.key));
 
   for (const f of data.facts) {
     if (!FACT_BY_KEY[f.key]) {
