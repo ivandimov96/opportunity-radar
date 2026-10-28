@@ -18,6 +18,7 @@ All settings are environment variables; see `.env.example`. None are required.
 | `EMBEDDED_WORKER` | `true` runs the worker inside the Next.js process. |
 
 ## Credentials needed from the founder
+- `FIRECRAWL_API_KEY` (free plan) — without it no new website research runs; stored pages can still be re-analyzed.
 - Anthropic API key (paid usage; guarded by `AI_SPEND_LIMIT_USD`).
 - Optional: Google Maps Platform key with Places API (New) enabled (paid beyond free
   credit; storage restrictions apply).
@@ -61,11 +62,29 @@ embedded worker (`pnpm build && pnpm start`). Put it behind HTTPS and add authen
 before exposing it publicly.
 
 ## Cost considerations (estimates)
-- OSM: free (respect policies). Google Places: pay-per-request.
+- Google Maps via SerpApi: free plan 250 searches/month (budget guard `SERPAPI_MONTHLY_SEARCH_BUDGET`; usage in `provider_usage`). OSM/Overture: disabled (D25).
 - AI per business (Opus 5.5 list prices): extraction ~15–45K input tokens → ~$0.06–0.20;
   analysis ~5–10K in / 2–4K out → ~$0.06–0.12; outreach ~3K in / 0.5K out → ~$0.02.
   Roughly **$0.15–0.35 per fully processed business**; 100 businesses ≈ $15–35.
   Lower by setting extraction to a cheaper model/effort.
+
+## Search engine: cells, releases, live checks
+Every fetched source record is kept in `source_places` by 0.2° grid cell; `source_cells` records
+which (provider, industry, cell) is cached from which release and when. Cells are refreshed after
+`OVERTURE_CACHE_DAYS` or when Overture publishes a new release (`OVERTURE_RELEASE=auto` reads the
+STAC catalog daily; pin a tag to freeze it). First reads are slow (Overture 45–110 s, Overpass
+40–210 s per metro) and run in the background job; repeats are local. To force a refresh, delete
+the rows for that provider from `source_cells`. Live check without the worker:
+`DATABASE_PATH=./data/dev.db pnpm exec tsx scripts/search-live.ts --industry auto_repair --country US --region TX --city Austin --radius 8 --providers overture,osm --max 100`
+(stop `pnpm start`/`pnpm dev` first). Public Overpass and Nominatim are shared infrastructure:
+one bounded query per fetch, identifying user agent (`OSM_USER_AGENT`), ≥ 1 s between geocoder
+calls, everything cached; use a paid or self-hosted instance for sustained volume.
+
+## Regenerating the bundled location data
+`src/data/countries.json`, `regions.json` (GeoNames admin1) and `world-places.json` (every place
+≥ 15,000 inhabitants outside the US) come from GeoNames exports (CC BY 4.0):
+`pnpm exec tsx scripts/build-geo-data.ts <dir with countryInfo.txt, admin1CodesASCII.txt, cities15000.txt>`.
+The US list (`us-places.json`, ≥ 1,000 inhabitants) is regenerated as described below.
 
 ## Regenerating the bundled US places list
 `src/data/us-places.json` comes from GeoNames `cities1000.zip` (CC BY 4.0): US rows,
@@ -85,10 +104,18 @@ key includes the release, so old pulls are simply ignored. State-sized areas are
 city by city or by radius. On serverless hosts the provider reports itself unavailable and
 OpenStreetMap is used.
 
-## Headless rendering
-`playwright` (Chromium) renders JavaScript-only homepages when the static fetch is thin. Install
-browsers once with `pnpm exec playwright install chromium`. Disabled on serverless and by
-`RESEARCH_BROWSER_RENDER=false`. Rendered pages are marked `renderer=browser`.
+## Website research with Firecrawl
+Firecrawl is the only way pages are fetched. Setup: create an account at firecrawl.dev (the
+free plan includes 1,000 credits a month, no card), copy the key into `.env` as
+`FIRECRAWL_API_KEY`, restart. Costs: 1 credit per page (charged even when the site answers
+4xx; not charged when Firecrawl itself fails), 1 per site map; a business costs
+`RESEARCH_MAX_PAGES` credits (+1 when a map is needed), finder checks 1 each. Guards:
+`FIRECRAWL_MONTHLY_CREDIT_BUDGET` (new crawls stop when the month's recorded credits reach it),
+`FIRECRAWL_CONCURRENCY` / `FIRECRAWL_RPM` (free plan: 2 and 10), `FIRECRAWL_TIMEOUT_MS`. Stored
+pages (markdown + raw HTML) are reused for `RESEARCH_STALE_DAYS` days and re-analysis is free.
+The System page shows credits used this month, the account's remaining balance and requests in
+flight. Self-hosting: point `FIRECRAWL_API_URL` at your instance (Firecrawl is open source);
+then no credits apply. Pages are marked `renderer=firecrawl` or `stored`.
 
 ## Jobs
 `/system` shows recent jobs with retry/cancel and source health. Jobs are abandoned after a per-type

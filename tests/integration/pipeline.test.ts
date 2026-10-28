@@ -24,19 +24,24 @@ vi.mock("@/lib/search", async (importOriginal) => {
   return { ...orig, webSearch: vi.fn(async (q: string) => (/Pit Stop/.test(q) ? [{ url: "https://www.yelp.com/biz/pit-stop", title: "Yelp", snippet: "" }, { url: "https://pitstop.example/about", title: "Pit Stop Garage", snippet: "" }] : [])) };
 });
 
-vi.mock("@/lib/research/fetcher", async (importOriginal) => {
-  const orig = await importOriginal<typeof import("@/lib/research/fetcher")>();
-  return {
-    ...orig,
-    safeFetch: vi.fn(async (url: string) => {
-      const key = url.replace(/\/$/, "");
-      if (key.endsWith("/robots.txt")) return { url, finalUrl: url, status: 404, contentType: "text/plain", body: "", bytes: 0, truncated: false };
-      if (key === "https://down.example") throw new Error("fetch failed: ECONNREFUSED");
-      const body = SITE[key];
-      if (!body) return { url, finalUrl: url, status: 404, contentType: "text/html", body: "", bytes: 0, truncated: false };
-      return { url, finalUrl: url, status: 200, contentType: "text/html", body, bytes: body.length, truncated: false };
-    }),
-  };
+// Firecrawl is the only way pages are fetched; here it answers from the fixture above.
+const scrapeCalls: string[] = [];
+vi.mock("@/lib/research/firecrawl", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/research/firecrawl")>();
+  const scrapePage = vi.fn(async (url: string) => {
+    scrapeCalls.push(url);
+    const key = url.replace(/\/$/, "");
+    const base = { url, finalUrl: url, markdown: null, links: [] as string[], title: null, description: null, ms: 1, credits: 1 };
+    if (key === "https://down.example") throw new orig.FirecrawlError("Firecrawl HTTP 500: unable to fetch https://down.example", 500, true);
+    const body = SITE[key];
+    if (!body) return { ...base, statusCode: 404, rawHtml: null, error: "HTTP 404" };
+    return { ...base, statusCode: 200, rawHtml: body, error: null };
+  });
+  return { ...orig, scrapePage, mapSite: vi.fn(async () => ({ links: [], credits: 1 })) };
+});
+vi.mock("@/lib/research/robots", async (importOriginal) => {
+  const orig = await importOriginal<typeof import("@/lib/research/robots")>();
+  return { ...orig, isAllowedByRobots: async () => true };
 });
 
 const callStructured = vi.fn();
@@ -46,7 +51,7 @@ vi.mock("@/lib/ai/client", async (importOriginal) => {
 });
 
 import { useTempDb, resetEnv } from "../helpers";
-import { businesses, facts, investigations, jobs, opportunities, outreachDrafts, prospects, searchResults, searches } from "@/db/schema";
+import { businesses, facts, investigations, jobs, opportunities, outreachDrafts, pages, prospects, searchResults, searches } from "@/db/schema";
 import { newId } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { drainQueue } from "@/lib/jobs/worker";
@@ -59,10 +64,11 @@ const OPP = { category: "estimate_quote_followup", title: "Estimate follow-up", 
 describe("integrated pipeline", () => {
   let db: Awaited<ReturnType<typeof useTempDb>>;
   beforeEach(async () => {
-    resetEnv({ ANTHROPIC_API_KEY: "test-key" });
+    resetEnv({ ANTHROPIC_API_KEY: "test-key", FIRECRAWL_API_KEY: "test" });
     db = await useTempDb();
     clearRobotsCache();
     callStructured.mockReset();
+    scrapeCalls.length = 0;
   });
 
   it("runs discovery (demo provider) and records search stats without investigating demo records", async () => {
@@ -77,8 +83,8 @@ describe("integrated pipeline", () => {
     expect(s.stats?.providerResults.demo?.durationMs).toBeGreaterThanOrEqual(0);
     expect(s.stats?.candidates).toBe(4);
     expect(s.stats?.durationMs).toBeGreaterThanOrEqual(0);
-    expect(s.stats?.notes?.some((n) => /Ranking: 4 candidate\(s\) collected/.test(n))).toBe(true);
-    expect(s.stats?.notes?.at(-1)).toMatch(/Stored 4 result\(s\)/);
+    expect(s.stats?.notes?.some((n) => /Ranking: 4 unique business/.test(n))).toBe(true);
+    expect(s.stats?.notes?.at(-1)).toMatch(/4 result\(s\) listed and saved/);
     const { exportSearchCsv } = await import("@/lib/queries");
     const csv = (await exportSearchCsv(id))!.csv.split("\n");
     expect(csv[0]).toContain("lead_score");
@@ -180,7 +186,7 @@ describe("integrated pipeline", () => {
   });
 
   it("without an API key the investigation still profiles detected facts and gives a rule-based verdict", async () => {
-    resetEnv({});
+    resetEnv({ FIRECRAWL_API_KEY: "test" });
     const good = newId();
     const bad = newId();
     await db.insert(businesses).values({ id: good, name: "Good", nameNormalized: "good", industry: "auto_repair", website: "https://bartonauto.example", firstProvider: "csv" }).run();
@@ -212,6 +218,7 @@ describe("integrated pipeline", () => {
     const b = (await db.select().from(businesses).where(eq(businesses.id, bad)).get())!;
     expect(b.status).toBe("failed");
     expect(b.statusMessage).toMatch(/could not be fetched/);
+    expect(b.statusMessage).toContain("unable to fetch");
     const badJob = (await db.select().from(jobs).where(eq(jobs.idempotencyKey, `investigate:${bad}`)).get())!;
     expect(badJob.status).toBe("failed");
     expect(callStructured).not.toHaveBeenCalled();
@@ -226,7 +233,7 @@ describe("integrated pipeline", () => {
   });
 
   it("locates and verifies a website for a business without one, then investigates it; records no_website when nothing verifies", async () => {
-    resetEnv({});
+    resetEnv({ FIRECRAWL_API_KEY: "test" });
     const found = newId();
     const lost = newId();
     await db.insert(businesses).values({ id: found, name: "Pit Stop Garage", nameNormalized: "pit stop garage", industry: "auto_repair", city: "Austin", region: "TX", phone: "5125550142", firstProvider: "osm", status: "new" }).run();
@@ -300,5 +307,52 @@ describe("integrated pipeline", () => {
     expect((await listBusinesses({ q: "charl" })).rows).toHaveLength(1);
     const s = await listSearches({ q: "nothing-matches" });
     expect(s.total).toBe(0);
+  });
+
+  it("reuses stored pages within the staleness window, re-crawls on request, stops at the budget, and re-analyzes without a key", async () => {
+    resetEnv({ FIRECRAWL_API_KEY: "test" });
+    const id = newId();
+    await db.insert(businesses).values({ id, name: "Good", nameNormalized: "good", industry: "auto_repair", website: "https://bartonauto.example", websiteDomain: "bartonauto.example", firstProvider: "csv" }).run();
+    await enqueueInvestigation(id);
+    await drainQueue(["investigate_business"]);
+    const first = scrapeCalls.length;
+    expect(first).toBe(4); // home + services + contact + about
+    let inv = await db.select().from(investigations).where(eq(investigations.businessId, id)).all();
+    expect(inv[0].creditsUsed).toBe(4);
+    // Second run within RESEARCH_STALE_DAYS: stored pages, no Firecrawl call, no credits.
+    await enqueueInvestigation(id);
+    await drainQueue(["investigate_business"]);
+    expect(scrapeCalls.length).toBe(first);
+    inv = await db.select().from(investigations).where(eq(investigations.businessId, id)).all();
+    expect(inv).toHaveLength(2);
+    expect(inv.map((i) => i.creditsUsed).sort()).toEqual([0, 4]);
+    const stored = await db.select().from(pages).where(eq(pages.businessId, id)).all();
+    expect(stored.filter((p) => p.renderer === "stored")).toHaveLength(4);
+    expect(stored.every((p) => p.html)).toBe(true);
+    expect((await db.select().from(businesses).where(eq(businesses.id, id)).get())!.status).toBe("profiled");
+    // "Research again" crawls again.
+    await enqueueInvestigation(id, "recrawl");
+    await drainQueue(["investigate_business"]);
+    expect(scrapeCalls.length).toBe(first * 2);
+    // Monthly budget guard: 8 credits recorded, budget 8 → refused, explicit, no credits spent.
+    resetEnv({ FIRECRAWL_API_KEY: "test", FIRECRAWL_MONTHLY_CREDIT_BUDGET: "8" });
+    await enqueueInvestigation(id, "recrawl");
+    await drainQueue(["investigate_business"]);
+    let b = (await db.select().from(businesses).where(eq(businesses.id, id)).get())!;
+    expect(b.status).toBe("failed");
+    expect(b.statusMessage).toMatch(/budget reached/);
+    expect(scrapeCalls.length).toBe(first * 2);
+    // Without a key, re-analysis of stored pages still profiles the business; a new crawl does not.
+    resetEnv({});
+    await enqueueInvestigation(id, "reanalyze");
+    await drainQueue(["investigate_business"]);
+    b = (await db.select().from(businesses).where(eq(businesses.id, id)).get())!;
+    expect(b.status).toBe("profiled");
+    await enqueueInvestigation(id, "recrawl");
+    await drainQueue(["investigate_business"]);
+    b = (await db.select().from(businesses).where(eq(businesses.id, id)).get())!;
+    expect(b.status).toBe("failed");
+    expect(b.statusMessage).toMatch(/FIRECRAWL_API_KEY/);
+    expect(scrapeCalls.length).toBe(first * 2);
   });
 });

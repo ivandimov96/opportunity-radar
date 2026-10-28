@@ -93,7 +93,10 @@ export const DEMO_BUSINESSES: Record<string, BusinessCandidate[]> = {
 
 export const demoProvider: DiscoveryProvider = {
   key: "demo",
-  label: "Demo (synthetic)",
+  label: "Demo data",
+  status: "internal",
+  description: "Synthetic businesses to walk through the workflow. Never real companies; always labeled.",
+  attribution: "Synthetic demo data (not real businesses)",
   isAvailable: () => ({ available: true }),
   async discover(q): Promise<ProviderResult> {
     const list = DEMO_BUSINESSES[q.industry] ?? DEMO_BUSINESSES.auto_repair;

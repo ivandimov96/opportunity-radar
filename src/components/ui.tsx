@@ -168,23 +168,20 @@ export function Stepper({ steps, compact = false }: { steps: Step[]; compact?: b
     );
   }
   return (
-    <ol className="flex items-start w-full overflow-x-auto scrollbar-thin">
+    <ol className="grid" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
       {steps.map((s, i) => {
         const node = (
-          <span className={`w-6 h-6 rounded-full border grid place-items-center text-[11px] font-semibold shrink-0 ${cls[s.state]}`}>
+          <span className={`relative z-10 w-7 h-7 rounded-full border-2 grid place-items-center text-[11px] font-semibold shrink-0 ${cls[s.state]}`}>
             {s.state === "done" ? <Icon name="check" className="w-3.5 h-3.5" /> : s.state === "failed" ? <Icon name="x" className="w-3.5 h-3.5" /> : i + 1}
           </span>
         );
         return (
-          <li key={s.key} className="flex items-start flex-1 min-w-[96px]">
-            <div className="flex flex-col items-start gap-1 min-w-0">
-              <div className="flex items-center w-full">
-                {s.href ? <Link href={s.href} className="hover:no-underline">{node}</Link> : node}
-                {i < steps.length - 1 && <span className={`h-px flex-1 mx-2 ${s.state === "done" ? "bg-ok" : "bg-line"}`} />}
-              </div>
-              <div className={`text-xs font-medium ${s.state === "todo" || s.state === "skipped" ? "text-ink-faint" : "text-ink"}`}>{s.label}</div>
-              {s.hint && <div className="text-[11px] text-ink-faint leading-tight pr-3">{s.hint}</div>}
-            </div>
+          <li key={s.key} className="relative flex flex-col items-center text-center min-w-0 px-1">
+            {/* Connector from the previous circle's centre to this one; the circles sit above it. */}
+            {i > 0 && <span className={`absolute top-[13px] h-0.5 left-[-50%] right-1/2 ${steps[i - 1].state === "done" ? "bg-ok" : "bg-line"}`} aria-hidden />}
+            {s.href ? <Link href={s.href} className="hover:no-underline">{node}</Link> : node}
+            <div className={`mt-1.5 text-xs font-medium leading-tight ${s.state === "todo" || s.state === "skipped" ? "text-ink-faint" : "text-ink"}`}>{s.label}</div>
+            {s.hint && <div className="text-[11px] text-ink-faint leading-tight mt-0.5">{s.hint}</div>}
           </li>
         );
       })}

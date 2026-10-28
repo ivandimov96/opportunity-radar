@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, real, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 const now = () => sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`;
 const json = <T>(name: string) => text(name, { mode: "json" }).$type<T>();
@@ -29,7 +29,7 @@ export const searches = sqliteTable("searches", {
 });
 
 export type SearchStats = {
-  providerResults: Record<string, { found: number; error?: string; durationMs?: number }>;
+  providerResults: Record<string, { found: number; error?: string; durationMs?: number; cached?: "all" | "some" | "none"; release?: string }>;
   /** Everything the sources and the ranking step reported, in order (geocoded area, counts, drops, merges). */
   notes?: string[];
   durationMs?: number;
@@ -45,6 +45,16 @@ export type SearchStats = {
   skippedClosed?: number;
   queuedForInvestigation?: number;
   area?: string | null;
+  /** Resolved search area for the map and the summary. */
+  bbox?: { south: number; west: number; north: number; east: number } | null;
+  /** Some selected sources failed while others answered. */
+  partial?: boolean;
+  /** How the area was served: all cells from the local cache, some, or none (fresh pulls). */
+  cached?: "all" | "some" | "none";
+  /** Source release versions used (Overture release tag, OSM snapshot date). */
+  releases?: Record<string, string>;
+  /** Candidates saved as businesses by this run (auto-save) or later by the operator. */
+  saved?: number;
   total: number;
   attribution: string[];
 };
@@ -66,6 +76,10 @@ export type SearchFilters = {
   /** City center picked from the typeahead (GeoNames); lets radius searches skip geocoding. */
   centerLat?: number | null;
   centerLon?: number | null;
+  /** Free-text category for the generic industry (matched against the source taxonomies). */
+  customCategory?: string | null;
+  /** Save every listed candidate as a business automatically (otherwise the operator picks). */
+  autoSave?: boolean;
 };
 
 // --------------------------------------------------------------- businesses
@@ -173,6 +187,8 @@ export const investigations = sqliteTable(
     factsRejected: integer("facts_rejected").notNull().default(0),
     model: text("model"),
     costUsd: real("cost_usd").notNull().default(0),
+    /** Firecrawl credits spent (pages scraped, site maps, finder checks); 0 when stored pages were reused. */
+    creditsUsed: integer("credits_used").notNull().default(0),
     workflows: json<{ name: string; factKeys: string[] }[]>("workflows"),
     verdict: text("verdict"),
     verdictReason: text("verdict_reason"),
@@ -198,9 +214,16 @@ export const pages = sqliteTable(
     statusCode: integer("status_code"),
     title: text("title"),
     text: text("text"),
+    /** Firecrawl's main-content markdown (headings, lists and tables kept): what the model and the UI read. */
+    markdown: text("markdown"),
+    /** The page as delivered, kept so detectors can run again without a new crawl. */
+    html: text("html"),
+    contentHash: text("content_hash"),
+    /** Firecrawl credits this page cost (0 when reused from storage). */
+    credits: integer("credits").notNull().default(0),
     bytes: integer("bytes"),
     error: text("error"),
-    /** static (plain HTTP fetch) | browser (headless Chromium fallback for JavaScript-only pages). */
+    /** firecrawl (fetched through Firecrawl) | stored (reused from an earlier investigation); older rows: static | browser. */
     renderer: text("renderer").notNull().default("static"),
     fetchedAt: text("fetched_at").notNull().default(now()),
   },
@@ -371,6 +394,119 @@ export const aiUsage = sqliteTable("ai_usage", {
 });
 
 /** Cached discovery pulls from bulk open data (Overture): one row per release × area × category set, 30-day TTL. */
+/**
+ * Every place ever fetched from a discovery source, one row per source record,
+ * keyed by grid cell so searches answer locally once an area is cached.
+ * Raw provider data is kept verbatim (provenance); normalized columns serve
+ * search and deduplication.
+ */
+export const sourcePlaces = sqliteTable(
+  "source_places",
+  {
+    id: text("id").primaryKey(),
+    provider: text("provider").notNull(),
+    providerId: text("provider_id").notNull(),
+    /** Source release or snapshot the row came from (Overture release tag; OSM fetch date). */
+    release: text("release").notNull(),
+    cell: text("cell").notNull(),
+    name: text("name").notNull(),
+    nameNormalized: text("name_normalized").notNull(),
+    /** Primary category as the source names it. */
+    category: text("category"),
+    /** Overture taxonomy path "root|…|primary" (pipe-delimited for LIKE matching); OSM: "key=value". */
+    categoryPath: text("category_path"),
+    website: text("website"),
+    websiteDomain: text("website_domain"),
+    phone: text("phone"),
+    email: text("email"),
+    street: text("street"),
+    city: text("city"),
+    region: text("region"),
+    postalCode: text("postal_code"),
+    country: text("country"),
+    lat: real("lat").notNull(),
+    lon: real("lon").notNull(),
+    operatingStatus: text("operating_status"),
+    brand: text("brand"),
+    confidence: real("confidence"),
+    sourceUrl: text("source_url"),
+    raw: json<Record<string, unknown>>("raw"),
+    fetchedAt: text("fetched_at").notNull().default(now()),
+  },
+  (t) => [uniqueIndex("source_places_provider_pid").on(t.provider, t.providerId), index("source_places_cell_idx").on(t.provider, t.cell), index("source_places_latlon_idx").on(t.lat, t.lon), index("source_places_domain_idx").on(t.websiteDomain), index("source_places_name_idx").on(t.nameNormalized)],
+);
+
+/** Which (provider, industry, cell) combinations are cached, from which release, when, and how many rows. */
+export const sourceCells = sqliteTable(
+  "source_cells",
+  {
+    id: text("id").primaryKey(),
+    provider: text("provider").notNull(),
+    /** Industry key the cell was fetched for (its full category set), or "custom:<token>". */
+    scope: text("scope").notNull(),
+    cell: text("cell").notNull(),
+    release: text("release").notNull(),
+    rowCount: integer("row_count").notNull().default(0),
+    durationMs: integer("duration_ms"),
+    fetchedAt: text("fetched_at").notNull().default(now()),
+  },
+  (t) => [uniqueIndex("source_cells_key").on(t.provider, t.scope, t.cell)],
+);
+
+/**
+ * What a search found, after normalization and cross-source deduplication,
+ * before anything is saved as a business. Keeps every contributing source,
+ * the match reason and confidence, and the saved business when one exists.
+ */
+export const searchCandidates = sqliteTable(
+  "search_candidates",
+  {
+    id: text("id").primaryKey(),
+    searchId: text("search_id")
+      .notNull()
+      .references(() => searches.id, { onDelete: "cascade" }),
+    rank: integer("rank").notNull(),
+    name: text("name").notNull(),
+    nameNormalized: text("name_normalized").notNull(),
+    category: text("category"),
+    /** Which mapping matched (e.g. "category tire_shop", "tags [shop=car_repair]"), per source. */
+    matchedBy: json<string[]>("matched_by"),
+    website: text("website"),
+    websiteDomain: text("website_domain"),
+    phone: text("phone"),
+    email: text("email"),
+    street: text("street"),
+    city: text("city"),
+    region: text("region"),
+    postalCode: text("postal_code"),
+    country: text("country"),
+    lat: real("lat"),
+    lon: real("lon"),
+    operatingStatus: text("operating_status"),
+    brand: text("brand"),
+    kind: text("kind").notNull().default("independent"),
+    leadScore: integer("lead_score").notNull().default(0),
+    leadReasons: json<string[]>("lead_reasons"),
+    /** 0–100: how many of name, address, phone, website, email, coordinates are present. */
+    completeness: integer("completeness").notNull().default(0),
+    /** Contributing source records. */
+    sources: json<{ provider: string; providerId: string; sourceUrl: string | null; attribution: string; fetchedAt: string | null; matchedBy: string | null }[]>("sources").notNull(),
+    /** How the sources were merged: provider_id | domain | phone | name_proximity, with confidence 0–1. */
+    mergeRule: text("merge_rule"),
+    mergeConfidence: real("merge_confidence"),
+    /** A similar record that stayed separate (uncertain match), for review. */
+    possibleDuplicateOf: text("possible_duplicate_of"),
+    /** Saved business, when this candidate was saved or matched one already in the database. */
+    businessId: text("business_id").references(() => businesses.id, { onDelete: "set null" }),
+    /** How the saved business was matched: new | provider_id | domain | phone | name_city. */
+    savedVia: text("saved_via"),
+    /** Why the candidate was set aside by the search filters (closed, chain, no phone…); null = listed. */
+    skippedReason: text("skipped_reason"),
+    createdAt: text("created_at").notNull().default(now()),
+  },
+  (t) => [index("search_candidates_search_idx").on(t.searchId, t.rank), index("search_candidates_business_idx").on(t.businessId)],
+);
+
 export const placeCache = sqliteTable("place_cache", {
   key: text("key").primaryKey(),
   release: text("release").notNull(),
@@ -379,6 +515,26 @@ export const placeCache = sqliteTable("place_cache", {
   durationMs: integer("duration_ms"),
   createdAt: text("created_at").notNull().default(now()),
 });
+
+/** Cached responses of metered providers (SerpApi pages), keyed by the exact request. */
+export const providerCache = sqliteTable("provider_cache", {
+  key: text("key").primaryKey(),
+  provider: text("provider").notNull(),
+  value: json<Record<string, unknown>>("value").notNull(),
+  fetchedAt: text("fetched_at").notNull().default(now()),
+});
+
+/** Metered calls per provider and UTC month (budget guard). */
+export const providerUsage = sqliteTable(
+  "provider_usage",
+  {
+    provider: text("provider").notNull(),
+    period: text("period").notNull(),
+    used: integer("used").notNull().default(0),
+    updatedAt: text("updated_at").notNull().default(now()),
+  },
+  (t) => [primaryKey({ columns: [t.provider, t.period] })],
+);
 
 export const geocodeCache = sqliteTable("geocode_cache", {
   key: text("key").primaryKey(),

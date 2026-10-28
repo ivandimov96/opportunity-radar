@@ -5,9 +5,12 @@
  */
 import { eq } from "drizzle-orm";
 import { getDb } from "./client";
-import { businesses, facts, investigations, opportunities, outreachDrafts, prospects, searchResults, searches } from "./schema";
+import { businesses, facts, investigations, opportunities, outreachDrafts, prospects, searchCandidates, searchResults, searches } from "./schema";
 import { DEMO_BUSINESSES } from "@/lib/discovery/demo";
 import { upsertCandidate } from "@/lib/discovery/dedupe";
+import { completenessOf } from "@/lib/discovery/engine";
+import { normalizeName, normalizePhone, normalizeWebsite, websiteDomain } from "@/lib/discovery/normalize";
+import { leadScore } from "@/lib/scoring/lead";
 import { nowIso, stableId } from "@/lib/ids";
 import { ensureProspect, logActivity } from "@/lib/pipeline/prospects";
 import { scoreOpportunity, priorityScore } from "@/lib/scoring/score";
@@ -32,6 +35,15 @@ export async function seedDemo() {
     ids.push(businessId);
     await db.insert(searchResults).values({ searchId, businessId, rank: i + 1, wasNew: true }).onConflictDoNothing().run();
     await ensureProspect(businessId);
+    // The search page lists candidates (what the search found, with provenance); demo rows are saved from the start.
+    const website = normalizeWebsite(c.website);
+    const lead = leadScore({ name: c.name, industry: "auto_repair", website, phone: c.phone, email: c.email, street: c.street, city: c.city, category: c.category });
+    const cand = { street: c.street ?? null, city: c.city ?? null, phone: normalizePhone(c.phone), website, email: c.email ?? null, lat: c.lat ?? null };
+    await db
+      .insert(searchCandidates)
+      .values({ id: stableId(`candidate:${c.providerId}`), searchId, rank: i + 1, name: c.name, nameNormalized: normalizeName(c.name), category: c.category ?? null, matchedBy: ["demo list"], website, websiteDomain: websiteDomain(website), phone: cand.phone, email: cand.email, street: cand.street, city: cand.city, region: c.region ?? null, postalCode: c.postalCode ?? null, country: c.country ?? "US", lat: cand.lat, lon: c.lng ?? null, operatingStatus: "unknown", brand: null, kind: lead.kind, leadScore: lead.score, leadReasons: lead.reasons, completeness: completenessOf(cand), sources: [{ provider: "demo", providerId: c.providerId, sourceUrl: null, attribution: c.attribution, fetchedAt: nowIso(), matchedBy: "demo list" }], mergeRule: null, mergeConfidence: null, possibleDuplicateOf: null, businessId, savedVia: "new", skippedReason: null })
+      .onConflictDoNothing()
+      .run();
   }
 
   // --- Business 1: full profile, two opportunities, a draft ------------------

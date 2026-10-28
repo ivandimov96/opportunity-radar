@@ -88,6 +88,30 @@ Found and fixed a production-only database lock (D15): local SQLite now uses one
 connection per process, atomic job claims and batched writes. Tests: 80 unit/integration
 and 4 browser journeys pass (including the new filtered-search journey).
 
+## Google Maps only (2026-10-28, D25)
+The founder chose Google Maps listings via SerpApi as the single discovery source and had the
+database wiped (backup kept outside the repository). New provider `google_maps` with a monthly
+search budget (`provider_usage`), a page cache (`provider_cache`, migration `0007_google_maps`),
+offline map positioning from the bundled place list, radius filtering and a closed-listing flag;
+Overture and OpenStreetMap set to `disabled` (kept), the Google Places adapter removed. Tests: 160
+unit/integration + 5 browser journeys. **Search not yet run live**: `SERPAPI_API_KEY` is not in `.env`; the first live check
+(`scripts/search-live.ts`) is pending the founder's key. **Firecrawl ran live for the first time**
+(2026-10-28 evening): one real Austin shop inserted by hand → 5 pages read, 5 credits, 20 verified facts,
+verdict `opportunity` in 7 s; the website finder noticed the site now redirects to the acquiring group.
+Two defects found and fixed from that run: (1) page text was joined without separators, so an email next
+to a phone number read as one token (`extractPage` now separates element text; a phone glued inside one
+text node is stripped); (2) a redirected homepage made stored pages look foreign and the re-run paid for a
+second crawl (`loadStoredPages` now accepts the redirect target's domain; re-run measured at 0 credits).
+Synchronization audit of form → Google Maps query → saved business → Firecrawl: every form field reaches
+the query (type/sub-types → query text, keyword → query term and name filter, country/region/city/radius
+→ map position, cap → paging, filters → engine); the city on a listing now comes from Google's address.
+
+## Sources trimmed (2026-10-28, after search engine v2)
+Removed the Texas sales tax permit registry (provider, NAICS mapping, `permit_since` fact,
+`SOCRATA_APP_TOKEN`) and took demo data off the search form: the form offers exactly Overture
+and OpenStreetMap plus the four planned sources. Demo data remains behind "Load demo data"
+and in the tests (provider status `internal`). See D24.
+
 ## Free improvements (same day, seventh pass) — see D16
 Texas sales tax permit registry as a discovery source (NAICS per sub-type, title-cased
 names, permit dates → `permit_since` fact); template outreach drafts without AI;
@@ -127,7 +151,25 @@ mismatched keys; generic chain words (budget, enterprise, target) excluded indep
 businesses were not re-queued on a rerun; the finder never verified domain guesses after many
 search hits and could throw on a region with regex characters; the "insufficient evidence"
 threshold counted measured keys; cancelling a queued job left its search "discovering" forever;
-two vendor-email lists disagreed. Tests: 116 unit/integration, 5 browser journeys.
+two vendor-email lists disagreed. Then, on the founder's brief, the in-house crawler (fetcher,
+link discovery, Playwright render fallback, sitemap reader) was removed and replaced by
+Firecrawl (D23): client with limiter, retries and credit accounting; crawl orchestration that
+spends one credit per page and maps a site only when needed; stored pages with free
+re-analysis; monthly budget guard; credits on the business and System pages; `FIRECRAWL_API_KEY`
+required for new research. Client and crawl are tested against injected transports only; the
+founder has since added a key, and the first live research run is still pending.
+
+Then the search engine was rebuilt (docs/SEARCH.md, D24): worldwide locations (bundled GeoNames
+countries, regions, 45k cities), a provider registry with four planned sources shown but never
+executed, Overture on grid cells with the latest release from the STAC catalog, OpenStreetMap on
+the same cells, a taxonomy layer verified against the live Overture data, structured geocoding with
+sanity checks, cross-source merging with confidence and uncertain matches kept separate, a
+candidates table with review-before-save, and a results page with filters, sorting, pagination and
+bulk saving. Validated live on 2026-10-28: Austin (Overture, OSM, both, repeat from cache in 0.4 s,
+whole city with 1,581 unique businesses), Berlin dental (6 km and whole city), a zero-result town,
+a free-text category; measurements in docs/SEARCH.md. The local database was wiped on the founder's
+request before these runs (backup kept outside the project). Tests: 152 unit/integration, 5 browser
+journeys.
 
 ## What was actually tested (executed in the first session)
 - `pnpm typecheck`: clean. `pnpm build`: succeeds.
@@ -169,6 +211,7 @@ two vendor-email lists disagreed. Tests: 116 unit/integration, 5 browser journey
 - Single operator, no auth; SQLite single-writer.
 
 ## Credentials / approvals needed from the founder
+- `FIRECRAWL_API_KEY` (firecrawl.dev, free plan) to run and measure live website research.
 1. **Anthropic API key** (paid). Suggested first budget: $25 (the default spend guard).
 2. Optional: Google Maps Platform key for Places API (New), after reviewing its
    caching/attribution terms.

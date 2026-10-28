@@ -11,7 +11,7 @@ const form = (entries: Record<string, string | string[]>) => {
 
 describe("search input", () => {
   it("applies defaults and builds a name from type, sub-types and place", () => {
-    const r = parseSearchForm(form({ industry: "auto_repair", city: "Austin", region: "TX", providers: "osm", segments: ["body_collision", "tires"] }));
+    const r = parseSearchForm(form({ industry: "auto_repair", city: "Austin", region: "TX", providers: "google_maps", segments: ["body_collision", "tires"] }));
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.name).toBe("Automotive repair (Body & collision, Tire shops) · Austin, TX");
@@ -20,7 +20,7 @@ describe("search input", () => {
     expect(r.values.maxResults).toBe(25);
   });
   it("reports field-level errors and keeps the submitted values", () => {
-    const r = parseSearchForm(form({ industry: "auto_repair", providers: "osm", maxResults: "0", country: "USA", areaMode: "radius", radiusKm: "500", segments: "nope" }));
+    const r = parseSearchForm(form({ industry: "auto_repair", providers: "google_maps", maxResults: "0", country: "USA", areaMode: "radius", radiusKm: "500", segments: "nope" }));
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.errors.city).toMatch(/city/i);
@@ -30,12 +30,12 @@ describe("search input", () => {
     expect(r.errors.segments).toMatch(/Unknown segment/);
     expect(r.raw.maxResults).toBe("0");
   });
-  it("rejects OSM for industries without selectors and allows demo-only searches without a place", () => {
-    const bad = parseSearchForm(form({ industry: "generic", city: "Austin", providers: "osm" }));
+  it("requires a category for the generic industry and refuses demo, disabled or removed sources on the form", () => {
+    const bad = parseSearchForm(form({ industry: "generic", city: "Austin", region: "TX", providers: "google_maps" }));
     expect(bad.ok).toBe(false);
-    if (!bad.ok) expect(bad.errors.providers).toMatch(/no OpenStreetMap selectors/);
-    const demo = parseSearchForm(form({ industry: "auto_repair", providers: "demo" }));
-    expect(demo.ok).toBe(true);
+    if (!bad.ok) expect(bad.errors.customCategory).toMatch(/Enter the business category/);
+    // Demo data is internal (seeded, tests), Overture and OpenStreetMap are disabled, the Texas registry is gone.
+    for (const p of ["demo", "overture", "osm", "tx_permits"]) expect(parseSearchForm(form({ industry: "auto_repair", city: "Austin", region: "TX", providers: p })).ok).toBe(false);
     expect(parseSearchForm(form({ industry: "auto_repair", providers: [] })).ok).toBe(false);
   });
   it("describes filters for lists", () => {

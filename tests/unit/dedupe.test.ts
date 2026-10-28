@@ -29,7 +29,7 @@ describe("upsertCandidate deduplication", () => {
 
   it("merges a different provider by website domain and adds a second source", async () => {
     await upsertCandidate(db, base, { industry: "auto_repair" });
-    const r = await upsertCandidate(db, { ...base, provider: "google_places", providerId: "ChIJ123", website: "http://www.bartonauto.com/", phone: null }, { industry: "auto_repair" });
+    const r = await upsertCandidate(db, { ...base, provider: "google_maps", providerId: "ChIJ123", website: "http://www.bartonauto.com/", phone: null }, { industry: "auto_repair" });
     expect(r.wasNew).toBe(false);
     expect(r.matchedBy).toBe("domain");
     expect(await db.select().from(businesses).all()).toHaveLength(1);

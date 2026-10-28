@@ -14,11 +14,11 @@ Discover → Investigate (profile with evidence + scored opportunity hypotheses 
 
 | Capability | Status |
 |---|---|
-| Business discovery via OpenStreetMap (Overpass + Nominatim) | Live, no credentials. Public instances were overloaded/timing out during development; endpoint fallback + retries implemented, see docs/STATUS.md. |
+| Business discovery via Google Maps listings (SerpApi) | Needs `SERPAPI_API_KEY` (free plan: 250 searches/month). Budget guard and page cache built in; not yet exercised live. Overture Maps and OpenStreetMap providers are disabled but kept. |
 | Business discovery via Google Places API (New) | Implemented from the official REST reference, **not exercised live** (no key). |
 | CSV import | Live, tested. |
 | Deduplication across searches/providers | Live, unit-tested. |
-| Investigation: parallel bounded crawl (robots.txt, SSRF guard) + structured profile | Live; 3–8 s per real business without AI; security guard unit-tested. |
+| Investigation: Firecrawl-powered crawl (robots.txt, URL guard, credit budget) + structured profile | Needs `FIRECRAWL_API_KEY` (free plan); stored pages re-analyzed for free; client and crawl tested with injected transports. |
 | Deterministic profile facts (tools, contact channels, booking method, explicit gaps) | Live, tested. |
 | AI profile completion + opportunity analysis in one grounded call | Implemented, validation logic tested; **requires `ANTHROPIC_API_KEY`**; not exercised against the live API in this repo. |
 | Explainable scoring (attractiveness vs confidence) | Live, tested. |
@@ -64,7 +64,8 @@ estimated cumulative spend is reached.
 
 - [docs/STRATEGY.md](docs/STRATEGY.md) — target users, problem, differentiation, pilot market, validation strategy
 - [docs/AUDIT.md](docs/AUDIT.md) — 2026-10-28 audit, findings and target architecture
-- [docs/RESEARCH.md](docs/RESEARCH.md) — how a business is researched: lead score, website finder, crawl fallbacks, off-site footprint, deterministic facts, rules
+- [docs/SEARCH.md](docs/SEARCH.md) — how businesses are found: Google Maps via SerpApi (budget, cache, paging), the disabled Overture + OpenStreetMap path, category mapping, location resolution, merge rules, persistence, measurements
+- [docs/RESEARCH.md](docs/RESEARCH.md) — how a business is researched: lead score, website finder, Firecrawl crawl and credits, off-site footprint, deterministic facts, rules
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — stack, components, data model, processing lifecycle, AI design, security
 - [docs/DECISIONS.md](docs/DECISIONS.md) — decision log with alternatives and trade-offs
 - [docs/STATUS.md](docs/STATUS.md) — implementation status, tests executed, known limitations, next priorities
@@ -80,4 +81,4 @@ estimated cumulative spend is reached.
 - **Untrusted web content.** Website text is data, never instructions; fetching is SSRF-guarded, bounded, and robots-respecting.
 - **Demo data is always labeled** and uses reserved `.example` domains.
 
-City suggestions use data from [GeoNames](https://www.geonames.org/) (CC BY 4.0); discovery data from Overture Maps Foundation (CDLA-Permissive 2.0), OpenStreetMap contributors (ODbL) and the Texas Comptroller open data portal.
+City suggestions use data from [GeoNames](https://www.geonames.org/) (CC BY 4.0); discovery data are Google Maps listings served by SerpApi (internal prospecting use). The disabled providers used Overture Maps Foundation (CDLA-Permissive 2.0) and OpenStreetMap contributors (ODbL) data.

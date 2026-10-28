@@ -18,7 +18,7 @@ src/app/            pages (server components), server actions, API routes
 src/components/     small UI primitives, nav, auto-refresh poller
 src/db/             schema, client (migrations on open), demo seed
 src/lib/config.ts   env parsing + integration status
-src/lib/discovery/  providers (osm, google_places, demo, csv), normalize, dedupe
+src/lib/discovery/  providers (google_maps active; overture, osm disabled; demo, csv), engine, normalize, dedupe
 src/lib/research/   fetcher (SSRF guard), robots, html extraction, signals, crawler
 src/lib/ai/         client (structured calls, spend guard), schemas, prompts,
                     extract / analyze / outreach stages with validators, usage/cost
@@ -99,4 +99,4 @@ src/instrumentation.ts  starts the embedded worker
   for one operator and thousands of businesses, not for multi-tenant scale.
 - No vector clustering: category taxonomy grouping is sufficient and transparent at
   this scale; revisit when categories prove too coarse.
-- Google Places adapter untested live; OSM public instances unreliable under load.
+- Google Maps (SerpApi) provider not yet exercised live (key pending); OSM public instances unreliable under load (provider disabled).

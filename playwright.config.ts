@@ -12,6 +12,6 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 120_000,
     // Offline: no bulk data pulls, no browser rendering, no model provider.
-    env: { DATABASE_PATH: "./data/e2e.db", EMBEDDED_WORKER: "true", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", OVERTURE_ENABLED: "false", RESEARCH_BROWSER_RENDER: "false" },
+    env: { DATABASE_PATH: "./data/e2e.db", EMBEDDED_WORKER: "true", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", OVERTURE_ENABLED: "false", FIRECRAWL_API_KEY: "" },
   },
 });

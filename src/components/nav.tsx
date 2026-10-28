@@ -1,4 +1,9 @@
 "use client";
+/**
+ * App shell: a fixed sidebar on wide screens (brand, two navigation groups,
+ * status footer) and a top bar with a slide-in drawer on
+ * narrow screens. Navigation items are single-line; the hint is the tooltip.
+ */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
@@ -25,7 +30,17 @@ const groups: { title: string; items: { href: string; label: string; icon: IconN
   },
 ];
 
-export function AppShell({ aiEnabled, serverless = false, children }: { aiEnabled: boolean; serverless?: boolean; children: React.ReactNode }) {
+function StatusRow({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
+  return (
+    <span className="flex items-center gap-2 min-w-0" title={detail}>
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ok ? "bg-ok" : "bg-warn"}`} />
+      <span className="text-ink-muted truncate">{label}</span>
+      <span className={`ml-auto text-[10px] uppercase tracking-wide shrink-0 ${ok ? "text-ok" : "text-warn"}`}>{ok ? "live" : "key"}</span>
+    </span>
+  );
+}
+
+export function AppShell({ aiEnabled, sourceEnabled = false, researchEnabled = false, serverless = false, children }: { aiEnabled: boolean; sourceEnabled?: boolean; researchEnabled?: boolean; serverless?: boolean; children: React.ReactNode }) {
   const path = usePathname();
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [path]);
@@ -33,46 +48,42 @@ export function AppShell({ aiEnabled, serverless = false, children }: { aiEnable
 
   const sidebar = (
     <div className="flex flex-col h-full">
-      <div className="px-4 py-4 flex items-center gap-2.5 border-b border-line">
+      <div className="px-4 pt-4 pb-2 flex items-center gap-2.5">
         <span className="w-8 h-8 rounded-lg bg-accent text-accent-fg grid place-items-center shrink-0">
           <Icon name="target" className="w-4.5 h-4.5" />
         </span>
-        <div className="min-w-0">
-          <Link href="/" className="font-semibold text-ink hover:no-underline block leading-tight whitespace-nowrap">
-            Opportunity Radar
-          </Link>
-          <div className="text-[11px] text-ink-faint leading-tight">Evidence-first prospecting</div>
-        </div>
+        <Link href="/" className="font-semibold text-ink hover:no-underline leading-tight whitespace-nowrap min-w-0 truncate">
+          Opportunity Radar
+        </Link>
         <button className="ml-auto lg:hidden btn btn-ghost btn-sm" onClick={() => setOpen(false)} aria-label="Close menu">
           <Icon name="x" />
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto px-2 py-3 space-y-5">
+      <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-6">
         {groups.map((g) => (
           <div key={g.title}>
-            <div className="px-3 text-[10px] font-semibold uppercase tracking-wider text-ink-faint mb-1.5">{g.title}</div>
-            {g.items.map((it) => {
-              const active = isActive(it.href);
-              return (
-                <Link key={it.href} href={it.href} className={`flex items-center gap-2.5 rounded-lg px-3 py-2 text-sm hover:no-underline transition-colors ${active ? "bg-accent-soft text-accent-text font-medium" : "text-ink-muted hover:bg-surface-3 hover:text-ink"}`}>
-                  <Icon name={it.icon} className="w-4 h-4 shrink-0" />
-                  <span className="flex-1 min-w-0">
-                    <span className="block leading-tight">{it.label}</span>
-                    <span className={`block text-[10px] leading-tight ${active ? "text-accent-text/70" : "text-ink-faint"}`}>{it.hint}</span>
-                  </span>
-                </Link>
-              );
-            })}
+            <div className="px-2.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-faint mb-1.5">{g.title}</div>
+            <div className="space-y-0.5">
+              {g.items.map((it) => {
+                const active = isActive(it.href);
+                return (
+                  <Link key={it.href} href={it.href} title={it.hint} aria-current={active ? "page" : undefined} className={`relative flex items-center gap-2.5 rounded-lg px-2.5 h-9 text-[13.5px] hover:no-underline transition-colors ${active ? "bg-accent-soft text-accent-text font-medium" : "text-ink-muted hover:bg-surface-3 hover:text-ink"}`}>
+                    {active && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r bg-accent" aria-hidden />}
+                    <Icon name={it.icon} className={`w-4 h-4 shrink-0 ${active ? "text-accent" : "text-ink-faint"}`} />
+                    <span className="truncate">{it.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
           </div>
         ))}
       </nav>
-      <div className="p-3 border-t border-line">
-        <Link href="/searches/new" className="btn btn-primary w-full">
-          <Icon name="plus" /> New search
-        </Link>
-        <Link href="/settings" className="mt-3 flex items-center gap-2 text-[11px] text-ink-muted hover:no-underline">
-          <span className={`w-2 h-2 rounded-full ${aiEnabled ? "bg-ok" : "bg-warn"}`} />
-          {aiEnabled ? "AI stages live" : "AI stages need an API key"}
+      <div className="px-4 py-3 border-t border-line text-xs space-y-1.5">
+        <StatusRow ok={sourceEnabled} label="Google Maps source" detail={sourceEnabled ? "SerpApi key set" : "Set SERPAPI_API_KEY in .env"} />
+        <StatusRow ok={researchEnabled} label="Website research" detail={researchEnabled ? "Firecrawl key set" : "Set FIRECRAWL_API_KEY in .env"} />
+        <StatusRow ok={aiEnabled} label="AI analysis" detail={aiEnabled ? "Model key set" : "Set a model key in .env; rules apply meanwhile"} />
+        <Link href="/settings" className="block pt-1 text-[11px] text-ink-faint hover:text-ink hover:no-underline">
+          Configuration → Settings
         </Link>
       </div>
     </div>

@@ -1,20 +1,23 @@
 /**
  * Website finder for businesses discovered without a URL (the most common gap
- * in OpenStreetMap data). Two sources, both verified before anything is stored:
+ * in map data). Two sources, both verified before anything is stored:
  *  1. Web search: "<name>" <city> <region>, aggregator/social domains dropped.
- *  2. Domain guesses built from the name (compact and hyphenated, .com/.net).
- * Verification fetches the candidate homepage and requires the business phone
- * (strongest) or the name plus the city/region on the page. A guess that only
- * matches the name is rejected: many similarly named shops exist elsewhere.
+ *  2. Domain guesses built from the name (compact and hyphenated, .com/.net),
+ *     DNS-checked so unregistered names cost nothing.
+ * Verification reads the candidate homepage through Firecrawl (one credit per
+ * candidate, so candidates are checked in order and the first verified one
+ * wins) and requires the business phone (strongest) or the name plus the
+ * city/region on the page. A guess that only matches the name is rejected:
+ * many similarly named shops exist elsewhere.
  */
+import dns from "node:dns/promises";
 import { normalizeName, isAggregatorUrl } from "./normalize";
 import { normalizePhone } from "./normalize";
-import { safeFetch } from "@/lib/research/fetcher";
+import { FirecrawlCreditsError, scrapePage, type ScrapeFn } from "@/lib/research/firecrawl";
 import { extractPage } from "@/lib/research/html";
 import { webSearch, type SearchFn } from "@/lib/search";
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-import dns from "node:dns/promises";
 
 export interface FindInput {
   name: string;
@@ -30,7 +33,13 @@ export interface FindResult {
   source: "found_search" | "found_guess" | "found_email";
   confidence: number;
   evidence: string;
+}
+
+export interface FindOutcome {
+  found: FindResult | null;
   notes: string[];
+  /** Firecrawl credits spent on verification. */
+  credits: number;
 }
 
 const STOP = new Set(["auto", "automotive", "repair", "service", "services", "shop", "center", "centre", "llc", "inc", "co", "company", "the", "and", "of", "garage", "car", "care", "tire", "tires", "collision", "body", "mechanic", "mechanics"]);
@@ -70,7 +79,7 @@ export function guessDomains(name: string, city?: string | null): string[] {
   return [...out];
 }
 
-/** Cheap pre-check so unregistered guesses never cost an HTTP fetch. */
+/** Cheap pre-check so unregistered guesses never cost a credit. */
 export async function resolves(host: string, lookup: (h: string) => Promise<unknown> = (h) => dns.lookup(h)): Promise<boolean> {
   try {
     await lookup(host);
@@ -110,15 +119,16 @@ export interface Verification {
   confidence: number;
   evidence: string;
   finalUrl: string;
+  credits: number;
 }
 
-/** Fetches the homepage and checks it belongs to the business. Never throws. */
-export async function verifyCandidate(url: string, biz: FindInput, fetcher = safeFetch): Promise<Verification> {
+/** Reads the homepage through Firecrawl and checks it belongs to the business. Never throws, except when credits are exhausted. */
+export async function verifyCandidate(url: string, biz: FindInput, scrape: ScrapeFn = scrapePage, signal?: AbortSignal): Promise<Verification> {
   try {
-    const res = await fetcher(url, { timeoutMs: 8000, maxBytes: 600_000 });
-    if (res.status >= 400 || !res.body) return { ok: false, confidence: 0, evidence: `HTTP ${res.status}`, finalUrl: res.finalUrl };
-    if (isAggregatorUrl(res.finalUrl)) return { ok: false, confidence: 0, evidence: "redirected to an aggregator/social domain", finalUrl: res.finalUrl };
-    const page = extractPage(res.body, res.finalUrl);
+    const res = await scrape(url, { signal, timeoutMs: 20_000 });
+    if (res.error || !res.rawHtml) return { ok: false, confidence: 0, evidence: res.error ?? "empty page", finalUrl: res.finalUrl, credits: res.credits };
+    if (isAggregatorUrl(res.finalUrl)) return { ok: false, confidence: 0, evidence: "redirected to an aggregator/social domain", finalUrl: res.finalUrl, credits: res.credits };
+    const page = extractPage(res.rawHtml, res.finalUrl);
     const hay = `${page.title ?? ""}\n${page.metaDescription ?? ""}\n${page.text.slice(0, 6000)}`.toLowerCase();
     const digits = normalizePhone(biz.phone);
     const phoneHit = Boolean(digits && (page.phones.includes(digits) || hay.replace(/\D/g, "").includes(digits)));
@@ -130,22 +140,33 @@ export async function verifyCandidate(url: string, biz: FindInput, fetcher = saf
     const cityHit = Boolean(biz.city && hay.includes(biz.city.toLowerCase()));
     const regionHit = Boolean(biz.region && new RegExp(`\\b${escapeRe(biz.region.toLowerCase())}\\b`).test(hay));
     const streetHit = Boolean(biz.street && streetMatches(biz.street, hay));
-    if (phoneHit && (nameHit || fullNameHit || cityHit)) return { ok: true, confidence: 0.95, evidence: `phone ${digits} and ${fullNameHit || nameHit ? "name" : "city"} found on ${res.finalUrl}`, finalUrl: res.finalUrl };
-    if (phoneHit) return { ok: true, confidence: 0.85, evidence: `phone ${digits} found on ${res.finalUrl}`, finalUrl: res.finalUrl };
-    if (streetHit && (nameHit || fullNameHit)) return { ok: true, confidence: 0.9, evidence: `street address and name found on ${res.finalUrl}`, finalUrl: res.finalUrl };
-    if (fullNameHit && (cityHit || regionHit)) return { ok: true, confidence: 0.8, evidence: `full name and ${cityHit ? "city" : "region"} found on ${res.finalUrl}`, finalUrl: res.finalUrl };
-    if (nameHit && cityHit) return { ok: true, confidence: 0.7, evidence: `${tokenHits}/${tokens.length} name words and city found on ${res.finalUrl}`, finalUrl: res.finalUrl };
-    if (mailDomainOf(biz.email, res.finalUrl) && (nameHit || fullNameHit)) return { ok: true, confidence: 0.75, evidence: `business email is on this domain and the name appears on ${res.finalUrl}`, finalUrl: res.finalUrl };
-    return { ok: false, confidence: nameHit ? 0.4 : 0.1, evidence: nameHit ? "name found but no phone/city/address match" : "no match", finalUrl: res.finalUrl };
+    const ok = (confidence: number, evidence: string): Verification => ({ ok: true, confidence, evidence, finalUrl: res.finalUrl, credits: res.credits });
+    if (phoneHit && (nameHit || fullNameHit || cityHit)) return ok(0.95, `phone ${digits} and ${fullNameHit || nameHit ? "name" : "city"} found on ${res.finalUrl}`);
+    if (phoneHit) return ok(0.85, `phone ${digits} found on ${res.finalUrl}`);
+    if (streetHit && (nameHit || fullNameHit)) return ok(0.9, `street address and name found on ${res.finalUrl}`);
+    if (fullNameHit && (cityHit || regionHit)) return ok(0.8, `full name and ${cityHit ? "city" : "region"} found on ${res.finalUrl}`);
+    if (nameHit && cityHit) return ok(0.7, `${tokenHits}/${tokens.length} name words and city found on ${res.finalUrl}`);
+    if (mailDomainOf(biz.email, res.finalUrl) && (nameHit || fullNameHit)) return ok(0.75, `business email is on this domain and the name appears on ${res.finalUrl}`);
+    return { ok: false, confidence: nameHit ? 0.4 : 0.1, evidence: nameHit ? "name found but no phone/city/address match" : "no match", finalUrl: res.finalUrl, credits: res.credits };
   } catch (err) {
-    return { ok: false, confidence: 0, evidence: (err as Error).message, finalUrl: url };
+    if (err instanceof FirecrawlCreditsError || signal?.aborted) throw err;
+    return { ok: false, confidence: 0, evidence: (err as Error).message, finalUrl: url, credits: 0 };
   }
 }
 
-export async function findWebsite(biz: FindInput, deps: { search?: SearchFn | null; fetcher?: typeof safeFetch; maxVerify?: number; lookup?: (h: string) => Promise<unknown> } = {}): Promise<FindResult | null> {
+export interface FindDeps {
+  search?: SearchFn | null;
+  scrape?: ScrapeFn;
+  maxVerify?: number;
+  lookup?: (h: string) => Promise<unknown>;
+  signal?: AbortSignal;
+}
+
+export async function findWebsite(biz: FindInput, deps: FindDeps = {}): Promise<FindOutcome> {
   const notes: string[] = [];
   const maxVerify = deps.maxVerify ?? 4;
   const tried = new Set<string>();
+  let credits = 0;
   const hostOf = (u: string) => {
     try {
       return new URL(u).hostname.toLowerCase().replace(/^www\./, "");
@@ -178,7 +199,7 @@ export async function findWebsite(biz: FindInput, deps: { search?: SearchFn | nu
     tried.add(host);
     candidates.push({ url: `https://${host}/`, source: "found_search" });
   }
-  // 2. Domain guesses (only when phone, street or city is known, otherwise verification cannot be strict enough); DNS pre-check avoids fetching dead names.
+  // 2. Domain guesses (only when phone, street or city is known, otherwise verification cannot be strict enough); DNS pre-check avoids paying for dead names.
   if (biz.phone || biz.city || biz.street) {
     const guesses = guessDomains(biz.name, biz.city).filter((d) => !tried.has(d));
     const alive = await Promise.all(guesses.map(async (d) => ((await resolves(d, deps.lookup)) ? d : null)));
@@ -190,11 +211,15 @@ export async function findWebsite(biz: FindInput, deps: { search?: SearchFn | nu
     const dead = guesses.filter((d) => !alive.includes(d));
     if (dead.length) notes.push(`guesses without DNS: ${dead.join(", ")}`);
   }
-  // Search hits are verified up to the cap; DNS-checked guesses are cheap and always get their turn.
+  // Search hits are checked up to the cap, then DNS-checked guesses; one credit each, in order, first verified wins.
   const toVerify = [...candidates.filter((c) => c.source !== "found_guess").slice(0, maxVerify + 2), ...candidates.filter((c) => c.source === "found_guess").slice(0, 3)];
-  const results = await Promise.all(toVerify.map(async (c) => ({ c, v: await verifyCandidate(c.url, biz, deps.fetcher) })));
-  for (const { c, v } of results) notes.push(`${c.source === "found_search" ? "search" : c.source === "found_email" ? "email domain" : "guess"} ${c.url}: ${v.ok ? "verified" : "rejected"} (${v.evidence})`);
-  const ok = results.filter((r) => r.v.ok && (r.c.source !== "found_guess" || r.v.confidence >= 0.8)).sort((a, b) => b.v.confidence - a.v.confidence)[0];
-  if (!ok) return null;
-  return { website: ok.v.finalUrl.replace(/\/$/, ""), source: ok.c.source, confidence: ok.v.confidence, evidence: ok.v.evidence, notes };
+  for (const c of toVerify) {
+    const v = await verifyCandidate(c.url, biz, deps.scrape, deps.signal);
+    credits += v.credits;
+    notes.push(`${c.source === "found_search" ? "search" : c.source === "found_email" ? "email domain" : "guess"} ${c.url}: ${v.ok ? "verified" : "rejected"} (${v.evidence})`);
+    if (v.ok && (c.source !== "found_guess" || v.confidence >= 0.8)) {
+      return { found: { website: v.finalUrl.replace(/\/$/, ""), source: c.source, confidence: v.confidence, evidence: v.evidence }, notes, credits };
+    }
+  }
+  return { found: null, notes, credits };
 }

@@ -5,7 +5,7 @@
  */
 import type { businesses } from "@/db/schema";
 import { getConfig } from "@/lib/config";
-import { CONTACTED_STAGES, type PipelineStage } from "@/lib/pipeline/stages";
+import { CONTACTED_STAGES, stageLabel, type PipelineStage } from "@/lib/pipeline/stages";
 
 export type BusinessLike = Pick<typeof businesses.$inferSelect, "id" | "website" | "status" | "verdict" | "isDemo"> & Partial<Pick<typeof businesses.$inferSelect, "kind" | "leadScore" | "statusMessage">>;
 
@@ -49,7 +49,7 @@ export function deriveWorkflow(input: WorkflowInput): { steps: WorkflowStep[]; n
       hint: b.status === "no_website" && !b.website ? "No website found" : b.status === "failed" ? "Failed" : profiled ? (b.verdict === "opportunity" ? `${opportunityCount} hypothes${opportunityCount === 1 ? "is" : "es"}` : b.verdict === "no_opportunity" ? "No opportunity" : b.verdict === "insufficient_evidence" ? "Too little seen" : "AI pending") : undefined,
     },
     { key: "outreach", label: "Outreach", state: draftCount > 0 ? "done" : contacted ? "skipped" : "todo", hint: draftCount ? `${draftCount} draft${draftCount === 1 ? "" : "s"}` : undefined },
-    { key: "conversation", label: "In conversation", state: contacted ? "done" : "todo", hint: contacted ? stage.replace(/_/g, " ") : undefined },
+    { key: "conversation", label: "In conversation", state: contacted ? "done" : "todo", hint: contacted && stage !== "in_conversation" ? stageLabel(stage) : undefined },
   ];
 
   let next: NextAction;

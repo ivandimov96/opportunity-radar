@@ -45,6 +45,8 @@ export interface PageContent {
 }
 
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+/** Elements whose text continues the surrounding word; every other element gets whitespace around its text. */
+const INLINE_FORMAT_TAGS = new Set(["b", "i", "strong", "em", "u", "s", "sup", "sub", "small", "mark", "abbr", "code", "wbr", "font"]);
 const MAX_TEXT_CHARS = 40_000;
 
 /** Digits only; US numbers lose the leading country code so variants dedupe. */
@@ -234,13 +236,26 @@ export function extractPage(html: string, baseUrl: string): PageContent {
   });
 
   $("script,style,noscript,svg,iframe,template").remove();
+  // `.text()` joins text nodes with nothing in between, so "<p>312-2177</p><span>info@x.com</span>" would read
+  // "312-2177info@x.com". Separate elements with whitespace (line breaks for <br>), except pure inline formatting.
+  $("br").replaceWith("\n");
+  $("body *").each((_, el) => {
+    if (INLINE_FORMAT_TAGS.has(el.tagName?.toLowerCase() ?? "")) return;
+    $(el).before(" ").after(" ");
+  });
   const fullText = cleanText($("body").text());
   // Main content: drop site chrome. Fall back to the full text when a page is mostly chrome.
   $("nav,header,footer,aside,[role=navigation],[role=banner],[role=contentinfo],.nav,.navbar,.menu,.site-header,.site-footer,#header,#footer,#nav,#menu,.cookie,.cookies").remove();
   const mainText = cleanText(($("main").text().trim() ? $("main") : $("body")).text());
   const text = (mainText.length >= Math.min(300, fullText.length * 0.3) ? mainText : fullText).slice(0, MAX_TEXT_CHARS);
 
-  for (const m of fullText.match(EMAIL_RE) ?? []) emails.add(m.toLowerCase());
+  for (const m of fullText.match(EMAIL_RE) ?? []) {
+    // Backstop for text that runs together inside one node ("Tel 312-2177info@x.com"): a local part that
+    // begins like a phone number has that number stripped; mailto: links were collected above.
+    const [local, domain] = m.split("@");
+    const cleaned = `${local.replace(/^\d{3}[-.]\d{4}/, "")}@${domain}`;
+    if (!cleaned.startsWith("@") && local.length <= 64) emails.add(cleaned.toLowerCase());
+  }
   for (const j of jsonLd) {
     if (j.email) emails.add(j.email);
     const p = j.telephone ? normalizeTel(j.telephone) : null;

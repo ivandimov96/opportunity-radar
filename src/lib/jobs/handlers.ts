@@ -5,22 +5,23 @@
  */
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { businesses, businessSources, facts, investigations, opportunities, outreachDrafts, pages, searchResults, searches, type SearchStats } from "@/db/schema";
+import { businesses, businessSources, facts, investigations, opportunities, outreachDrafts, pages, searches } from "@/db/schema";
 import { getConfig } from "@/lib/config";
-import { PROVIDERS, upsertCandidate, type BusinessCandidate, type DiscoveryProviderKey } from "@/lib/discovery";
-import { ProviderError } from "@/lib/discovery/types";
+import { runDiscovery, type RunOutcome } from "@/lib/discovery/engine";
 import { generateOutreach, investigateWithModel, AiRefusalError, AiSpendLimitError, AiUnavailableError, type OutreachStyle } from "@/lib/ai";
 import { validateOutreach } from "@/lib/ai/outreach";
 import { draftFromTemplate } from "@/lib/outreach/template";
 import { newId, nowIso } from "@/lib/ids";
-import { crawlWebsite } from "@/lib/research/crawler";
+import { createHash } from "node:crypto";
+import { crawlWebsite, type CrawlResult } from "@/lib/research/crawl";
 import { detectFacts, isVendorEmail, type DetectedFact } from "@/lib/research/detect";
-import { safeFetch } from "@/lib/research/fetcher";
+import { isFirecrawlConfigured, scrapePage } from "@/lib/research/firecrawl";
+import { creditsUsedThisMonth, loadStoredPages } from "@/lib/research/stored";
 import { footprintFacts } from "@/lib/research/footprint";
 import { findWebsite } from "@/lib/discovery/find-website";
-import { normalizeCity, normalizeName, normalizePhone, normalizeWebsite, websiteDomain } from "@/lib/discovery/normalize";
+import { normalizeWebsite, websiteDomain } from "@/lib/discovery/normalize";
 import { scoreOpportunity, priorityScore } from "@/lib/scoring/score";
-import { leadScore, type LeadHints } from "@/lib/scoring/lead";
+import { leadScore } from "@/lib/scoring/lead";
 import { ruleOpportunities } from "@/lib/scoring/rules";
 import { getPlaybook, type OpportunityCategory } from "@/lib/industries";
 import { filtersOf } from "@/lib/search-input";
@@ -32,13 +33,11 @@ export class NonRetryableError extends Error {}
 
 // ------------------------------------------------------------------ discover
 /**
- * Discovery in two phases so the result cap keeps the BEST candidates, not the
- * first ones a source happened to return:
- *   1. collect from every selected source (each source fails on its own);
- *   2. score every candidate from discovery data alone (lead score + hints),
- *      apply the filters with skip counts, rank, then store up to the cap.
- * Candidates beyond the cap that match a listed business are still merged so
- * their source record (e.g. a permit date) is not lost.
+ * Discovery is the search engine's job (src/lib/discovery/engine.ts): resolve the
+ * area once, run each selected source in isolation, merge and deduplicate across
+ * sources, filter with skip counts, rank, store candidates, save businesses when
+ * the search asks for it. This handler owns the search row's status, the retry
+ * decision, and queuing the saved businesses that qualify for investigation.
  */
 export async function handleDiscoverSearch(job: JobRow, progress: ProgressFn, signal: AbortSignal = new AbortController().signal) {
   const db = await getDb();
@@ -46,158 +45,70 @@ export async function handleDiscoverSearch(job: JobRow, progress: ProgressFn, si
   const search = await db.select().from(searches).where(eq(searches.id, searchId)).get();
   if (!search) throw new NonRetryableError(`Search ${searchId} not found`);
   await db.update(searches).set({ status: "running", updatedAt: nowIso(), error: null }).where(eq(searches.id, searchId)).run();
-
   const filters = filtersOf(search);
-  const stats: SearchStats = { providerResults: {}, notes: [], durationMs: 0, candidates: 0, ranked: 0, created: 0, merged: 0, skippedNoWebsite: 0, skippedNoPhone: 0, skippedChains: 0, skippedKnown: 0, skippedClosed: 0, queuedForInvestigation: 0, area: null, total: 0, attribution: [] };
-  const providerKeys = (search.providers as DiscoveryProviderKey[]).filter((k): k is Exclude<DiscoveryProviderKey, "csv"> => k !== "csv");
-  const errors: string[] = [];
-  const startedAt = Date.now();
+  const t0 = Date.now();
+  let run: RunOutcome;
+  try {
+    run = await runDiscovery(db, search, { signal, onProgress: (m) => progress({ message: m }) });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await db.update(searches).set({ status: "failed", error: msg, updatedAt: nowIso() }).where(eq(searches.id, searchId)).run();
+    throw err;
+  }
+  const { stats, errors } = run;
   const note = (m: string) => stats.notes!.push(m);
-
-  // ---- 1. Collect
-  const collected: { c: BusinessCandidate; key: Exclude<DiscoveryProviderKey, "csv"> }[] = [];
-  for (const key of providerKeys) {
-    const provider = PROVIDERS[key];
-    if (!provider) continue;
-    const avail = provider.isAvailable();
-    if (!avail.available) {
-      stats.providerResults[key] = { found: 0, error: avail.reason };
-      continue;
-    }
-    signal.throwIfAborted();
-    progress({ message: `Discovering via ${provider.label}` });
-    const t0 = Date.now();
-    try {
-      const result = await provider.discover(
-        { industry: search.industry, categoryQuery: search.categoryQuery, keywords: search.keywords, country: search.country, region: search.region, city: search.city, maxResults: search.maxResults, requireWebsite: search.requireWebsite, segments: filters.segments, areaMode: filters.areaMode, radiusKm: filters.radiusKm, lat: filters.centerLat ?? null, lng: filters.centerLon ?? null },
-        { onProgress: (m) => progress({ message: `${provider.label}: ${m}` }) },
-      );
-      stats.providerResults[key] = { found: result.candidates.length, durationMs: Date.now() - t0 };
-      if (result.area && !stats.area) stats.area = result.area;
-      if (!stats.attribution.includes(result.attribution)) stats.attribution.push(result.attribution);
-      for (const n of result.notes) note(`${provider.label}: ${n}`);
-      note(`${provider.label}: ${result.candidates.length} candidate(s) in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-      for (const c of result.candidates) collected.push({ c, key });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      stats.providerResults[key] = { found: 0, error: msg, durationMs: Date.now() - t0 };
-      note(`${provider.label}: failed after ${((Date.now() - t0) / 1000).toFixed(1)} s: ${msg}`);
-      errors.push(`${provider.label}: ${msg}`);
-      if (err instanceof ProviderError && err.retryable && providerKeys.length === 1 && job.attempts < job.maxAttempts) {
-        await db.update(searches).set({ stats, status: "queued", error: msg, updatedAt: nowIso() }).where(eq(searches.id, searchId)).run();
-        throw err;
-      }
-    }
-  }
-
-  // ---- 2. Score, filter, rank
-  progress({ message: `Ranking ${collected.length} candidates` });
-  const ownerCounts = new Map<string, number>();
-  for (const { c } of collected) {
-    const owner = (c.raw as { taxpayerName?: string | null } | undefined)?.taxpayerName?.toLowerCase();
-    if (owner) ownerCounts.set(owner, (ownerCounts.get(owner) ?? 0) + 1);
-  }
-  const hintsFor = (c: BusinessCandidate): LeadHints => {
-    const raw = (c.raw ?? {}) as { taxpayerName?: string | null; firstSalesDate?: string | null; opening_hours?: string };
-    const years = raw.firstSalesDate ? (Date.now() - new Date(raw.firstSalesDate).getTime()) / (365.25 * 86_400_000) : null;
-    return { openingHours: Boolean(raw.opening_hours), yearsActive: Number.isFinite(years as number) ? years : null, outletCount: raw.taxpayerName ? ownerCounts.get(raw.taxpayerName.toLowerCase()) ?? 1 : undefined, brand: c.brand ?? null };
-  };
-  type Ranked = { c: BusinessCandidate; key: Exclude<DiscoveryProviderKey, "csv">; lead: ReturnType<typeof leadScore>; hints: LeadHints };
-  const ranked: Ranked[] = [];
-  for (const { c, key } of collected) {
-    if (c.operatingStatus === "closed") {
-      stats.skippedClosed!++;
-      continue;
-    }
-    if (search.requireWebsite && !c.website) {
-      stats.skippedNoWebsite++;
-      continue;
-    }
-    if (filters.requirePhone && !c.phone) {
-      stats.skippedNoPhone!++;
-      continue;
-    }
-    const hints = hintsFor(c);
-    const lead = leadScore({ name: c.name, industry: search.industry, website: c.website, phone: c.phone, email: c.email, street: c.street, city: c.city, category: c.category }, hints);
-    if (filters.excludeChains && lead.kind === "chain") {
-      stats.skippedChains!++;
-      continue;
-    }
-    ranked.push({ c, key, lead, hints });
-  }
-  ranked.sort((a, b) => b.lead.score - a.lead.score);
-  stats.candidates = collected.length;
-  stats.ranked = ranked.length;
-  note(`Ranking: ${collected.length} candidate(s) collected; ${stats.skippedClosed} closed, ${stats.skippedNoWebsite} without website, ${stats.skippedNoPhone} without phone, ${stats.skippedChains} chain(s) skipped; ${ranked.length} ranked by lead score; cap ${search.maxResults}`);
-
-  // ---- 3. Store the best up to the cap; merge the rest that match a listed business
   signal.throwIfAborted();
-  let rank = 0;
-  const seenIds = new Set<string>();
-  const investigable: { id: string; leadScore: number }[] = [];
-  const leftovers: Ranked[] = [];
-  for (const r of ranked) {
-    if (rank >= search.maxResults) {
-      leftovers.push(r);
-      continue;
-    }
-    const outcome = await upsertCandidate(db, r.c, { industry: search.industry, searchId, isDemo: r.key === "demo", leadReasons: r.lead.reasons });
-    if (seenIds.has(outcome.businessId)) continue;
-    seenIds.add(outcome.businessId);
-    if (filters.skipKnown && !outcome.wasNew) {
-      stats.skippedKnown!++;
-      continue;
-    }
-    rank++;
-    if (outcome.wasNew) stats.created++;
-    else stats.merged++;
-    await db.insert(searchResults).values({ searchId, businessId: outcome.businessId, rank, wasNew: outcome.wasNew }).onConflictDoNothing().run();
-    await ensureProspect(outcome.businessId);
-    const biz = await db.select().from(businesses).where(eq(businesses.id, outcome.businessId)).get();
-    if (biz && r.key !== "demo") {
-      const stored = leadScore(biz, r.hints);
-      if (biz.leadScore !== stored.score || biz.kind !== stored.kind) await db.update(businesses).set({ leadScore: stored.score, kind: stored.kind, leadReasons: stored.reasons }).where(eq(businesses.id, biz.id)).run();
-      if (search.autoInvestigate && stored.kind !== "chain" && stored.score >= filters.minLeadScore && ["new", "no_website", "failed"].includes(biz.status) && (biz.website || getConfig().RESEARCH_FIND_WEBSITE)) investigable.push({ id: biz.id, leadScore: stored.score });
+
+  // Saved businesses that qualify for investigation, best leads first (the queue is FIFO).
+  let queued = 0;
+  if (run.investigable.length && !isFirecrawlConfigured()) note(`${run.investigable.length} lead(s) qualify for investigation, but FIRECRAWL_API_KEY is not set; set it and use "Investigate all"`);
+  else {
+    for (const t of run.investigable.slice(0, filters.autoInvestigateLimit ?? run.investigable.length)) {
+      await enqueueInvestigation(t.id);
+      queued++;
     }
   }
-  if (leftovers.length) {
-    // Same business seen by another source (registry row for a map place, …): attach the source record without listing it again.
-    const listed = await db.select({ id: businesses.id, nameNormalized: businesses.nameNormalized, city: businesses.city, phone: businesses.phone, websiteDomain: businesses.websiteDomain }).from(businesses).where(inArray(businesses.id, [...seenIds])).all();
-    const byName = new Set(listed.map((b) => `${b.nameNormalized}|${normalizeCity(b.city) ?? ""}`));
-    const byPhone = new Set(listed.map((b) => b.phone).filter(Boolean));
-    const byDomain = new Set(listed.map((b) => b.websiteDomain).filter(Boolean));
-    let mergedExtra = 0;
-    for (const r of leftovers) {
-      const match = byName.has(`${normalizeName(r.c.name)}|${normalizeCity(r.c.city) ?? ""}`) || (r.c.phone && byPhone.has(normalizePhone(r.c.phone))) || (r.c.website && byDomain.has(websiteDomain(normalizeWebsite(r.c.website))));
-      if (!match) continue;
-      await upsertCandidate(db, r.c, { industry: search.industry, searchId, isDemo: r.key === "demo" });
-      mergedExtra++;
-    }
-    if (mergedExtra) note(`${mergedExtra} additional source record(s) beyond the cap merged into listed businesses`);
-    note(`${leftovers.length - mergedExtra} candidate(s) beyond the cap not stored`);
-  }
-  // Best leads first; the queue is FIFO so enqueue order is investigation order.
-  investigable.sort((a, b) => b.leadScore - a.leadScore);
-  for (const t of investigable.slice(0, filters.autoInvestigateLimit ?? investigable.length)) {
-    await enqueueInvestigation(t.id);
-    stats.queuedForInvestigation!++;
-  }
-  stats.total = rank;
-  stats.durationMs = Date.now() - startedAt;
-  note(`Stored ${rank} result(s) (${stats.created} new, ${stats.merged} merged); ${stats.queuedForInvestigation} queued for investigation; ${(stats.durationMs / 1000).toFixed(1)} s total`);
+  stats.queuedForInvestigation = queued;
+  stats.durationMs = Date.now() - t0;
+  note(`${stats.total} result(s) listed${filters.autoSave === false ? " for review" : ` and saved (${stats.created} new, ${stats.merged} merged)`}; ${queued} queued for investigation; ${(stats.durationMs / 1000).toFixed(1)} s total`);
+
   const anySuccess = Object.values(stats.providerResults).some((r) => !r.error);
+  if (!anySuccess && run.retryable && job.attempts < job.maxAttempts) {
+    await db.update(searches).set({ stats, status: "queued", error: run.retryable.message, updatedAt: nowIso() }).where(eq(searches.id, searchId)).run();
+    throw run.retryable;
+  }
   await db
     .update(searches)
-    .set({ status: anySuccess || rank > 0 ? "done" : "failed", stats, error: errors.length ? errors.join("; ") : null, updatedAt: nowIso() })
+    .set({ status: anySuccess || stats.total > 0 ? "done" : "failed", stats, error: errors.length ? errors.join("; ") : null, updatedAt: nowIso() })
     .where(eq(searches.id, searchId))
     .run();
-  if (!anySuccess && rank === 0) throw new NonRetryableError(errors.join("; ") || "No provider produced results");
+  if (!anySuccess && stats.total === 0) throw new NonRetryableError(errors.join("; ") || "No source produced results");
 }
 
-export async function enqueueInvestigation(businessId: string) {
+/** auto = reuse stored pages when younger than RESEARCH_STALE_DAYS, else crawl; recrawl = always fetch again; reanalyze = stored pages only, no credits. */
+export type InvestigateMode = "auto" | "recrawl" | "reanalyze";
+
+export async function enqueueInvestigation(businessId: string, mode: InvestigateMode = "auto") {
   const db = await getDb();
-  await db.update(businesses).set({ status: "queued", statusMessage: "Waiting to be investigated", updatedAt: nowIso() }).where(eq(businesses.id, businessId)).run();
-  return enqueueJob("investigate_business", { businessId }, { idempotencyKey: `investigate:${businessId}` });
+  await db.update(businesses).set({ status: "queued", statusMessage: mode === "reanalyze" ? "Waiting to re-analyze stored pages" : "Waiting to be investigated", updatedAt: nowIso() }).where(eq(businesses.id, businessId)).run();
+  return enqueueJob("investigate_business", { businessId, mode }, { idempotencyKey: `investigate:${businessId}` });
+}
+
+const NEEDS_FIRECRAWL = "Website research needs FIRECRAWL_API_KEY (Settings → Integrations); stored pages can still be re-analyzed";
+
+/** New crawls need a key and room in the monthly credit budget; both failures are explicit and final for this job. */
+async function requireFirecrawl(setStatus: (status: string, message: string) => Promise<unknown>) {
+  if (!isFirecrawlConfigured()) {
+    await setStatus("failed", NEEDS_FIRECRAWL);
+    throw new NonRetryableError(NEEDS_FIRECRAWL);
+  }
+  const budget = getConfig().FIRECRAWL_MONTHLY_CREDIT_BUDGET;
+  const used = await creditsUsedThisMonth();
+  if (used.credits >= budget) {
+    const msg = `Firecrawl monthly credit budget reached (${used.credits} of ${budget} since ${used.since.slice(0, 10)}); raise FIRECRAWL_MONTHLY_CREDIT_BUDGET or wait for the renewal`;
+    await setStatus("failed", msg);
+    throw new NonRetryableError(msg);
+  }
 }
 
 /** After a timeout the abandoned handler may be hung for good: what it was working on must not stay "in progress". */
@@ -237,21 +148,26 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
   const cfg = getConfig();
   const notes: string[] = [];
 
-  // 0. Locate a website when none is on record (search + verified domain guesses).
+  // 0. Locate a website when none is on record (search + verified domain guesses; each candidate check is one credit).
+  let creditsUsed = 0;
+  const finderDeps = { scrape: scrapePage, signal };
   if (!biz.website) {
     if (!cfg.RESEARCH_FIND_WEBSITE) {
       await setStatus("no_website", "No website on record (website finder disabled)");
       throw new NonRetryableError("Business has no website to investigate");
     }
+    await requireFirecrawl(setStatus);
     await setStatus("investigating", "Locating the website");
     progress({ message: "Locating the website" });
-    const found = await findWebsite({ name: biz.name, city: biz.city, region: biz.region, phone: biz.phone, street: biz.street, email: biz.email }, { fetcher: (u, o) => safeFetch(u, { ...o, signal }) });
+    const search = await findWebsite({ name: biz.name, city: biz.city, region: biz.region, phone: biz.phone, street: biz.street, email: biz.email }, finderDeps);
+    creditsUsed += search.credits;
+    notes.push(...search.notes);
+    const found = search.found;
     if (!found) {
       await setStatus("no_website", "Website could not be located (search and domain guesses were checked)");
-      await logActivity(businessId, "system", "Website finder: no verified website found.", {});
+      await logActivity(businessId, "system", `Website finder: no verified website found (${search.credits} Firecrawl credit(s)).`, {});
       throw new NonRetryableError("No website could be located for this business");
     }
-    notes.push(...found.notes);
     const website = normalizeWebsite(found.website)!;
     const lead = leadScore({ ...biz, website });
     await db.update(businesses).set({ website, websiteDomain: websiteDomain(website), websiteSource: found.source, leadScore: lead.score, kind: lead.kind, updatedAt: nowIso() }).where(eq(businesses.id, businessId)).run();
@@ -259,36 +175,55 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
     biz = (await db.select().from(businesses).where(eq(businesses.id, businessId)).get())!;
   }
 
-  await setStatus("investigating", "Fetching website");
+  // Stored pages from a recent investigation are reused instead of spending credits: automatically within
+  // RESEARCH_STALE_DAYS, always on "re-analyze", never on "research again".
+  const mode = (job.payload.mode as InvestigateMode | undefined) ?? "auto";
+  const stored = mode === "recrawl" ? null : await loadStoredPages(businessId, biz.website!, mode === "reanalyze" ? Number.POSITIVE_INFINITY : cfg.RESEARCH_STALE_DAYS);
+  if (!stored) await requireFirecrawl(setStatus);
+
+  await setStatus("investigating", stored ? "Re-analyzing stored pages" : "Fetching website via Firecrawl");
   const invId = newId();
   const started = Date.now();
   await db.insert(investigations).values({ id: invId, businessId, status: "running" }).run();
 
   try {
-    // 1. Crawl and off-site footprint in parallel.
+    // 1. Crawl (or reuse stored pages) and off-site footprint in parallel.
     const runFootprint = (site: string) => (cfg.RESEARCH_FOOTPRINT ? footprintFacts(site, { signal }).catch((err) => ({ facts: [] as DetectedFact[], notes: [`Footprint lookups failed: ${(err as Error).message}`] })) : Promise.resolve({ facts: [] as DetectedFact[], notes: [] as string[] }));
-    let [crawl, footprint] = await Promise.all([crawlWebsite(biz.website!, { onProgress: (m) => progress({ message: m }), signal }), runFootprint(biz.website!)]);
+    const runCrawl = (site: string): Promise<CrawlResult> =>
+      stored
+        ? Promise.resolve({ pages: stored.pages, notes: [`Reused ${stored.pages.length} stored page(s) from ${stored.startedAt.slice(0, 10)} (${stored.ageDays} day(s) old, 0 credits)${mode === "reanalyze" ? " on request" : "; use “Research again” for a fresh crawl"}`], durationMs: 0, home: stored.pages.find((p) => p.kind === "home" && p.content) ?? null, credits: 0, stoppedEarly: null })
+        : crawlWebsite(site, { onProgress: (m) => progress({ message: m }), signal });
+    let [crawl, footprint] = await Promise.all([runCrawl(biz.website!), runFootprint(biz.website!)]);
     notes.push(...crawl.notes, ...footprint.notes);
     signal.throwIfAborted();
-    const savePages = async (c: typeof crawl) => {
-      for (const p of c.pages) await db.insert(pages).values({ id: newId(), investigationId: invId, businessId, url: p.url, finalUrl: p.finalUrl, kind: p.kind, statusCode: p.status, title: p.content?.title ?? null, text: p.content?.text ?? null, bytes: p.bytes, error: p.error, renderer: p.renderer }).run();
+    creditsUsed += crawl.credits;
+    const savePages = async (c: CrawlResult) => {
+      for (const p of c.pages)
+        await db
+          .insert(pages)
+          .values({ id: newId(), investigationId: invId, businessId, url: p.url, finalUrl: p.finalUrl, kind: p.kind, statusCode: p.status, title: p.content?.title ?? null, text: p.content?.text ?? null, markdown: p.markdown, html: p.rawHtml, contentHash: p.content ? createHash("sha1").update(p.content.text).digest("hex") : null, credits: p.credits, bytes: p.bytes, error: p.error, renderer: stored ? "stored" : "firecrawl" })
+          .run();
     };
     await savePages(crawl);
-    if (!crawl.pages.some((p) => p.content) && cfg.RESEARCH_FIND_WEBSITE && !/robots\.txt|Blocked:/.test(crawl.pages[0]?.error ?? "")) {
+    if (!stored && !crawl.pages.some((p) => p.content) && cfg.RESEARCH_FIND_WEBSITE && !/robots\.txt|Blocked|bot protection/.test(crawl.pages[0]?.error ?? "")) {
       // The recorded website is dead (404, DNS, timeout): the business may have moved domains. Try to locate the current site.
       await setStatus("investigating", "Website unreachable; looking for a current one");
       progress({ message: "Website unreachable; looking for a current one" });
-      const found = await findWebsite({ name: biz.name, city: biz.city, region: biz.region, phone: biz.phone, street: biz.street, email: biz.email }, { fetcher: (u, o) => safeFetch(u, { ...o, signal }) });
-      notes.push(...(found?.notes ?? ["Website finder found no verified alternative"]));
+      const search = await findWebsite({ name: biz.name, city: biz.city, region: biz.region, phone: biz.phone, street: biz.street, email: biz.email }, finderDeps);
+      creditsUsed += search.credits;
+      notes.push(...search.notes);
+      const found = search.found;
+      if (!found) notes.push("Website finder found no verified alternative");
       if (found && websiteDomain(found.website) !== biz.websiteDomain) {
         const website = normalizeWebsite(found.website)!;
         notes.push(`Recorded website ${biz.website} is unreachable; verified current site ${website} (${found.evidence})`);
         await db.update(businesses).set({ website, websiteDomain: websiteDomain(website), websiteSource: found.source, updatedAt: nowIso() }).where(eq(businesses.id, businessId)).run();
         await logActivity(businessId, "system", `Recorded website was unreachable; located and verified ${website} by ${found.source === "found_search" ? "web search" : found.source === "found_email" ? "its email domain" : "domain guess"} (${found.evidence}).`, { previous: biz.website, confidence: found.confidence });
         biz = (await db.select().from(businesses).where(eq(businesses.id, businessId)).get())!;
-        [crawl, footprint] = await Promise.all([crawlWebsite(website, { onProgress: (m) => progress({ message: m }), signal }), runFootprint(website)]);
+        [crawl, footprint] = await Promise.all([runCrawl(website), runFootprint(website)]);
         notes.push(...crawl.notes, ...footprint.notes);
         signal.throwIfAborted();
+        creditsUsed += crawl.credits;
         await savePages(crawl);
       }
     }
@@ -299,7 +234,7 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
 
     // 2. Deterministic facts from the site, plus off-site records.
     await setStatus("investigating", cfg.ai.enabled ? "Building profile and analyzing opportunities" : "Detecting profile facts");
-    const detected: DetectedFact[] = [...detectFacts(fetched.map((p) => ({ content: p.content!, url: p.url, kind: p.kind })), crawl.home ? { finalUrl: crawl.home.finalUrl, bytes: crawl.home.bytes, ms: crawl.home.ms } : undefined), ...footprint.facts, ...(await registryFacts(businessId))];
+    const detected: DetectedFact[] = [...detectFacts(fetched.map((p) => ({ content: p.content!, url: p.url, kind: p.kind })), crawl.home ? { finalUrl: crawl.home.finalUrl, bytes: crawl.home.bytes, ms: crawl.home.ms } : undefined), ...footprint.facts];
 
     // 3. Model (optional), validated in code.
     let outcome: Awaited<ReturnType<typeof investigateWithModel>> | null = null;
@@ -406,8 +341,9 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
           statusMessage: verdict === "opportunity" ? `${scored.length} opportunity hypothes${scored.length === 1 ? "is" : "es"}${scored.every((s) => s.o.source === "rules") ? " (rule-based)" : ""}` : verdict === "no_opportunity" ? "No compelling opportunity" : verdict === "insufficient_evidence" ? `Insufficient evidence: ${fetched.length} page(s), ${verifiedKeys.size} verified fact(s)` : "Profile detected; no pattern matched; AI analysis pending",
           verdict,
           summary: summaryFact?.value ?? null,
-          // A verified email on the business's own domain beats whatever discovery or an older run recorded (vendor/widget addresses included).
-          email: emailFact && (!biz.email || isVendorEmail(biz.email) || (biz.websiteDomain && emailFact.endsWith(`@${biz.websiteDomain}`))) ? emailFact : biz.email && isVendorEmail(biz.email) ? null : (biz.email ?? emailFact),
+          // The email verified by this run wins unless the stored one is on the business's own domain (the one case
+          // where an older value is at least as trustworthy); vendor/widget addresses are never kept.
+          email: pickEmail(biz.email, emailFact, biz.websiteDomain),
           phone: biz.phone ?? phoneFact,
           bestAttractiveness: best?.score.attractiveness ?? null,
           bestConfidence: best?.score.confidence ?? null,
@@ -418,35 +354,35 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
         .where(eq(businesses.id, businessId)),
       db
         .update(investigations)
-        .set({ status: "done", finishedAt: nowIso(), durationMs: Date.now() - started, pagesFetched: fetched.length, pagesFailed: failed.length, factsVerified: verifiedKeys.size, factsRejected: outcome?.rejected.length ?? 0, model, costUsd, workflows: outcome?.workflows ?? [], verdict, verdictReason, warnings, notes })
+        .set({ status: "done", finishedAt: nowIso(), durationMs: Date.now() - started, pagesFetched: fetched.length, pagesFailed: failed.length, factsVerified: verifiedKeys.size, factsRejected: outcome?.rejected.length ?? 0, model, costUsd, creditsUsed, workflows: outcome?.workflows ?? [], verdict, verdictReason, warnings, notes })
         .where(eq(investigations.id, invId)),
     ] as const;
     signal.throwIfAborted();
     await db.batch(writes as unknown as Parameters<typeof db.batch>[0]);
-    await logActivity(businessId, "system", `Investigated in ${((Date.now() - started) / 1000).toFixed(1)}s: ${fetched.length} page(s), ${verifiedKeys.size} verified facts, ${footprint.facts.length} off-site record(s). ${verdict === "opportunity" ? `${scored.length} opportunity hypothesis(es) (${scored.filter((s) => s.o.source === "ai").length} AI, ${scored.filter((s) => s.o.source === "rules").length} rule-based).` : verdict === "no_opportunity" ? `No compelling opportunity: ${verdictReason}` : "No pattern matched; AI analysis not run."}`, { investigationId: invId });
+    await logActivity(businessId, "system", `Investigated in ${((Date.now() - started) / 1000).toFixed(1)}s: ${fetched.length} page(s), ${verifiedKeys.size} verified facts, ${footprint.facts.length} off-site record(s), ${creditsUsed} Firecrawl credit(s). ${verdict === "opportunity" ? `${scored.length} opportunity hypothesis(es) (${scored.filter((s) => s.o.source === "ai").length} AI, ${scored.filter((s) => s.o.source === "rules").length} rule-based).` : verdict === "no_opportunity" ? `No compelling opportunity: ${verdictReason}` : "No pattern matched; AI analysis not run."}`, { investigationId: invId });
     if (verdict === "opportunity") await advanceStageIfBehind(businessId, "qualified", "investigation found an opportunity");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await db.update(investigations).set({ status: "failed", finishedAt: nowIso(), durationMs: Date.now() - started, error: msg, notes }).where(eq(investigations.id, invId)).run();
+    await db.update(investigations).set({ status: "failed", finishedAt: nowIso(), durationMs: Date.now() - started, error: msg, notes, creditsUsed }).where(eq(investigations.id, invId)).run();
     await setStatus("failed", msg.slice(0, 200));
     throw err;
   }
-}
-
-/** Facts from public registries the business was discovered in (e.g. Texas sales tax permit dates). */
-async function registryFacts(businessId: string): Promise<DetectedFact[]> {
-  const db = await getDb();
-  const sources = await db.select().from(businessSources).where(eq(businessSources.businessId, businessId)).all();
-  const permit = sources.find((s) => s.provider === "tx_permits" && (s.raw as { firstSalesDate?: string } | null)?.firstSalesDate);
-  if (!permit) return [];
-  const raw = permit.raw as { firstSalesDate: string; permitIssued?: string | null; taxpayerName?: string | null };
-  return [{ key: "permit_since", status: "verified", value: raw.firstSalesDate.slice(0, 4), evidenceQuote: `Texas sales tax permit: first sales ${raw.firstSalesDate}${raw.taxpayerName ? `, taxpayer ${raw.taxpayerName}` : ""}`, sourceUrl: permit.sourceUrl ?? null }];
 }
 
 /** Below this many verified content facts the verdict is "insufficient evidence"; a single-page site needs a few more to count as seen. */
 export const MIN_VERIFIED_FOR_VERDICT = 5;
 export const MIN_VERIFIED_SINGLE_PAGE = 7;
 /** Measured for nearly every reachable site; they say nothing about how the business operates, so they do not count toward the verdict threshold. */
+/** Which email to store after an investigation: see the call site. Exported for tests. */
+export function pickEmail(stored: string | null, verified: string | null, websiteDomain: string | null): string | null {
+  const own = (e: string | null) => Boolean(e && websiteDomain && (e.endsWith(`@${websiteDomain}`) || e.endsWith(`.${websiteDomain}`)));
+  if (verified && !isVendorEmail(verified)) {
+    if (own(verified) || !stored || isVendorEmail(stored) || !own(stored)) return verified;
+    return stored;
+  }
+  return stored && isVendorEmail(stored) ? null : stored;
+}
+
 export const MEASURED_KEYS = new Set<string>(["website_health", "website_updated", "domain_registered", "site_first_seen", "email_provider"]);
 
 /** Opportunities kept per business after ranking: all model hypotheses (≤3) plus rule-based patterns up to this total. */

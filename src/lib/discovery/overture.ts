@@ -1,34 +1,39 @@
 /**
- * Overture Maps Places: bulk open data (CDLA-Permissive 2.0) read straight from the
- * public S3 release with DuckDB. No key, no rate limits, ~50M places with names,
- * categories, websites, phones, emails, socials, brand and open/closed status.
- * One query per (release, area, category set); results are cached in the database
- * so repeated searches of the same area cost nothing. Needs the native DuckDB
- * binary, so it is disabled on serverless hosts (OpenStreetMap is used there).
+ * Overture Maps Places: bulk open data (CDLA-Permissive 2.0) read straight from
+ * the public GeoParquet release with DuckDB. No key, no rate limits, ~50M
+ * places worldwide with names, categories, websites, phones, emails, socials,
+ * brand and open/closed status.
+ *
+ * Architecture: the latest release comes from Overture's STAC catalog (cached a
+ * day; OVERTURE_RELEASE pins one). The search area is split into grid cells;
+ * cells not yet cached for the industry (its full category set) are pulled with
+ * ONE bounded S3 query for their union and stored row by row in `source_places`;
+ * the search itself then runs locally (bbox or radius, sub-type and name
+ * filters), so repeated and adjacent searches cost no remote reads. Cells are
+ * refreshed after OVERTURE_CACHE_DAYS or when a new release appears. Needs the
+ * native DuckDB binary, so it is disabled on serverless hosts.
  */
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, inArray } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { placeCache } from "@/db/schema";
+import { sourceCells, sourcePlaces } from "@/db/schema";
 import { getConfig } from "@/lib/config";
-import { findPlace } from "@/lib/geo/places";
-import { getPlaybook, selectorsFor } from "@/lib/industries";
-import { geocodeArea } from "./osm";
+import { newId, nowIso } from "@/lib/ids";
+import { cellIdFor, cellsForBBox, haversineKm, inBBox, unionBBox, type BBox } from "./cells";
+import { assertReasonableBbox, resolveSearchArea } from "./area";
+import { normalizeName, normalizePhone, normalizeWebsite, websiteDomain } from "./normalize";
+import { matchOverture, resolveCategories, type OvertureSpec } from "./taxonomy";
 import type { BusinessCandidate, DiscoveryProvider, DiscoveryQuery, ProviderResult } from "./types";
 import { ProviderError } from "./types";
 
 export const OVERTURE_ATTRIBUTION = "Overture Maps Foundation places data (CDLA-Permissive 2.0)";
-
-export interface BBox {
-  south: number;
-  west: number;
-  north: number;
-  east: number;
-}
+export const STAC_CATALOG_URL = "https://stac.overturemaps.org/catalog.json";
+const FALLBACK_RELEASE = "2026-10-21.0";
 
 export interface OvertureRow {
   id: string;
   name: string | null;
   category: string | null;
+  hierarchy: string[] | null;
   operating_status: string | null;
   confidence: number | null;
   website: string | null;
@@ -43,29 +48,53 @@ export interface OvertureRow {
   country: string | null;
   lon: number | null;
   lat: number | null;
+  source_dataset: string | null;
+  source_updated: string | null;
 }
 
-export type OvertureQuery = (bbox: BBox, categories: string[], release: string) => Promise<OvertureRow[]>;
+export type OvertureQuery = (bbox: BBox, spec: OvertureSpec, release: string) => Promise<OvertureRow[]>;
 
-/** A bbox around a center: 1° latitude ≈ 111 km; longitude shrinks with latitude. */
-export function bboxAround(lat: number, lon: number, radiusKm: number): BBox {
-  const dLat = radiusKm / 111;
-  const dLon = radiusKm / (111 * Math.max(0.2, Math.cos((lat * Math.PI) / 180)));
-  return { south: lat - dLat, north: lat + dLat, west: lon - dLon, east: lon + dLon };
+// ------------------------------------------------------------------ release
+let releaseCache: { at: number; value: string } | null = null;
+let stacFetch: typeof fetch | null = null;
+/** Test hook. */
+export function _setStacFetch(fn: typeof fetch | null) {
+  stacFetch = fn;
+  releaseCache = null;
 }
 
-export function cacheKey(release: string, bbox: BBox, categories: string[]): string {
-  const r = (n: number) => n.toFixed(3);
-  return `overture|${release}|${r(bbox.south)},${r(bbox.west)},${r(bbox.north)},${r(bbox.east)}|${[...categories].sort().join(",")}`;
+/** The release to read: pinned by OVERTURE_RELEASE, otherwise the STAC catalog's `latest` (cached 24 h, last known value on failure). */
+export async function resolveRelease(): Promise<{ release: string; source: "pinned" | "stac" | "fallback" }> {
+  const cfg = getConfig();
+  if (cfg.OVERTURE_RELEASE && cfg.OVERTURE_RELEASE !== "auto") return { release: cfg.OVERTURE_RELEASE, source: "pinned" };
+  if (releaseCache && Date.now() - releaseCache.at < 86_400_000) return { release: releaseCache.value, source: "stac" };
+  try {
+    const res = await (stacFetch ?? fetch)(STAC_CATALOG_URL, { signal: AbortSignal.timeout(15_000), headers: { Accept: "application/json" } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const cat = (await res.json()) as { latest?: string };
+    if (!cat.latest || !/^\d{4}-\d{2}-\d{2}\.\d+$/.test(cat.latest)) throw new Error("catalog has no latest release");
+    releaseCache = { at: Date.now(), value: cat.latest };
+    return { release: cat.latest, source: "stac" };
+  } catch {
+    return { release: releaseCache?.value ?? FALLBACK_RELEASE, source: "fallback" };
+  }
 }
 
+// ------------------------------------------------------------------ SQL
 const sqlStr = (v: string) => `'${v.replace(/'/g, "''")}'`;
+const sqlList = (vs: string[]) => vs.map(sqlStr).join(", ");
 
-export function buildOvertureSql(bbox: BBox, categories: string[], release: string): string {
+export function buildOvertureSql(bbox: BBox, spec: OvertureSpec, release: string): string {
+  const where: string[] = [];
+  if (spec.hierarchy.length) where.push(`list_has_any(taxonomy.hierarchy, [${sqlList(spec.hierarchy)}])`);
+  if (spec.primary.length) where.push(`taxonomy.primary IN (${sqlList(spec.primary)})`);
+  if (!where.length) throw new ProviderError("No Overture categories to search", "overture");
+  const excl = spec.exclude.length ? ` AND taxonomy.primary NOT IN (${sqlList(spec.exclude)})` : "";
   return `
 SELECT id,
        names.primary AS name,
        taxonomy.primary AS category,
+       taxonomy.hierarchy AS hierarchy,
        operating_status,
        confidence,
        websites[1] AS website,
@@ -79,17 +108,19 @@ SELECT id,
        addresses[1].postcode AS postcode,
        addresses[1].country AS country,
        bbox.xmin AS lon,
-       bbox.ymin AS lat
+       bbox.ymin AS lat,
+       sources[1].dataset AS source_dataset,
+       sources[1].update_time AS source_updated
 FROM read_parquet('s3://overturemaps-us-west-2/release/${release.replace(/[^0-9.-]/g, "")}/theme=places/type=place/*', hive_partitioning=1)
 WHERE bbox.xmin BETWEEN ${bbox.west} AND ${bbox.east}
   AND bbox.ymin BETWEEN ${bbox.south} AND ${bbox.north}
-  AND taxonomy.primary IN (${categories.map(sqlStr).join(", ")})
-LIMIT 5000`;
+  AND (${where.join(" OR ")})${excl}
+LIMIT 20000`;
 }
 
-// ------------------------------------------------------------- DuckDB access
+// ------------------------------------------------------------------ DuckDB access
 type Duck = { runAndReadAll: (sql: string) => Promise<{ getRowObjects: () => Record<string, unknown>[] }>; run: (sql: string) => Promise<unknown> };
-const g = globalThis as unknown as { __radarDuck?: Promise<Duck> };
+const g = globalThis as unknown as { __radarDuck?: Promise<Duck>; __radarDuckQueue?: Promise<unknown> };
 
 async function getDuck(): Promise<Duck> {
   if (!g.__radarDuck) {
@@ -109,132 +140,202 @@ async function getDuck(): Promise<Duck> {
 
 const toStr = (v: unknown) => (v == null ? null : String(v));
 const toNum = (v: unknown) => (v == null || Number.isNaN(Number(v)) ? null : Number(v));
+const toList = (v: unknown): string[] | null => (Array.isArray(v) ? v.map(String) : v && typeof v === "object" && Array.isArray((v as { items?: unknown[] }).items) ? ((v as { items: unknown[] }).items.map(String)) : null);
 
-export const queryOvertureS3: OvertureQuery = async (bbox, categories, release) => {
-  const duck = await getDuck();
-  const res = await duck.runAndReadAll(buildOvertureSql(bbox, categories, release));
-  return res.getRowObjects().map((r) => ({
-    id: String(r.id),
-    name: toStr(r.name),
-    category: toStr(r.category),
-    operating_status: toStr(r.operating_status),
-    confidence: toNum(r.confidence),
-    website: toStr(r.website),
-    phone: toStr(r.phone),
-    email: toStr(r.email),
-    socials: Array.isArray(r.socials) ? (r.socials as unknown[]).map(String) : null,
-    brand: toStr(r.brand),
-    street: toStr(r.street),
-    city: toStr(r.city),
-    region: toStr(r.region),
-    postcode: toStr(r.postcode),
-    country: toStr(r.country),
-    lon: toNum(r.lon),
-    lat: toNum(r.lat),
-  }));
-};
-
-/** Cached query: database first, S3 on a miss. */
-export async function fetchPlaces(bbox: BBox, categories: string[], opts: { query?: OvertureQuery; release?: string; cacheDays?: number } = {}): Promise<{ rows: OvertureRow[]; cached: boolean; durationMs: number }> {
-  const cfg = getConfig();
-  const release = opts.release ?? cfg.OVERTURE_RELEASE;
-  const cacheDays = opts.cacheDays ?? cfg.OVERTURE_CACHE_DAYS;
-  const key = cacheKey(release, bbox, categories);
-  const db = await getDb();
-  const since = new Date(Date.now() - cacheDays * 86_400_000).toISOString();
-  const hit = await db.select().from(placeCache).where(and(eq(placeCache.key, key), gt(placeCache.createdAt, since))).get();
-  if (hit) return { rows: hit.rows as unknown as OvertureRow[], cached: true, durationMs: hit.durationMs ?? 0 };
-  const t0 = Date.now();
-  const rows = await (opts.query ?? queryOvertureS3)(bbox, categories, release);
-  const durationMs = Date.now() - t0;
-  await db
-    .insert(placeCache)
-    .values({ key, release, rows: rows as unknown as Record<string, unknown>[], rowCount: rows.length, durationMs })
-    .onConflictDoUpdate({ target: placeCache.key, set: { release, rows: rows as unknown as Record<string, unknown>[], rowCount: rows.length, durationMs, createdAt: new Date().toISOString() } })
-    .run();
-  return { rows, cached: false, durationMs };
+/** S3 reads run one at a time: a remote GeoParquet scan is the expensive step, and two at once only slow each other. */
+function serialized<T>(fn: () => Promise<T>): Promise<T> {
+  const run = (g.__radarDuckQueue ?? Promise.resolve()).then(fn, fn);
+  g.__radarDuckQueue = run.catch(() => {});
+  return run;
 }
 
-export function rowToCandidate(r: OvertureRow, fallback: { city?: string | null; region?: string | null; country: string }): BusinessCandidate | null {
-  const name = r.name?.trim();
-  if (!name) return null;
+export const queryOvertureS3: OvertureQuery = (bbox, spec, release) =>
+  serialized(async () => {
+    const duck = await getDuck();
+    const res = await duck.runAndReadAll(buildOvertureSql(bbox, spec, release));
+    return res.getRowObjects().map((r) => ({
+      id: String(r.id),
+      name: toStr(r.name),
+      category: toStr(r.category),
+      hierarchy: toList(r.hierarchy),
+      operating_status: toStr(r.operating_status),
+      confidence: toNum(r.confidence),
+      website: toStr(r.website),
+      phone: toStr(r.phone),
+      email: toStr(r.email),
+      socials: toList(r.socials),
+      brand: toStr(r.brand),
+      street: toStr(r.street),
+      city: toStr(r.city),
+      region: toStr(r.region),
+      postcode: toStr(r.postcode),
+      country: toStr(r.country),
+      lon: toNum(r.lon),
+      lat: toNum(r.lat),
+      source_dataset: toStr(r.source_dataset),
+      source_updated: toStr(r.source_updated),
+    }));
+  });
+
+// ------------------------------------------------------------------ cell cache
+export interface CellFetch {
+  cells: string[];
+  missing: string[];
+  cached: "all" | "some" | "none";
+  fetched: number;
+  durationMs: number;
+  release: string;
+}
+
+/** Make every cell of the bbox present in the local table for this scope (one S3 query for the missing ones). */
+export async function ensureOvertureCells(scope: string, bbox: BBox, specAll: OvertureSpec, opts: { query?: OvertureQuery; release?: string; cacheDays?: number; onProgress?: (m: string) => void } = {}): Promise<CellFetch> {
+  const cfg = getConfig();
+  const release = opts.release ?? (await resolveRelease()).release;
+  const cacheDays = opts.cacheDays ?? cfg.OVERTURE_CACHE_DAYS;
+  const db = await getDb();
+  const cells = cellsForBBox(bbox);
+  const since = new Date(Date.now() - cacheDays * 86_400_000).toISOString();
+  const fresh = await db
+    .select({ cell: sourceCells.cell })
+    .from(sourceCells)
+    .where(and(eq(sourceCells.provider, "overture"), eq(sourceCells.scope, scope), inArray(sourceCells.cell, cells), eq(sourceCells.release, release), gt(sourceCells.fetchedAt, since)))
+    .all();
+  const freshSet = new Set(fresh.map((f) => f.cell));
+  const missing = cells.filter((c) => !freshSet.has(c));
+  if (!missing.length) return { cells, missing, cached: "all", fetched: 0, durationMs: 0, release };
+  const pull = unionBBox(missing);
+  assertReasonableBbox(pull, "requested area");
+  opts.onProgress?.(`Overture ${release}: reading ${missing.length} of ${cells.length} cell(s) from the public release`);
+  const t0 = Date.now();
+  const rows = await (opts.query ?? queryOvertureS3)(pull, specAll, release);
+  const durationMs = Date.now() - t0;
+  const ts = nowIso();
+  const counts = new Map<string, number>(missing.map((c) => [c, 0]));
+  const values = rows
+    .filter((r) => r.name?.trim() && r.lat != null && r.lon != null)
+    .map((r) => {
+      const cell = cellIdFor(r.lat!, r.lon!);
+      if (counts.has(cell)) counts.set(cell, (counts.get(cell) ?? 0) + 1);
+      const website = normalizeWebsite(r.website);
+      return {
+        id: newId(),
+        provider: "overture" as const,
+        providerId: r.id,
+        release,
+        cell,
+        name: r.name!.trim(),
+        nameNormalized: normalizeName(r.name!),
+        category: r.category,
+        categoryPath: r.hierarchy?.length ? `|${r.hierarchy.join("|")}|` : r.category ? `|${r.category}|` : null,
+        website,
+        websiteDomain: websiteDomain(website),
+        phone: normalizePhone(r.phone),
+        email: r.email?.toLowerCase() ?? null,
+        street: r.street,
+        city: r.city,
+        region: r.region,
+        postalCode: r.postcode,
+        country: r.country?.toUpperCase() ?? null,
+        lat: r.lat!,
+        lon: r.lon!,
+        operatingStatus: r.operating_status ?? "unknown",
+        brand: r.brand,
+        confidence: r.confidence,
+        sourceUrl: null,
+        raw: { overtureId: r.id, confidence: r.confidence, category: r.category, hierarchy: r.hierarchy, operatingStatus: r.operating_status, brand: r.brand, socials: r.socials, phoneRaw: r.phone, websiteRaw: r.website, dataset: r.source_dataset, sourceUpdated: r.source_updated },
+        fetchedAt: ts,
+      };
+    })
+    // Only cells we asked for: the union bbox may spill into cells that stay "unknown" until their own fetch.
+    .filter((v) => counts.has(v.cell));
+  const CHUNK = 200;
+  for (let i = 0; i < values.length; i += CHUNK) {
+    const slice = values.slice(i, i + CHUNK);
+    await db.batch(slice.map((v) => db.insert(sourcePlaces).values(v).onConflictDoUpdate({ target: [sourcePlaces.provider, sourcePlaces.providerId], set: { ...v, id: undefined as unknown as string } })) as unknown as Parameters<typeof db.batch>[0]);
+  }
+  await db.batch(
+    missing.map((cell) =>
+      db
+        .insert(sourceCells)
+        .values({ id: newId(), provider: "overture", scope, cell, release, rowCount: counts.get(cell) ?? 0, durationMs, fetchedAt: ts })
+        .onConflictDoUpdate({ target: [sourceCells.provider, sourceCells.scope, sourceCells.cell], set: { release, rowCount: counts.get(cell) ?? 0, durationMs, fetchedAt: ts } }),
+    ) as unknown as Parameters<typeof db.batch>[0],
+  );
+  return { cells, missing, cached: missing.length === cells.length ? "none" : "some", fetched: values.length, durationMs, release };
+}
+
+/** Local search over cached rows: bbox or radius, category spec, keywords. */
+export async function searchLocalOverture(cells: string[], bbox: BBox, spec: OvertureSpec, opts: { center?: { lat: number; lon: number } | null; radiusKm?: number | null; keywords?: string | null }) {
+  const db = await getDb();
+  const rows = await db.select().from(sourcePlaces).where(and(eq(sourcePlaces.provider, "overture"), inArray(sourcePlaces.cell, cells))).all();
+  const kw = opts.keywords?.trim().toLowerCase();
+  const out: { row: (typeof rows)[number]; matchedBy: string }[] = [];
+  for (const r of rows) {
+    if (!inBBox(r.lat, r.lon, bbox)) continue;
+    if (opts.radiusKm && opts.center && haversineKm(opts.center.lat, opts.center.lon, r.lat, r.lon) > opts.radiusKm) continue;
+    const path = r.categoryPath ? r.categoryPath.split("|").filter(Boolean) : null;
+    const matchedBy = matchOverture(spec, r.category, path, r.name);
+    if (!matchedBy) continue;
+    if (kw && !r.name.toLowerCase().includes(kw)) continue;
+    out.push({ row: r, matchedBy });
+  }
+  return out;
+}
+
+export function rowToCandidate(r: typeof sourcePlaces.$inferSelect, matchedBy: string, fallback: { city?: string | null; region?: string | null; country: string }): BusinessCandidate {
+  const raw = (r.raw ?? {}) as Record<string, unknown>;
   return {
     provider: "overture",
-    providerId: r.id,
-    name,
+    providerId: r.providerId,
+    name: r.name,
     category: r.category,
+    matchedBy,
     website: r.website,
     phone: r.phone,
     email: r.email,
     street: r.street,
     city: r.city ?? fallback.city ?? null,
     region: r.region ?? fallback.region ?? null,
-    postalCode: r.postcode,
+    postalCode: r.postalCode,
     country: r.country ?? fallback.country,
     lat: r.lat,
     lng: r.lon,
     sourceUrl: null,
     attribution: OVERTURE_ATTRIBUTION,
-    operatingStatus: r.operating_status ?? "unknown",
+    operatingStatus: r.operatingStatus ?? "unknown",
     brand: r.brand,
-    socials: r.socials ?? [],
-    raw: { overtureId: r.id, confidence: r.confidence, category: r.category, operatingStatus: r.operating_status, brand: r.brand },
+    socials: Array.isArray(raw.socials) ? (raw.socials as string[]) : [],
+    raw: { ...raw, release: r.release },
+    fetchedAt: r.fetchedAt,
   };
-}
-
-/** Largest span (degrees) a single pull may cover: ~110 km. Whole states or regions must be searched city by city. */
-export const MAX_BBOX_SPAN_DEG = 1.0;
-
-export function assertReasonableBbox(bbox: BBox, label: string) {
-  const dLat = bbox.north - bbox.south;
-  const dLon = bbox.east - bbox.west;
-  if (dLat > MAX_BBOX_SPAN_DEG || dLon > MAX_BBOX_SPAN_DEG * 1.4) throw new ProviderError(`Area too large for a bulk pull (${label}: ${Math.round(dLat * 111)} × ${Math.round(dLon * 85)} km). Pick a city, or a radius around one.`, "overture");
-}
-
-/** Resolve the search area to a bbox: typeahead center + radius, geocoded polygon bbox, or bundled place + default radius. */
-export async function resolveArea(q: DiscoveryQuery, signal?: AbortSignal): Promise<{ bbox: BBox; label: string }> {
-  const radius = q.areaMode === "radius" && q.radiusKm ? q.radiusKm : null;
-  if (radius && q.lat != null && q.lng != null) return { bbox: bboxAround(q.lat, q.lng, radius), label: `${radius} km around ${[q.city, q.region].filter(Boolean).join(", ")} (${q.lat}, ${q.lng})` };
-  try {
-    const area = await geocodeArea(q, signal);
-    if (radius) return { bbox: bboxAround(area.lat, area.lon, radius), label: `${radius} km around ${area.displayName}` };
-    return { bbox: { south: area.south, west: area.west, north: area.north, east: area.east }, label: area.displayName };
-  } catch (err) {
-    const place = q.country === "US" ? findPlace(q.region, q.city) : null;
-    if (!place) throw err;
-    const km = radius ?? 15;
-    return { bbox: bboxAround(place.lat, place.lon, km), label: `${km} km around ${place.name}, ${place.state} (bundled place; geocoder unavailable)` };
-  }
 }
 
 export const overtureProvider: DiscoveryProvider = {
   key: "overture",
-  label: "Overture Maps (open data)",
+  label: "Overture Maps",
+  // Disabled on 2026-10-28 (D25): Google Maps is the only offered source. Code and tests kept so it can be re-enabled.
+  status: "disabled",
+  description: "Open places data read straight from the public release (no key): names, categories, websites, phones, emails, brand and open/closed status, worldwide. Areas are cached locally once read.",
+  attribution: OVERTURE_ATTRIBUTION,
   isAvailable: () => (getConfig().overture.enabled ? { available: true } : { available: false, reason: "OVERTURE_ENABLED=false or serverless host (needs the native DuckDB binary)" }),
   async discover(q, opts): Promise<ProviderResult> {
-    if (!q.city && !q.region && q.lat == null) throw new ProviderError("Overture discovery needs a city, a region, or a center", "overture");
-    const playbook = getPlaybook(q.industry);
-    const sel = selectorsFor(playbook, q.segments ?? []);
-    if (!sel.overture.length) throw new ProviderError(`No Overture categories configured for ${playbook.label}`, "overture");
+    const cats = resolveCategories(q.industry, q.segments ?? [], q.customCategory);
+    if (!cats.overture.hierarchy.length && !cats.overture.primary.length) throw new ProviderError(`No Overture categories for ${cats.industry.label}${cats.custom ? ` / "${cats.custom}"` : ""}; enter a category to look for`, "overture");
     const notes: string[] = [];
-    if (sel.unsupportedByOverture.length) notes.push(`Overture cannot target: ${sel.unsupportedByOverture.join(", ")} (name-based sub-types need the map source)`);
-    const { bbox, label } = await resolveArea(q, opts?.signal);
-    assertReasonableBbox(bbox, label);
-    opts?.onProgress?.(`Overture: reading places in ${label}`);
-    const { rows, cached, durationMs } = await fetchPlaces(bbox, sel.overture);
-    notes.push(`${rows.length} place(s) for ${sel.overture.length} categor${sel.overture.length === 1 ? "y" : "ies"} in ${label}${cached ? " (cached)" : ` (${(durationMs / 1000).toFixed(1)} s from S3)`}`);
-    const closed = rows.filter((r) => r.operating_status === "closed").length;
+    if (cats.overtureNameOnly.length) notes.push(`Sub-type(s) without an Overture category, matched by name pattern: ${cats.overtureNameOnly.join(", ")}`);
+    const area = q.area ?? (await resolveSearchArea(q, opts?.signal));
+    const scope = cats.custom ? `custom:${cats.custom}` : cats.industry.key;
+    const fetch = await ensureOvertureCells(scope, area.bbox, cats.overtureAll, { onProgress: opts?.onProgress });
+    const hits = await searchLocalOverture(fetch.cells, area.bbox, cats.overture, { center: area.center, radiusKm: area.radiusKm, keywords: q.keywords });
+    notes.push(`${hits.length} place(s) in ${area.label}: ${fetch.cached === "all" ? `all ${fetch.cells.length} cell(s) from the local cache` : `${fetch.missing.length} of ${fetch.cells.length} cell(s) read from release ${fetch.release} in ${(fetch.durationMs / 1000).toFixed(1)} s (${fetch.fetched} rows stored)`}`);
+    const closed = hits.filter((h) => h.row.operatingStatus === "closed").length;
     if (closed) notes.push(`${closed} marked closed by the source`);
-    let candidates = rows.map((r) => rowToCandidate(r, { city: q.city, region: q.region, country: q.country })).filter((c): c is BusinessCandidate => !!c);
-    if (q.keywords?.trim()) {
-      const kw = q.keywords.trim().toLowerCase();
-      candidates = candidates.filter((c) => c.name.toLowerCase().includes(kw));
-    }
-    if (playbook.excludeNameRegex) {
+    let candidates = hits.map((h) => rowToCandidate(h.row, h.matchedBy, { city: q.city, region: q.region, country: q.country }));
+    if (cats.industry.excludeNameRegex) {
       const before = candidates.length;
-      candidates = candidates.filter((c) => !playbook.excludeNameRegex!.test(c.name));
-      if (before !== candidates.length) notes.push(`Dropped ${before - candidates.length} adjacent businesses by name`);
+      candidates = candidates.filter((c) => !cats.industry.excludeNameRegex!.test(c.name));
+      if (before !== candidates.length) notes.push(`Dropped ${before - candidates.length} adjacent business(es) by name`);
     }
-    return { provider: "overture", candidates, attribution: OVERTURE_ATTRIBUTION, notes, area: label };
+    return { provider: "overture", candidates, attribution: OVERTURE_ATTRIBUTION, notes, area: area.label, cached: fetch.cached, release: fetch.release };
   },
 };

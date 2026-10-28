@@ -32,24 +32,17 @@ from the typeahead), **sources** (OpenStreetMap, Google Places when keyed, demo)
 applied during discovery with skip counts (exclude chains, phone required, website
 required, skip known), a result cap and a name keyword, and **automation**: investigate
 the best leads first, only above a minimum lead score, at most N. The form validates
-server-side and re-renders with field errors and the submitted values. Sources: OpenStreetMap
-Overpass by sub-type selectors (free, storable, attribution kept); the **Texas sales tax
-permit registry** (Comptroller open data, free, no key): every active business by NAICS
-code and city with name, outlet address and permit dates, but no phone or website.
-Measured for Austin: 376 general repair outlets, 92 body shops, 53 oil-change shops,
-164 plumbing/HVAC, 171 electrical, 58 dental, 415 landscaping, versus 205 map places of
-which 94 had a website. Registry records get a verified `permit_since` fact and depend
-on the website finder (address + name verification) for a site. Four dedupe rules:
-provider id → website domain → phone → name + city, so map and registry records merge.
+server-side and re-renders with field errors and the submitted values. Sources today: Overture Maps and
+OpenStreetMap (docs/SEARCH.md). The Texas sales tax permit registry that this pass added
+was removed on 2026-10-28 (Texas-only, no phone or website, superseded by Overture).
+Four dedupe rules: provider id → website domain → phone → name + city.
 
 ### 1b. Discovery ranking and healthy searching
 Discovery runs in two phases: collect from every selected source (each fails on its
 own), then score every candidate from discovery data alone and store only the best up
 to the result cap, so a cap of 25 means the 25 most promising businesses, not the first
 25 a source returned. Beyond the lead score, sources contribute hints: listings with
-opening hours (maintained records), years trading from a permit date (established
-businesses up, brand-new ones slightly down), and outlets under one owner (3+ reads as
-a chain, 2 slightly down). OpenStreetMap is queried with the industry's tag selectors
+opening hours (maintained records) and a brand attached by the source (a chain outlet). OpenStreetMap is queried with the industry's tag selectors
 plus a name-pattern net (e.g. "auto repair", "mechanic", "collision") that catches
 mis-tagged entries when no sub-type narrows the search. Candidates beyond the cap that
 match a listed business (name + city, phone or domain) are still merged so their source
@@ -79,7 +72,8 @@ first tries to find one (`src/lib/discovery/find-website.ts`):
 2. **Domain guesses** from the name: `compactname.com`, `compact-name.com`,
    `compactname.net`, `compactnamecity.com`, `shortname.com` ("automotive" → "auto"),
    DNS-checked before any fetch.
-3. **Verification** fetches each candidate homepage and accepts it only when the
+3. **Verification** reads each candidate homepage through Firecrawl (one credit each,
+   in order, first verified wins) and accepts it only when the
    business **phone** appears on the page, or the **street address + name**, or the
    **full name + city/region**. A page that merely contains the name is rejected
    (there are Longhorn Automotives in several states). Guesses need ≥0.8 confidence.
@@ -89,13 +83,29 @@ phone + name. The DuckDuckGo HTML endpoint was tried as a keyless search and ans
 every automated query with a bot challenge, so it is opt-in only; without a Brave key
 the finder relies on verified guesses. Nothing unverified is ever stored.
 
-### 4. Crawl (bounded, parallel) ‖ footprint (off-site, keyless)
-Crawl (`src/lib/research/crawler.ts`): homepage, then up to 4 key pages chosen by
-kind priority (services, booking, about, contact, pricing, fleet, financing, FAQ,
-reviews), one of each kind before a second of any. Fallbacks: dead deep link → site
-root; connection failure → https/http and www/bare variants; fewer than two internal
-links (JS-rendered menus) → `sitemap.xml`. Same site only, robots.txt respected,
-SSRF-guarded, 10 s per page, duplicate pages skipped.
+### 4. Crawl through Firecrawl ‖ footprint (off-site, keyless)
+Every page is fetched by Firecrawl (`src/lib/research/firecrawl.ts`, REST v2, key in
+`FIRECRAWL_API_KEY`), which renders JavaScript, follows redirects and returns clean
+markdown plus the raw HTML and the page's links. The orchestration
+(`src/lib/research/crawl.ts`) is built around credits (one per page): the homepage first,
+then up to `RESEARCH_MAX_PAGES − 1` key pages chosen by kind priority (services, booking,
+about, contact, pricing, fleet, financing, FAQ, reviews), one of each kind before a second
+of any. Page discovery is free: the homepage's own links. Firecrawl's site map (one
+credit; sitemap plus its index) is used only when the homepage exposes fewer than two
+internal links, which is what script-rendered menus look like. Fallbacks: dead deep
+link → site root; connection-level failure → the www/bare variant. Same site only,
+robots.txt read before each request, every URL guarded (public hosts only), bot-protection
+interstitials recorded as blocked and never bypassed, Firecrawl-level failures isolated per
+page (and not billed), an exhausted balance stops the crawl with what was read.
+
+Every page is stored with its markdown and raw HTML, so **re-analysis costs nothing**: the
+detectors run again on stored pages ("Re-analyze stored pages" on the business page). An
+investigation within `RESEARCH_STALE_DAYS` reuses the stored pages automatically; "Research
+again" forces a fresh crawl. A process-wide limiter matches the plan (`FIRECRAWL_CONCURRENCY`
+in flight, `FIRECRAWL_RPM` per minute; the free plan allows 2 and 10), 429 and 5xx are retried
+with backoff honoring `Retry-After`, and new crawls stop when credits recorded this month
+reach `FIRECRAWL_MONTHLY_CREDIT_BUDGET`. Credits per investigation are recorded and shown on
+the business page and on the System page next to the account's remaining balance.
 
 Footprint (`src/lib/research/footprint.ts`), in parallel, each lookup optional:
 - RDAP registry record → `domain_registered` year (business longevity).
@@ -154,6 +164,9 @@ says so, `needs_ai` when no rule matched and the model did not run. Every opport
 its source: `rule-based` or `AI`.
 
 ## Known limits (honest list)
+- Website research needs a Firecrawl key. The free plan (1,000 credits a month) covers
+  roughly 150–200 businesses at 5–6 pages each; a self-hosted Firecrawl
+  (`FIRECRAWL_API_URL`) removes the limit. Cached pages still cost a credit on the cloud API.
 - Keyless web search is effectively unavailable; a Brave key (free tier) unlocks it.
 - A multi-location regional group reads as independent unless its name is on the
   chain list; the `multi_location` fact flags it for the operator.

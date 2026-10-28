@@ -53,7 +53,6 @@ export const FACT_FIELDS = [
   { key: "site_first_seen", label: "Site first archived", group: "footprint", hint: "Year of the first Internet Archive capture of the domain." },
   { key: "email_provider", label: "Email hosting", group: "footprint", hint: "Email provider from DNS MX records (Google Workspace, Microsoft 365, ...)." },
   { key: "email_senders", label: "Email sending services", group: "footprint", hint: "Marketing/transactional senders authorized in the domain's SPF record." },
-  { key: "permit_since", label: "Business permit since", group: "footprint", hint: "First sales date on the state sales tax permit (public registry)." },
 ] as const satisfies readonly FactField[];
 
 export type FactKey = (typeof FACT_FIELDS)[number]["key"];

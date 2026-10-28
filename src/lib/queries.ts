@@ -1,7 +1,7 @@
 /** Read-side queries for pages. Kept in one place so pages stay thin. */
-import { and, asc, desc, eq, inArray, like, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lte, or, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { activities, businesses, businessSources, facts, investigations, jobs, opportunities, outreachDrafts, pages, prospects, searchResults, searches, validationSignals } from "@/db/schema";
+import { activities, businesses, businessSources, facts, investigations, jobs, opportunities, outreachDrafts, pages, prospects, searchCandidates, searchResults, searches, validationSignals } from "@/db/schema";
 import { usageSummary } from "@/lib/ai/usage";
 import { getConfig } from "@/lib/config";
 import { PIPELINE_STAGE_KEYS } from "@/lib/pipeline/stages";
@@ -264,7 +264,7 @@ export async function getBusinessDetail(id: string) {
   const prospect = (await db.select().from(prospects).where(eq(prospects.businessId, id)).get()) ?? null;
   const runs = await db.select().from(investigations).where(eq(investigations.businessId, id)).orderBy(desc(investigations.startedAt)).limit(5).all();
   const latest = runs[0] ?? null;
-  const pageRows = latest ? await db.select({ id: pages.id, url: pages.url, finalUrl: pages.finalUrl, kind: pages.kind, statusCode: pages.statusCode, title: pages.title, bytes: pages.bytes, error: pages.error, fetchedAt: pages.fetchedAt, renderer: pages.renderer, textLength: sql<number>`length(coalesce(${pages.text}, ''))` }).from(pages).where(eq(pages.investigationId, latest.id)).all() : [];
+  const pageRows = latest ? await db.select({ id: pages.id, url: pages.url, finalUrl: pages.finalUrl, kind: pages.kind, statusCode: pages.statusCode, title: pages.title, bytes: pages.bytes, error: pages.error, fetchedAt: pages.fetchedAt, renderer: pages.renderer, credits: pages.credits, hasHtml: sql<number>`case when ${pages.html} is null then 0 else 1 end`, textLength: sql<number>`length(coalesce(${pages.text}, ''))` }).from(pages).where(eq(pages.investigationId, latest.id)).all() : [];
   const foundBy = await db
     .select({ searchId: searches.id, name: searches.name, rank: searchResults.rank, wasNew: searchResults.wasNew, createdAt: searches.createdAt, providers: searches.providers })
     .from(searchResults)
@@ -460,4 +460,77 @@ export async function sourceHealth(limit = 40) {
     }
   }
   return [...acc.entries()].map(([key, a]) => ({ key, ...a, avgMs: a.timed ? Math.round(a.totalMs / a.timed) : null }));
+}
+
+
+// ------------------------------------------------------------ search candidates
+export const CANDIDATE_SORTS = ["rank", "lead", "name", "completeness", "discovered"] as const;
+export type CandidateSort = (typeof CANDIDATE_SORTS)[number];
+
+export interface CandidateFilters {
+  q?: string;
+  source?: string;
+  website?: "yes" | "no";
+  phone?: "yes" | "no";
+  saved?: "yes" | "no";
+  sort?: CandidateSort;
+  dir?: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+  from?: string | null;
+  to?: string | null;
+}
+
+/** What a search found: candidates with their saved business (if any), filtered, sorted and paged server-side. */
+export async function getSearchCandidates(searchId: string, f: CandidateFilters = {}) {
+  const db = await getDb();
+  const conds = [eq(searchCandidates.searchId, searchId)];
+  if (f.q) conds.push(or(like(searchCandidates.name, `%${f.q}%`), like(searchCandidates.city, `%${f.q}%`), like(searchCandidates.websiteDomain, `%${f.q}%`), like(searchCandidates.street, `%${f.q}%`), like(searchCandidates.category, `%${f.q}%`))!);
+  if (f.source) conds.push(like(searchCandidates.sources, `%"provider":"${f.source.replace(/[^a-z_]/g, "")}"%`));
+  if (f.website === "yes") conds.push(isNotNull(searchCandidates.website));
+  if (f.website === "no") conds.push(isNull(searchCandidates.website));
+  if (f.phone === "yes") conds.push(isNotNull(searchCandidates.phone));
+  if (f.phone === "no") conds.push(isNull(searchCandidates.phone));
+  if (f.saved === "yes") conds.push(isNotNull(searchCandidates.businessId));
+  if (f.saved === "no") conds.push(isNull(searchCandidates.businessId));
+  if (f.from) conds.push(gte(searchCandidates.createdAt, f.from));
+  if (f.to) conds.push(lte(searchCandidates.createdAt, f.to));
+  const dir = f.dir === "asc" ? asc : desc;
+  const order = { rank: searchCandidates.rank, lead: searchCandidates.leadScore, name: sql`lower(${searchCandidates.name})`, completeness: searchCandidates.completeness, discovered: searchCandidates.createdAt }[f.sort ?? "rank"];
+  const pageSize = f.pageSize ?? 50;
+  const page = f.page ?? 1;
+  const where = and(...conds);
+  const rows = await db
+    .select({ candidate: searchCandidates, business: { id: businesses.id, status: businesses.status, verdict: businesses.verdict, priority: businesses.priority, investigatedAt: businesses.investigatedAt, isDemo: businesses.isDemo } })
+    .from(searchCandidates)
+    .leftJoin(businesses, eq(searchCandidates.businessId, businesses.id))
+    .where(where)
+    .orderBy(dir(order), searchCandidates.rank)
+    .limit(pageSize)
+    .offset((page - 1) * pageSize)
+    .all();
+  const totalRow = await db.select({ n: sql<number>`count(*)` }).from(searchCandidates).where(where).get();
+  const all = await db.select({ sources: searchCandidates.sources, website: searchCandidates.website, phone: searchCandidates.phone, businessId: searchCandidates.businessId, possibleDuplicateOf: searchCandidates.possibleDuplicateOf }).from(searchCandidates).where(eq(searchCandidates.searchId, searchId)).all();
+  const bySource: Record<string, number> = {};
+  for (const r of all) for (const s of new Set(r.sources.map((x) => x.provider))) bySource[s] = (bySource[s] ?? 0) + 1;
+  const counts = { total: all.length, saved: all.filter((r) => r.businessId).length, withWebsite: all.filter((r) => r.website).length, withPhone: all.filter((r) => r.phone).length, possibleDuplicates: all.filter((r) => r.possibleDuplicateOf).length, bySource };
+  return { rows: rows.map((r) => ({ ...r.candidate, business: r.business?.id ? r.business : null })), total: totalRow?.n ?? 0, page, pageSize, counts };
+}
+
+/** Header data for a search page: the search, its latest discovery job, and what happened to the saved businesses. */
+export async function getSearchOverview(id: string) {
+  const db = await getDb();
+  const search = await db.select().from(searches).where(eq(searches.id, id)).get();
+  if (!search) return null;
+  const job = (await db.select().from(jobs).where(and(eq(jobs.type, "discover_search"), sql`json_extract(${jobs.payload}, '$.searchId') = ${id}`)).orderBy(desc(jobs.createdAt)).limit(1).get()) ?? null;
+  const saved = await db.select({ status: businesses.status, verdict: businesses.verdict, kind: businesses.kind }).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, id)).all();
+  const businessStats = {
+    saved: saved.length,
+    investigated: saved.filter((b) => b.status === "profiled").length,
+    processing: saved.filter((b) => b.status === "queued" || b.status === "investigating").length,
+    investigable: saved.filter((b) => b.kind !== "chain" && ["new", "failed", "no_website"].includes(b.status)).length,
+    withOpportunity: saved.filter((b) => b.verdict === "opportunity").length,
+    failed: saved.filter((b) => b.status === "failed").length,
+  };
+  return { search, job, businessStats };
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FetchBlockedError, isPrivateIp, resolvePublicAddress, validateUrlShape } from "@/lib/research/fetcher";
+import { UrlBlockedError, isPrivateIp, resolvePublicAddress, validateUrlShape } from "@/lib/research/url-guard";
 
 describe("isPrivateIp", () => {
   it("blocks private, loopback, link-local and metadata ranges", () => {
@@ -15,7 +15,7 @@ describe("isPrivateIp", () => {
 describe("validateUrlShape", () => {
   it("rejects dangerous shapes", () => {
     for (const u of ["ftp://example.com", "file:///etc/passwd", "http://localhost/", "http://127.0.0.1/", "http://[::1]/", "http://example.com:8080/", "http://user:pw@example.com/", "http://intranet/", "http://box.local/"]) {
-      expect(() => validateUrlShape(u), u).toThrow(FetchBlockedError);
+      expect(() => validateUrlShape(u), u).toThrow(UrlBlockedError);
     }
   });
   it("accepts ordinary websites", () => {
@@ -30,7 +30,7 @@ describe("resolvePublicAddress", () => {
   });
   it("rejects when any address is private", async () => {
     const lookup = (async () => [{ address: "93.184.216.34", family: 4 }, { address: "127.0.0.1", family: 4 }]) as never;
-    await expect(resolvePublicAddress("mixed.example", lookup)).rejects.toThrow(FetchBlockedError);
+    await expect(resolvePublicAddress("mixed.example", lookup)).rejects.toThrow(UrlBlockedError);
   });
   it("returns a pinned public address", async () => {
     const lookup = (async () => [{ address: "93.184.216.34", family: 4 }]) as never;

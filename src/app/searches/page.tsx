@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { PROVIDER_LABEL } from "@/lib/discovery";
 import { listSearches } from "@/lib/queries";
 import { Badge, Card, Icon, PageHeader, StatusPill, fmtRelative } from "@/components/ui";
 import { FilterBar, Pagination, SortHeader, TableEmpty } from "@/components/table";
@@ -7,7 +8,6 @@ import { getPlaybook } from "@/lib/industries";
 import { describeFilters } from "@/lib/search-input";
 import { seedDemoAction } from "../actions";
 
-const PROVIDER_LABEL: Record<string, string> = { overture: "Overture", osm: "OpenStreetMap", google_places: "Google", tx_permits: "Texas permits", csv: "CSV", demo: "Demo" };
 
 export default async function SearchesPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;

@@ -11,10 +11,6 @@ export interface IndustrySegment {
   osmSelectors: string[];
   /** Google Places text query for this segment. */
   googleQuery: string;
-  /** NAICS codes for open-data registries (e.g. Texas sales tax permits). Empty = registry cannot target this segment. */
-  naics: string[];
-  /** Overture Maps place categories (taxonomy.primary). Empty = Overture cannot target this segment precisely. */
-  overture: string[];
 }
 
 export interface IndustryPlaybook {
@@ -24,10 +20,6 @@ export interface IndustryPlaybook {
   description: string;
   /** Sub-types the operator can narrow to. Empty = no segmentation. */
   segments: IndustrySegment[];
-  /** NAICS codes for the whole industry (open-data registries). */
-  naics: string[];
-  /** Overture Maps categories for the whole industry. */
-  overture: string[];
   /** Overpass tag selectors, e.g. '["shop"="car_repair"]'. Empty = OSM unsupported. */
   osmSelectors: string[];
   /** Case-insensitive name pattern that catches mis-tagged map entries (any shop/craft/office with such a name). Used when no sub-type narrows the search. */
@@ -95,17 +87,15 @@ const PLAYBOOKS: Record<string, IndustryPlaybook> = {
     label: "Automotive repair",
     description: "Independent repair shops, body shops, tire and specialty shops. Owner-operated, clear scheduling/estimate/update workflows.",
     segments: [
-      { key: "general_repair", label: "General repair & maintenance", description: "Full-service mechanical repair shops.", osmSelectors: ['["shop"="car_repair"]'], googleQuery: "auto repair shop", naics: ["811111", "811118", "811112"], overture: ["automotive_repair", "automotive_service", "brake_service_and_repair", "auto_electrical_repair", "exhaust_and_muffler_repair"] },
-      { key: "body_collision", label: "Body & collision", description: "Collision, paint and body work (name-based on OpenStreetMap).", osmSelectors: ['["shop"="car_repair"]["name"~"body|collision|paint|dent",i]', '["shop"="car_repair"]["service:vehicle:body_repair"="yes"]'], googleQuery: "auto body collision repair shop", naics: ["811121", "811122"], overture: ["auto_body_shop", "auto_glass_service"] },
-      { key: "tires", label: "Tire shops", description: "Tire sales, alignment and brake centers.", osmSelectors: ['["shop"="tyres"]'], googleQuery: "tire shop", naics: ["441320"], overture: ["tire_shop", "tire_dealer_and_repair"] },
-      { key: "transmission", label: "Transmission specialists", description: "Transmission and drivetrain specialists (name-based).", osmSelectors: ['["shop"="car_repair"]["name"~"transmission|drivetrain",i]'], googleQuery: "transmission repair shop", naics: ["811113"], overture: ["transmission_repair"] },
-      { key: "european_import", label: "European & import specialists", description: "Brand specialists (BMW, Mercedes, Audi, Volvo, Honda, Toyota…), name-based.", osmSelectors: ['["shop"="car_repair"]["name"~"european|euro|import|bmw|mercedes|audi|volvo|porsche|honda|toyota|subaru|lexus|vw|volkswagen|saab",i]'], googleQuery: "european import auto repair specialist", naics: [], overture: [] },
-      { key: "quick_lube", label: "Oil change & quick lube", description: "Quick-service oil change and lube shops.", osmSelectors: ['["shop"="car_repair"]["name"~"lube|oil change|quick",i]'], googleQuery: "oil change quick lube", naics: ["811191"], overture: ["oil_change_station"] },
+      { key: "general_repair", label: "General repair & maintenance", description: "Full-service mechanical repair shops.", osmSelectors: ['["shop"="car_repair"]'], googleQuery: "auto repair shop" },
+      { key: "body_collision", label: "Body & collision", description: "Collision, paint and body work.", osmSelectors: ['["shop"="car_repair"]["name"~"body|collision|paint|dent",i]', '["shop"="car_repair"]["service:vehicle:body_repair"="yes"]'], googleQuery: "auto body collision repair shop" },
+      { key: "tires", label: "Tire shops", description: "Tire sales, alignment and brake centers.", osmSelectors: ['["shop"="tyres"]'], googleQuery: "tire shop" },
+      { key: "transmission", label: "Transmission specialists", description: "Transmission and drivetrain specialists (name-based).", osmSelectors: ['["shop"="car_repair"]["name"~"transmission|drivetrain",i]'], googleQuery: "transmission repair shop" },
+      { key: "european_import", label: "European & import specialists", description: "Brand specialists (BMW, Mercedes, Audi, Volvo, Honda, Toyota…), name-based.", osmSelectors: ['["shop"="car_repair"]["name"~"european|euro|import|bmw|mercedes|audi|volvo|porsche|honda|toyota|subaru|lexus|vw|volkswagen|saab",i]'], googleQuery: "european import auto repair specialist" },
+      { key: "quick_lube", label: "Oil change & quick lube", description: "Quick-service oil change and lube shops.", osmSelectors: ['["shop"="car_repair"]["name"~"lube|oil change|quick",i]'], googleQuery: "oil change quick lube" },
     ],
     osmSelectors: ['["shop"="car_repair"]'],
-    naics: ["811111", "811118", "811112", "811121", "811122", "811191", "811113"],
-    overture: ["automotive_repair", "automotive_service", "brake_service_and_repair", "auto_electrical_repair", "exhaust_and_muffler_repair", "auto_body_shop", "auto_glass_service", "tire_shop", "tire_dealer_and_repair", "transmission_repair", "oil_change_station"],
-    osmNameRegex: "auto repair|auto ?motive|mechanic|car care|auto service|auto cent(er|re)|collision|body shop|transmission|muffler|brake|lube|tire",
+    osmNameRegex: "auto repair|auto ?motive|mechanic|car care|auto service|auto cent(er|re)|collision|body shop|transmission|muffler|brakes?( |$)|(^| )lube|(^| )(tires?|tyres?)( |&|$)",
     excludeNameRegex: /\b(tint|tinting|wraps?|wrap shop|detailing|detail(ers)?|paintless|paint protection|ppf|car wash|carwash|audio|stereo|upholstery|towing|tow\b|salvage|junk|wrecker|rental|rent-a-car|u-?haul)\b/i,
     googleTextQuery: "auto repair shop",
     typicalWorkflows: [
@@ -157,16 +147,21 @@ const PLAYBOOKS: Record<string, IndustryPlaybook> = {
   home_services: {
     key: "home_services",
     label: "Home services (HVAC, plumbing, electrical)",
-    description: "Contractors with dispatch, quoting and recurring-service workflows. OpenStreetMap coverage is thinner than for storefronts.",
+    description: "Contractors with dispatch, quoting and recurring-service workflows. Searched as one query unless a sub-type is chosen.",
     segments: [
-      { key: "hvac", label: "HVAC", description: "Heating, cooling and air quality contractors.", osmSelectors: ['["craft"="hvac"]', '["shop"="hvac"]'], googleQuery: "HVAC contractor", naics: ["238220"], overture: ["hvac_service"] },
-      { key: "plumbing", label: "Plumbing", description: "Plumbers and drain services.", osmSelectors: ['["craft"="plumber"]', '["shop"="plumber"]'], googleQuery: "plumber", naics: ["238220"], overture: ["plumbing"] },
-      { key: "electrical", label: "Electrical", description: "Electrical contractors.", osmSelectors: ['["craft"="electrician"]', '["shop"="electrician"]'], googleQuery: "electrician", naics: ["238210"], overture: ["electrician"] },
+      { key: "hvac", label: "HVAC", description: "Heating, cooling and air quality contractors.", osmSelectors: ['["craft"="hvac"]', '["shop"="hvac"]'], googleQuery: "HVAC contractor" },
+      { key: "plumbing", label: "Plumbing", description: "Plumbers and drain services.", osmSelectors: ['["craft"="plumber"]', '["shop"="plumber"]'], googleQuery: "plumber" },
+      { key: "electrical", label: "Electrical", description: "Electrical contractors.", osmSelectors: ['["craft"="electrician"]', '["shop"="electrician"]'], googleQuery: "electrician" },
+      { key: "roofing", label: "Roofing", description: "Roofing contractors and repair.", osmSelectors: ['["craft"="roofer"]'], googleQuery: "roofing contractor" },
+      { key: "garage_doors", label: "Garage doors", description: "Garage door installation and repair.", osmSelectors: ['["craft"]["name"~"garage door",i]', '["shop"="doors"]["name"~"garage",i]'], googleQuery: "garage door repair" },
+      { key: "pest_control", label: "Pest control", description: "Exterminators and pest control services.", osmSelectors: ['["shop"="pest_control"]', '["craft"="pest_control"]', '["office"]["name"~"pest",i]'], googleQuery: "pest control" },
+      { key: "painting", label: "Painting", description: "Painting contractors.", osmSelectors: ['["craft"="painter"]'], googleQuery: "painting contractor" },
+      { key: "cleaning", label: "Cleaning services", description: "Home and carpet cleaning companies.", osmSelectors: ['["craft"="cleaning"]', '["shop"="cleaning"]'], googleQuery: "house cleaning service" },
+      { key: "handyman", label: "Handyman", description: "General handyman services.", osmSelectors: ['["craft"="handyman"]'], googleQuery: "handyman" },
+      { key: "pools", label: "Pool & spa service", description: "Pool and hot-tub service and cleaning.", osmSelectors: ['["craft"~"pool"]', '["shop"="swimming_pool"]["name"~"service|clean|repair",i]'], googleQuery: "pool service" },
     ],
-    osmSelectors: ['["craft"~"^(hvac|plumber|electrician)$"]', '["shop"~"^(hvac|plumber|electrician)$"]'],
-    naics: ["238220", "238210"],
-    overture: ["hvac_service", "plumbing", "electrician"],
-    osmNameRegex: "plumb|hvac|heating|cooling|air condition|electric",
+    osmSelectors: ['["craft"~"^(hvac|plumber|electrician|roofer|painter|cleaning|handyman|pest_control)$"]', '["shop"~"^(hvac|plumber|electrician|pest_control|cleaning)$"]'],
+    osmNameRegex: "plumb|hvac|heating|cooling|air condition|electric|roof|garage door|pest|exterminat|paint|cleaning|maid|handyman|pool service|pool clean",
     googleTextQuery: "HVAC plumbing electrical contractor",
     typicalWorkflows: [
       "Lead intake (phone/web form) and dispatch",
@@ -200,12 +195,10 @@ const PLAYBOOKS: Record<string, IndustryPlaybook> = {
     label: "Dental practices",
     description: "Private practices with intake, scheduling, recall and insurance workflows.",
     segments: [
-      { key: "general", label: "General dentistry", description: "Family and general practices.", osmSelectors: ['["amenity"="dentist"]', '["healthcare"="dentist"]'], googleQuery: "dentist", naics: ["621210"], overture: ["dental_clinic", "general_dentistry", "cosmetic_dentistry", "pediatric_dentistry"] },
-      { key: "orthodontics", label: "Orthodontics", description: "Orthodontic practices (speciality tag or name-based).", osmSelectors: ['["healthcare:speciality"~"orthodont"]', '["amenity"="dentist"]["name"~"orthodont|braces",i]'], googleQuery: "orthodontist", naics: ["621210"], overture: ["orthodontics"] },
+      { key: "general", label: "General dentistry", description: "Family and general practices.", osmSelectors: ['["amenity"="dentist"]', '["healthcare"="dentist"]'], googleQuery: "dentist" },
+      { key: "orthodontics", label: "Orthodontics", description: "Orthodontic practices (speciality tag or name-based).", osmSelectors: ['["healthcare:speciality"~"orthodont"]', '["amenity"="dentist"]["name"~"orthodont|braces",i]'], googleQuery: "orthodontist" },
     ],
     osmSelectors: ['["amenity"="dentist"]', '["healthcare"="dentist"]'],
-    naics: ["621210"],
-    overture: ["dental_clinic", "general_dentistry", "cosmetic_dentistry", "pediatric_dentistry", "orthodontics"],
     osmNameRegex: "dental|dentist|orthodont",
     googleTextQuery: "dentist",
     typicalWorkflows: [
@@ -225,12 +218,12 @@ const PLAYBOOKS: Record<string, IndustryPlaybook> = {
     label: "Landscaping & lawn care",
     description: "Recurring-service businesses with quoting, routing and invoicing workflows.",
     segments: [
-      { key: "landscaping", label: "Landscaping & design", description: "Landscape contractors and designers.", osmSelectors: ['["craft"="landscaper"]'], googleQuery: "landscaping company", naics: ["561730"], overture: ["landscaping", "landscape_architect"] },
-      { key: "lawn_care", label: "Lawn care & gardening", description: "Maintenance and gardening services.", osmSelectors: ['["craft"="gardener"]'], googleQuery: "lawn care service", naics: ["561730"], overture: ["lawn_service", "tree_service", "irrigation_service"] },
+      { key: "landscaping", label: "Landscaping & design", description: "Landscape contractors and designers.", osmSelectors: ['["craft"="landscaper"]'], googleQuery: "landscaping company" },
+      { key: "lawn_care", label: "Lawn care & gardening", description: "Maintenance and gardening services.", osmSelectors: ['["craft"="gardener"]'], googleQuery: "lawn care service" },
+      { key: "tree_service", label: "Tree service", description: "Arborists and tree care.", osmSelectors: ['["craft"]["name"~"tree|arbor",i]'], googleQuery: "tree service" },
+      { key: "irrigation", label: "Irrigation", description: "Sprinkler and irrigation contractors.", osmSelectors: ['["craft"]["name"~"irrigat|sprinkler",i]'], googleQuery: "irrigation company" },
     ],
     osmSelectors: ['["craft"~"^(gardener|landscaper)$"]'],
-    naics: ["561730"],
-    overture: ["landscaping", "landscape_architect", "lawn_service", "tree_service", "irrigation_service"],
     osmNameRegex: "landscap|lawn|tree service|irrigation",
     excludeNameRegex: /\b(nursery|garden cent(er|re)|supply|supplies|equipment rental)\b/i,
     googleTextQuery: "landscaping lawn care company",
@@ -241,11 +234,9 @@ const PLAYBOOKS: Record<string, IndustryPlaybook> = {
   },
   generic: {
     key: "generic",
-    label: "Other / generic (CSV or Google Places only)",
-    description: "No map selectors: use a CSV import or a Google query. Generic workflows and cues apply.",
+    label: "Other business type",
+    description: "Any other business type: enter the category to look for (matched against the sources' own taxonomies) or import a CSV. Generic workflows and cues apply.",
     segments: [],
-    naics: [],
-    overture: [],
     osmSelectors: [],
     googleTextQuery: "",
     typicalWorkflows: ["Lead intake", "Scheduling", "Quoting", "Customer communication", "Invoicing", "Reporting"],
@@ -264,31 +255,12 @@ export function listPlaybooks(): IndustryPlaybook[] {
 }
 
 /** Selectors for the chosen segments (all segments when none chosen, playbook defaults when unsegmented). */
-export function selectorsFor(playbook: IndustryPlaybook, segmentKeys: string[]): { osmSelectors: string[]; googleQueries: string[]; naics: string[]; overture: string[]; unsupportedByRegistry: string[]; unsupportedByOverture: string[] } {
+export function selectorsFor(playbook: IndustryPlaybook, segmentKeys: string[]): { osmSelectors: string[]; googleQueries: string[] } {
   const segs = playbook.segments.filter((s) => !segmentKeys.length || segmentKeys.includes(s.key));
-  if (!segs.length) return { osmSelectors: playbook.osmSelectors, googleQueries: playbook.googleTextQuery ? [playbook.googleTextQuery] : [], naics: playbook.naics, overture: playbook.overture, unsupportedByRegistry: [], unsupportedByOverture: [] };
+  if (!segs.length) return { osmSelectors: playbook.osmSelectors, googleQueries: playbook.googleTextQuery ? [playbook.googleTextQuery] : [] };
   return {
     osmSelectors: [...new Set(segs.flatMap((s) => s.osmSelectors))],
     googleQueries: [...new Set(segs.map((s) => s.googleQuery))],
-    naics: [...new Set(segs.flatMap((s) => s.naics))],
-    overture: [...new Set(segs.flatMap((s) => s.overture))],
-    unsupportedByRegistry: segs.filter((s) => !s.naics.length).map((s) => s.label),
-    unsupportedByOverture: segs.filter((s) => !s.overture.length).map((s) => s.label),
   };
 }
 
-/** Human labels for NAICS codes used by the registries. */
-export const NAICS_LABELS: Record<string, string> = {
-  "811111": "General automotive repair",
-  "811112": "Automotive exhaust system repair",
-  "811113": "Automotive transmission repair",
-  "811118": "Other automotive mechanical & electrical repair",
-  "811121": "Automotive body, paint & interior repair",
-  "811122": "Automotive glass replacement",
-  "811191": "Automotive oil change & lubrication",
-  "441320": "Tire dealers",
-  "238220": "Plumbing, heating & air-conditioning contractors",
-  "238210": "Electrical contractors",
-  "621210": "Offices of dentists",
-  "561730": "Landscaping services",
-};

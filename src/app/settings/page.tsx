@@ -12,7 +12,7 @@ export default async function SettingsPage() {
   const jobs = await jobCounts();
   const worker = workerStatus();
   const tone = (s: string): Tone => (s === "live" ? "ok" : s === "demo" ? "demo" : s === "missing_credentials" ? "warn" : "neutral");
-  const label = (s: string) => ({ live: "Live", demo: "Demo", missing_credentials: "Needs credentials", not_implemented: "Not implemented" })[s] ?? s;
+  const label = (s: string) => ({ live: "Live", demo: "Demo", missing_credentials: "Needs credentials", not_implemented: "Not implemented", disabled: "Disabled" })[s] ?? s;
   const pct = Math.min(100, (usage.total / cfg.AI_SPEND_LIMIT_USD) * 100);
   return (
     <>
@@ -89,9 +89,10 @@ export default async function SettingsPage() {
           <Card title="Limits & weights">
             <KeyValue
               rows={[
-                { k: "Pages per business", v: cfg.RESEARCH_MAX_PAGES },
-                { k: "Fetch timeout", v: `${cfg.RESEARCH_FETCH_TIMEOUT_MS} ms` },
-                { k: "Page size cap", v: `${Math.round(cfg.RESEARCH_PAGE_BYTES_LIMIT / 1000)} KB` },
+                { k: "Pages per business", v: `${cfg.RESEARCH_MAX_PAGES} (1 Firecrawl credit each)` },
+                { k: "Firecrawl limits", v: `${cfg.FIRECRAWL_CONCURRENCY} in flight · ${cfg.FIRECRAWL_RPM}/min · ${cfg.FIRECRAWL_TIMEOUT_MS} ms timeout` },
+                { k: "Monthly credit budget", v: `${cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET} credits` },
+                { k: "Stored pages reused for", v: `${cfg.RESEARCH_STALE_DAYS} days` },
                 { k: "Database", v: <code>{cfg.DATABASE_PATH}</code> },
               ]}
             />

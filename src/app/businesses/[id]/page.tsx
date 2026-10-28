@@ -186,9 +186,9 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                   <div className="grid sm:grid-cols-4 gap-3 text-sm">
                     {[
                       { k: "Pages read", v: `${d.pages.filter((p) => !p.error).length} of ${d.pages.length}` },
-                      { k: "Rendered in browser", v: String(d.pages.filter((p) => p.renderer === "browser").length) },
+                      { k: "Firecrawl credits", v: d.pages.length && d.pages.every((p) => p.renderer === "stored") ? "0 · stored pages" : String(d.latest.creditsUsed) },
                       { k: "Facts verified", v: String(d.facts.filter((f) => f.status === "verified").length) },
-                      { k: "Off-site records", v: String(d.facts.filter((f) => ["domain_registered", "site_first_seen", "email_provider", "email_senders", "permit_since"].includes(f.key) && f.status === "verified").length) },
+                      { k: "Off-site records", v: String(d.facts.filter((f) => ["domain_registered", "site_first_seen", "email_provider", "email_senders"].includes(f.key) && f.status === "verified").length) },
                     ].map((x) => (
                       <div key={x.k}>
                         <div className="text-xs text-ink-muted">{x.k}</div>
@@ -196,6 +196,22 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                       </div>
                     ))}
                   </div>
+                  {!b.isDemo && b.website && (
+                    <div className="flex flex-wrap gap-2 mt-3">
+                      <form action={investigateAction}>
+                        <input type="hidden" name="businessId" value={b.id} />
+                        <input type="hidden" name="mode" value="recrawl" />
+                        <button className="btn btn-sm" title="Fetch the website again through Firecrawl (one credit per page)">Research again</button>
+                      </form>
+                      {d.pages.some((p) => p.hasHtml) && (
+                        <form action={investigateAction}>
+                          <input type="hidden" name="businessId" value={b.id} />
+                          <input type="hidden" name="mode" value="reanalyze" />
+                          <button className="btn btn-sm btn-ghost" title="Run the detectors again on the stored pages; costs no credits">Re-analyze stored pages</button>
+                        </form>
+                      )}
+                    </div>
+                  )}
                   {d.pages.some((p) => p.error) && (
                     <ul className="text-xs text-ink-muted mt-3 space-y-0.5">
                       {d.pages.filter((p) => p.error).map((p) => (
@@ -497,7 +513,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
           )}
 
           {tab === "pages" && (
-            <Card title="Fetched pages" description={d.latest ? `Latest investigation · ${fmtDate(d.latest.startedAt)} · ${d.latest.pagesFetched} fetched, ${d.latest.pagesFailed} failed${d.latest.model ? ` · model ${d.latest.model} · $${d.latest.costUsd.toFixed(3)}` : ""}` : undefined} padded={false}>
+            <Card title="Fetched pages" description={d.latest ? `Latest investigation · ${fmtDate(d.latest.startedAt)} · ${d.latest.pagesFetched} fetched, ${d.latest.pagesFailed} failed · ${d.latest.creditsUsed} Firecrawl credit(s)${d.latest.model ? ` · model ${d.latest.model} · $${d.latest.costUsd.toFixed(3)}` : ""}` : undefined} padded={false}>
               {d.pages.length === 0 ? (
                 <EmptyState compact icon="file" title="No pages fetched" />
               ) : (
@@ -516,6 +532,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                         <tr key={p.id}>
                           <td>
                             <Badge>{p.kind}</Badge>
+                            {p.renderer === "stored" && <Badge className="ml-1" tone="neutral" title="Reused from an earlier investigation; no credits">stored</Badge>}
                           </td>
                           <td className="text-xs max-w-[420px]">
                             <a href={p.url} target="_blank" rel="noreferrer" className="truncate block">
@@ -538,82 +555,123 @@ export default async function BusinessPage({ params, searchParams }: { params: P
 
         <aside className="space-y-4 lg:sticky lg:top-6 min-w-0">
           <Card title="Contact">
-            <KeyValue
-              rows={[
-                { k: "Email", v: b.email ? <a href={`mailto:${b.email}`}>{b.email}</a> : <span className="text-warn">not found</span> },
-                { k: "Phone", v: b.phone ?? <span className="text-ink-faint">unknown</span> },
-                { k: "Website", v: b.website ? <span>{" "}<a href={b.website} target="_blank" rel="noreferrer">{b.websiteDomain}</a>{b.websiteSource && /^found_/.test(b.websiteSource) && <Badge className="ml-1" tone="info" title="Located by the website finder and verified against the business phone/name">{b.websiteSource === "found_search" ? "found via search" : "found via domain guess"}</Badge>}</span> : <span className="text-ink-faint">none</span> },
-                { k: "Kind", v: <span>{b.kind === "chain" ? <Badge tone="neutral">chain / franchise</Badge> : b.kind === "independent" ? "independent" : "unknown"}{b.leadScore != null && <span className="text-ink-faint"> · lead score {b.leadScore}</span>}</span> },
-              ]}
-            />
+            <ul className="text-sm space-y-2.5">
+              <ContactRow icon="mail" label="Email">
+                {b.email ? (
+                  <a href={`mailto:${b.email}`} className="truncate block" title={b.email}>
+                    {b.email}
+                  </a>
+                ) : (
+                  <span className="text-warn">not found yet</span>
+                )}
+              </ContactRow>
+              <ContactRow icon="phone" label="Phone">{b.phone ? <a href={`tel:${b.phone}`}>{fmtPhone(b.phone)}</a> : <span className="text-ink-faint">unknown</span>}</ContactRow>
+              <ContactRow icon="globe" label="Website">
+                {b.website ? (
+                  <span className="min-w-0 flex items-center gap-1.5 flex-wrap">
+                    <a href={b.website} target="_blank" rel="noreferrer" className="truncate inline-flex items-center gap-0.5" title={b.website}>
+                      {b.websiteDomain} <Icon name="external" className="w-3 h-3 shrink-0" />
+                    </a>
+                    {b.websiteSource && /^found_/.test(b.websiteSource) && <Badge tone="info" title="Located by the website finder and verified against the business phone/name">{b.websiteSource === "found_search" ? "found via search" : "found via domain guess"}</Badge>}
+                  </span>
+                ) : (
+                  <span className="text-ink-faint">none</span>
+                )}
+              </ContactRow>
+              {(b.street || b.city) && <ContactRow icon="building" label="Address">{[b.street, [b.city, b.region].filter(Boolean).join(", "), b.postalCode].filter(Boolean).join(" · ")}</ContactRow>}
+            </ul>
           </Card>
+
           {best && (
-            <Card title="Scores">
-              <div className="flex justify-around">
+            <Card title="Scores" description={`From the best of ${d.opportunities.length} hypothes${d.opportunities.length === 1 ? "is" : "es"}.`}>
+              <div className="grid grid-cols-3 gap-2 justify-items-center">
                 <ScoreRing value={best.attractivenessScore} label="Attractive" size={52} />
                 <ScoreRing value={best.confidenceScore} label="Confidence" size={52} tone={best.confidenceScore < 40 ? "warn" : undefined} />
                 <ScoreRing value={priorityScore(best.attractivenessScore, best.confidenceScore)} label="Priority" size={52} />
               </div>
-              <p className="text-[11px] text-ink-faint mt-3">Best of {d.opportunities.length}. Attractiveness is how good it would be if true; confidence is how much verified evidence supports it.</p>
+              <dl className="mt-3 pt-3 border-t border-line text-[11px] text-ink-faint space-y-0.5">
+                <div><dt className="inline text-ink-muted">Attractive</dt> <dd className="inline">how valuable it would be if true.</dd></div>
+                <div><dt className="inline text-ink-muted">Confidence</dt> <dd className="inline">how much verified evidence supports it.</dd></div>
+                <div><dt className="inline text-ink-muted">Priority</dt> <dd className="inline">both combined; orders the pipeline.</dd></div>
+              </dl>
             </Card>
           )}
-          <Card title="Pipeline">
-            <form action={updateStageAction} className="space-y-2">
+
+          <Card title="Pipeline" description={`Stage: ${stageLabel(d.prospect?.stage ?? "lead")}`}>
+            <form action={updateStageAction}>
               <input type="hidden" name="businessId" value={b.id} />
-              <label className="label">Stage</label>
+              <label className="label" htmlFor="stage">Move to stage</label>
               <div className="flex gap-2">
-                <select className="select" name="stage" defaultValue={d.prospect?.stage ?? "lead"}>
+                <select id="stage" className="select" name="stage" defaultValue={d.prospect?.stage ?? "lead"}>
                   {PIPELINE_STAGES.map((s) => (
                     <option key={s.key} value={s.key}>
                       {s.label}
                     </option>
                   ))}
                 </select>
-                <button className="btn btn-sm shrink-0">Set</button>
+                <button className="btn shrink-0">Set</button>
               </div>
             </form>
-            <form action={setNextActionAction} className="space-y-2 mt-3 pt-3 border-t border-line">
+            <form action={setNextActionAction} className="mt-4 pt-4 border-t border-line space-y-3">
               <input type="hidden" name="businessId" value={b.id} />
-              <label className="label">Next action</label>
-              <input className="input" name="nextAction" defaultValue={d.prospect?.nextAction ?? ""} placeholder="e.g. Call to confirm estimate workflow" />
-              <div className="flex gap-2">
-                <input className="input" type="datetime-local" name="nextActionAt" defaultValue={d.prospect?.nextActionAt ? toLocalInput(d.prospect.nextActionAt) : ""} />
-                <select className="select w-28" name="priority" defaultValue={d.prospect?.priority ?? "normal"}>
-                  <option value="low">Low</option>
-                  <option value="normal">Normal</option>
-                  <option value="high">High</option>
-                </select>
+              <div>
+                <label className="label" htmlFor="nextAction">Next action</label>
+                <input id="nextAction" className="input" name="nextAction" defaultValue={d.prospect?.nextAction ?? ""} placeholder="e.g. Call to confirm the estimate workflow" />
               </div>
-              <button className="btn btn-sm">Save</button>
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <div className="min-w-0">
+                  <label className="label" htmlFor="nextActionAt">Due</label>
+                  <input id="nextActionAt" className="input" type="datetime-local" name="nextActionAt" defaultValue={d.prospect?.nextActionAt ? toLocalInput(d.prospect.nextActionAt) : ""} />
+                </div>
+                <div>
+                  <label className="label" htmlFor="priority">Priority</label>
+                  <select id="priority" className="select w-24" name="priority" defaultValue={d.prospect?.priority ?? "normal"}>
+                    <option value="low">Low</option>
+                    <option value="normal">Normal</option>
+                    <option value="high">High</option>
+                  </select>
+                </div>
+              </div>
+              <button className="btn">Save next action</button>
             </form>
           </Card>
-          <Card title="Validation signal" description="What the business actually told you.">
-            <form action={addValidationSignalAction} className="space-y-2">
+
+          <Card title="Validation signal" description="What the business actually told you; this is what makes a hypothesis real.">
+            <form action={addValidationSignalAction} className="space-y-3">
               <input type="hidden" name="businessId" value={b.id} />
-              <select className="select" name="category" defaultValue={best?.category ?? ""}>
-                <option value="" disabled>
-                  Opportunity category
-                </option>
-                {Object.entries(OPPORTUNITY_CATEGORIES).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
+              <div>
+                <label className="label" htmlFor="signalCategory">Opportunity</label>
+                <select id="signalCategory" className="select" name="category" defaultValue={best?.category ?? ""}>
+                  <option value="" disabled>
+                    Choose the opportunity…
                   </option>
-                ))}
-              </select>
-              <select className="select" name="signalType" defaultValue="conversation">
-                {VALIDATION_SIGNALS.map((s) => (
-                  <option key={s.key} value={s.key}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-              <input className="input" name="notes" placeholder="Short note (optional)" />
-              <button className="btn btn-sm">Record</button>
+                  {Object.entries(OPPORTUNITY_CATEGORIES).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="signalType">Signal</label>
+                <select id="signalType" className="select" name="signalType" defaultValue="conversation">
+                  {VALIDATION_SIGNALS.map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="label" htmlFor="signalNotes">Note <span className="normal-case font-normal text-ink-faint">(optional)</span></label>
+                <input id="signalNotes" className="input" name="notes" placeholder="What they said, in a few words" />
+              </div>
+              <button className="btn">Record</button>
             </form>
             {d.signals.length > 0 && (
-              <ul className="text-xs mt-3 space-y-1 pt-3 border-t border-line">
+              <ul className="text-xs mt-4 pt-3 border-t border-line space-y-1.5">
                 {d.signals.map((s) => (
-                  <li key={s.id} className="flex items-center gap-1.5">
+                  <li key={s.id} className="flex items-center gap-1.5 min-w-0">
                     <Badge tone={s.signalType === "rejected" ? "bad" : "ok"}>{s.signalType.replace(/_/g, " ")}</Badge>
                     <span className="text-ink-muted truncate">{OPPORTUNITY_CATEGORIES[s.opportunityCategory as OpportunityCategory] ?? s.opportunityCategory}</span>
                   </li>
@@ -621,51 +679,61 @@ export default async function BusinessPage({ params, searchParams }: { params: P
               </ul>
             )}
           </Card>
-          <Card title="Found by" description="Why this business is in Radar and how it ranked before research.">
-            <ul className="text-xs space-y-1.5">
-              {d.foundBy.map((f) => (
-                <li key={f.searchId} className="flex items-center gap-1.5 min-w-0">
-                  <Link href={`/searches/${f.searchId}`} className="truncate">
-                    {f.name}
-                  </Link>
-                  <span className="text-ink-faint shrink-0">#{f.rank} · {fmtRelative(f.createdAt)}</span>
-                </li>
-              ))}
-              {d.foundBy.length === 0 && <li className="text-ink-faint">Not from a search (imported or demo).</li>}
-            </ul>
-            <div className="text-xs mt-3 pt-3 border-t border-line space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="text-ink-muted">Lead score</span>
-                {b.leadScore != null ? <ScoreRing value={b.leadScore} size={28} tone="neutral" /> : <span className="text-ink-faint">—</span>}
-                <span className="text-ink-muted">{b.kind === "chain" ? "chain / franchise" : b.kind}</span>
-                {b.operatingStatus && b.operatingStatus !== "unknown" && <Badge tone={b.operatingStatus === "closed" ? "bad" : "ok"}>{b.operatingStatus}</Badge>}
-                {b.brand && <Badge tone="neutral" title="Brand attached by the discovery source">{b.brand}</Badge>}
+
+          <Card title="How it got here" description="Where this business came from and how it ranked before research.">
+            <div className="flex items-center gap-3">
+              {b.leadScore != null ? <ScoreRing value={b.leadScore} label="Lead" size={44} tone="neutral" /> : <span className="text-ink-faint text-xs">no lead score</span>}
+              <div className="min-w-0 text-xs space-y-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <Badge tone={b.kind === "chain" ? "neutral" : "ok"}>{b.kind === "chain" ? "chain / franchise" : b.kind === "independent" ? "independent" : "kind unknown"}</Badge>
+                  {b.operatingStatus && b.operatingStatus !== "unknown" && <Badge tone={b.operatingStatus === "closed" ? "bad" : "ok"}>{b.operatingStatus}</Badge>}
+                  {b.brand && <Badge tone="neutral" title="Brand attached by the discovery source">{b.brand}</Badge>}
+                </div>
+                {(b.leadReasons?.length ?? 0) > 0 && <div className="text-ink-faint">{b.leadReasons!.join(" · ")}</div>}
               </div>
-              {(b.leadReasons?.length ?? 0) > 0 && <div className="text-ink-faint">{b.leadReasons!.join(" · ")}</div>}
             </div>
-          </Card>
-          <Card title="Sources">
-            <ul className="text-xs space-y-2">
-              {d.sources.map((s) => (
-                <li key={s.id}>
-                  <div className="flex items-center gap-1.5">
-                    <Badge tone={s.provider === "demo" ? "demo" : "neutral"}>{s.provider === "overture" ? "Overture Maps" : s.provider === "osm" ? "OpenStreetMap" : s.provider === "tx_permits" ? "Texas permits" : s.provider === "google_places" ? "Google Places" : s.provider}</Badge>
-                    {s.sourceUrl ? (
-                      <a href={s.sourceUrl} target="_blank" rel="noreferrer" className="truncate">
-                        {s.providerId}
-                      </a>
-                    ) : (
-                      <span className="truncate text-ink-muted">{s.providerId}</span>
-                    )}
-                  </div>
-                  <div className="text-ink-faint mt-0.5">
-                    {s.attribution} · {fmtRelative(s.discoveredAt)}
-                  </div>
-                </li>
-              ))}
-            </ul>
-            <div className="text-[11px] text-ink-faint mt-3 pt-3 border-t border-line flex flex-wrap gap-1 items-center">
-              <StatusPill status={b.status} /> {b.statusMessage && <span>· {b.statusMessage}</span>} <span>· Stage: {stageLabel(d.prospect?.stage ?? "lead")}</span>
+            <div className="mt-3 pt-3 border-t border-line text-xs">
+              <div className="label">Searches</div>
+              {d.foundBy.length === 0 ? (
+                <p className="text-ink-faint">Not from a search: imported or added by hand.</p>
+              ) : (
+                <ul className="space-y-1">
+                  {d.foundBy.map((f) => (
+                    <li key={f.searchId} className="flex items-center gap-1.5 min-w-0">
+                      <Link href={`/searches/${f.searchId}`} className="truncate">
+                        {f.name}
+                      </Link>
+                      <span className="text-ink-faint shrink-0">#{f.rank} · {fmtRelative(f.createdAt)}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            <div className="mt-3 pt-3 border-t border-line text-xs">
+              <div className="label">Source records</div>
+              <ul className="space-y-1.5">
+                {d.sources.map((s) => (
+                  <li key={s.id} className="min-w-0">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <Badge tone={s.provider === "demo" ? "demo" : "neutral"}>{s.provider === "google_maps" ? "Google Maps" : s.provider === "overture" ? "Overture Maps" : s.provider === "osm" ? "OpenStreetMap" : s.provider === "csv" ? "CSV / manual" : s.provider}</Badge>
+                      {s.sourceUrl ? (
+                        <a href={s.sourceUrl} target="_blank" rel="noreferrer" className="truncate inline-flex items-center gap-0.5" title={s.providerId ?? undefined}>
+                          open listing <Icon name="external" className="w-3 h-3 shrink-0" />
+                        </a>
+                      ) : (
+                        <span className="truncate text-ink-faint" title={s.providerId ?? undefined}>
+                          {s.providerId}
+                        </span>
+                      )}
+                      <span className="text-ink-faint shrink-0 ml-auto">{fmtRelative(s.discoveredAt)}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div className="mt-3 pt-3 border-t border-line text-[11px] text-ink-faint flex flex-wrap gap-1.5 items-center">
+              <StatusPill status={b.status} />
+              {b.statusMessage && <span>{b.statusMessage}</span>}
             </div>
           </Card>
         </aside>
@@ -712,6 +780,26 @@ function ListField({ label, items }: { label: string; items: string[] }) {
       )}
     </div>
   );
+}
+function ContactRow({ icon, label, children }: { icon: "mail" | "phone" | "globe" | "building"; label: string; children: React.ReactNode }) {
+  return (
+    <li className="flex items-start gap-2.5 min-w-0">
+      <span className="w-7 h-7 rounded-lg bg-surface-3 text-ink-muted grid place-items-center shrink-0" title={label}>
+        <Icon name={icon} className="w-3.5 h-3.5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[10.5px] uppercase tracking-wide text-ink-faint leading-tight">{label}</div>
+        <div className="min-w-0 leading-snug">{children}</div>
+      </div>
+    </li>
+  );
+}
+/** 5123122177 → (512) 312-2177 for 10-digit North American numbers; anything else as stored. */
+function fmtPhone(p: string) {
+  const d = p.replace(/\D/g, "");
+  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
+  if (d.length === 11 && d.startsWith("1")) return `+1 (${d.slice(1, 4)}) ${d.slice(4, 7)}-${d.slice(7)}`;
+  return p;
 }
 function toLocalInput(iso: string) {
   const d = new Date(iso);

@@ -1,19 +1,21 @@
 import Link from "next/link";
+import { PROVIDER_LABEL } from "@/lib/discovery";
 import { recentJobs, sourceHealth } from "@/lib/queries";
 import { jobCounts } from "@/lib/jobs/queue";
 import { workerStatus } from "@/lib/jobs/worker";
+import { creditUsage, firecrawlInFlight } from "@/lib/research/firecrawl";
+import { creditsUsedThisMonth } from "@/lib/research/stored";
 import { getConfig, integrationStatus } from "@/lib/config";
 import { Badge, Card, PageHeader, StatusPill, fmtRelative } from "@/components/ui";
 import { TableEmpty } from "@/components/table";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { cancelJobAction, retryJobAction } from "@/app/actions";
 
-const PROVIDER_LABEL: Record<string, string> = { overture: "Overture Maps", osm: "OpenStreetMap", google_places: "Google Places", tx_permits: "Texas permits", demo: "Demo" };
 const fmtSec = (ms?: number | null) => (ms == null ? "—" : `${(ms / 1000).toFixed(1)} s`);
 
 export default async function SystemPage() {
   const cfg = getConfig();
-  const [jobsRows, counts, health] = await Promise.all([recentJobs(60), jobCounts(), sourceHealth()]);
+  const [jobsRows, counts, health, usage, account] = await Promise.all([recentJobs(60), jobCounts(), sourceHealth(), creditsUsedThisMonth(), creditUsage()]);
   const worker = workerStatus();
   const integ = integrationStatus();
   const active = jobsRows.some((j) => j.status === "running" || j.status === "queued");
@@ -112,6 +114,21 @@ export default async function SystemPage() {
           )}
         </Card>
         <div className="space-y-4">
+          <Card title="Website research (Firecrawl)" description={integ.websiteResearch.status === "live" ? `Budget ${cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET} credits per month · ${cfg.FIRECRAWL_CONCURRENCY} in flight · ${cfg.FIRECRAWL_RPM} requests/min · stored pages reused ${cfg.RESEARCH_STALE_DAYS} days` : "Not configured: set FIRECRAWL_API_KEY. Stored pages can still be re-analyzed."}>
+            <div className="grid grid-cols-2 gap-3 text-sm">
+              {[
+                { k: "Credits used this month", v: `${usage.credits} / ${cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET}` },
+                { k: "Investigations that spent credits", v: String(usage.investigations) },
+                { k: "Remaining on the account", v: account ? `${account.remainingCredits}${account.planCredits ? ` of ${account.planCredits}` : ""}` : integ.websiteResearch.status === "live" ? "unavailable" : "needs key" },
+                { k: "Requests in flight", v: String(firecrawlInFlight()) },
+              ].map((x) => (
+                <div key={x.k}>
+                  <div className="text-xs text-ink-muted">{x.k}</div>
+                  <div className="font-semibold tabular-nums">{x.v}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
           <Card title="Source health" description="Over the last 40 searches.">
             {health.length === 0 ? (
               <p className="text-xs text-ink-faint">No searches yet.</p>
@@ -137,7 +154,7 @@ export default async function SystemPage() {
           <Card title="Capabilities">
             <ul className="text-xs space-y-1.5">
               {Object.values(integ)
-                .filter((i) => ["Model provider", "Overture", "OpenStreetMap", "Web search", "Off-site footprint"].some((k) => i.label.startsWith(k)))
+                .filter((i) => ["Website research", "Model provider", "Overture", "OpenStreetMap", "Web search", "Off-site footprint"].some((k) => i.label.startsWith(k)))
                 .map((i) => (
                   <li key={i.label} className="flex items-start gap-2">
                     <Badge tone={i.status === "live" ? "ok" : i.status === "missing_credentials" ? "warn" : "neutral"} dot className="shrink-0 mt-0.5">

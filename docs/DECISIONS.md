@@ -211,3 +211,57 @@ Jobs were invisible outside counts. Choice: `/system` lists recent jobs with sta
 timing, outcome and retry/cancel; source health aggregates each discovery provider's runs,
 failures, candidates and average time over recent searches; worker status and capabilities at
 a glance. Settings stays configuration-only.
+
+## D23 — Firecrawl is the only page fetcher (2026-10-28)
+Founder decision: replace the in-house crawler (undici fetcher, cheerio link discovery,
+Playwright render fallback, sitemap reader) with Firecrawl. Supersedes D18. Choice: a thin REST
+v2 client over `fetch` (no SDK: fewer dependencies, injectable transport, full control over the
+limiter and retries), single `/scrape` calls with `markdown`, `rawHtml` and `links` (batch scrape
+shares the free plan's 2/min crawl limit, single scrapes get 10/min), `/map` only when the
+homepage exposes almost no links, raw HTML stored so detectors rerun for free, a monthly credit
+budget, robots.txt and the URL guard kept on our side. Extraction (cheerio over the returned
+HTML) and the rule/model layers are unchanged. Why not keep a fallback crawler: one scraping
+path is simpler to reason about and the founder asked for no duplicate systems. Cost: website
+research now needs an account and a key; the free plan covers ~150–200 businesses a month and a
+self-hosted instance removes the limit.
+
+## D24 — Search engine v2: cells, candidates, taxonomy, worldwide (2026-10-28)
+Context: discovery queried sources per search (no reuse), the form was US-only, categories were
+hand-listed per provider, results were written straight into businesses, and planned sources had no
+place in the interface. Choices: (1) a provider registry with explicit status (active / internal /
+future) enforced on the backend: only Overture and OpenStreetMap are offered, demo data is internal
+(seeded, tests), and the Texas sales tax permit registry was removed the same day at the founder's
+request (Texas-only, no phone or website, superseded by Overture's coverage); (2) one engine that resolves the area once, isolates each source,
+merges with named rules and confidence, filters with counts, ranks, stores candidates with every
+source, and saves on request or automatically; (3) a local copy of every fetched record on a 0.2°
+grid (`source_places`, `source_cells`) so repeated and adjacent searches run locally and refresh
+monthly or on a new release, with Overture's latest release discovered from its STAC catalog;
+(4) a taxonomy layer that targets Overture hierarchy nodes with exclusions (verified against the
+live data) and re-matches stored OSM tags locally; (5) bundled worldwide places/regions/countries
+(GeoNames) for the form and radius centers, structured geocoding with sanity checks for whole-city
+boundaries, metro-radius fallback otherwise; (6) a candidates table between sources and businesses
+so the operator can review before saving and duplicates already saved are visible. Rejected:
+importing whole countries (gigabytes, no need), a geospatial extension (bbox + cell indexes are
+enough at this scale), free-text geocoding (measured wrong answers). Google Places moved to
+"future" by the founder's brief: never executed even with a key.
+
+## D25 — Google Maps (via SerpApi) is the only discovery source (2026-10-28)
+Context: after the search engine v2 live checks the founder chose Google Maps listings as the
+single source of truth for prospecting and asked for the database to be wiped and the other
+sources dropped. SerpApi's Google Maps engine (free plan: 250 searches/month, 50/hour, one search =
+one page of 20 listings) returns name, category, address, phone, website, rating, reviews, hours
+and closed status with no card on file; the official Places API (5,000 free Text Search calls)
+needs a billing account and restricts caching to 30 days. Choices: (1) `google_maps` provider
+(`src/lib/discovery/google-maps.ts`) is the only `active` source; Overture and OpenStreetMap are
+`disabled` (code, tests and cell cache kept; never offered, refused by the engine), the Google
+Places adapter is deleted; (2) every page is counted in `provider_usage` and refused once
+`SERPAPI_MONTHLY_SEARCH_BUDGET` is reached, and cached in `provider_cache` for
+`SERPAPI_CACHE_DAYS` so repeats are free; (3) the map position comes from the bundled place list
+(radius, or a population-based metro radius for a whole city), so no geocoder call is made;
+(4) listings outside the radius are dropped and counted, since Google does not honour the area
+strictly; (5) one query per chosen sub-type, the industry query otherwise, the free text for
+"Other business type", at most `SERPAPI_MAX_PAGES` pages each. Known limits: scraped data via a
+third party (SerpApi's legal shield applies to paid plans only); 250 searches ≈ 5,000 listings a
+month; Google's relevance ranking decides what the first pages contain. Rejected: keeping Overture
+and OpenStreetMap as fallbacks (founder: one source only), the official Places API (card required).
+

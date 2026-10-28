@@ -24,24 +24,35 @@ const EnvSchema = z.object({
     .transform((v) => v?.trim() || undefined),
   AI_OUTREACH_EFFORT: Effort.default("medium"),
   AI_SPEND_LIMIT_USD: z.coerce.number().positive().default(25),
-  GOOGLE_PLACES_API_KEY: z.string().optional(),
+  SERPAPI_API_KEY: z.string().optional(),
+  SERPAPI_MONTHLY_SEARCH_BUDGET: z.coerce.number().int().min(1).default(250),
+  SERPAPI_MAX_PAGES: z.coerce.number().int().min(1).max(6).default(3),
+  SERPAPI_CACHE_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   /** Web search used to locate websites for businesses that have none on record. auto = Brave when keyed, otherwise none (verified domain guesses only). duckduckgo = keyless HTML endpoint, opt-in (bot challenges observed). */
   WEB_SEARCH_PROVIDER: z.enum(["auto", "brave", "duckduckgo", "off"]).default("auto"),
   BRAVE_SEARCH_API_KEY: z.string().optional(),
   /** Optional Socrata app token (free) for higher rate limits on open-data registries. */
-  SOCRATA_APP_TOKEN: z.string().optional(),
   /** Overture Maps Places (bulk open data read with DuckDB over S3; needs a long-lived host, not serverless). */
   OVERTURE_ENABLED: z
     .string()
     .default("true")
     .transform((v) => v !== "false" && v !== "0"),
-  OVERTURE_RELEASE: z.string().default("2026-10-21.0"),
+  /** "auto" = the latest release from Overture's STAC catalog (checked daily); or pin a release tag such as 2026-10-21.0. */
+  OVERTURE_RELEASE: z.string().default("auto"),
   OVERTURE_CACHE_DAYS: z.coerce.number().int().min(1).max(365).default(30),
-  /** Headless-browser rendering fallback for JavaScript-only sites (local hosts only). */
-  RESEARCH_BROWSER_RENDER: z
+  /** Firecrawl: the only way website pages are fetched. Key from firecrawl.dev (free plan: 1,000 credits/month). */
+  FIRECRAWL_API_KEY: z
     .string()
-    .default("true")
-    .transform((v) => v !== "false" && v !== "0"),
+    .optional()
+    .transform((v) => v?.trim() || undefined),
+  /** Cloud API by default; point at a self-hosted instance to avoid credits entirely. */
+  FIRECRAWL_API_URL: z.string().default("https://api.firecrawl.dev"),
+  /** Plan limits (free: 2 concurrent, 10 scrapes/min). The limiter is process-wide. */
+  FIRECRAWL_CONCURRENCY: z.coerce.number().int().min(1).max(50).default(2),
+  FIRECRAWL_RPM: z.coerce.number().int().min(1).max(5000).default(10),
+  FIRECRAWL_TIMEOUT_MS: z.coerce.number().int().min(1000).max(300_000).default(30_000),
+  /** New crawls stop when credits recorded this calendar month reach this (the free plan renews 1,000). */
+  FIRECRAWL_MONTHLY_CREDIT_BUDGET: z.coerce.number().int().min(1).default(1000),
   /** Research older than this is shown as stale and re-investigated when the operator asks. */
   RESEARCH_STALE_DAYS: z.coerce.number().int().min(1).max(365).default(60),
   /** Off-site lookups (RDAP, DNS, Internet Archive) during investigation. */
@@ -61,9 +72,8 @@ const EnvSchema = z.object({
     ),
   NOMINATIM_ENDPOINT: z.string().default("https://nominatim.openstreetmap.org"),
   OSM_USER_AGENT: z.string().default("opportunity-radar/0.1 (unconfigured contact)"),
+  /** Pages per business including the homepage; each is one Firecrawl credit. */
   RESEARCH_MAX_PAGES: z.coerce.number().int().min(1).max(12).default(5),
-  RESEARCH_PAGE_BYTES_LIMIT: z.coerce.number().int().default(1_500_000),
-  RESEARCH_FETCH_TIMEOUT_MS: z.coerce.number().int().default(10_000),
   RESEARCH_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(4),
   DATABASE_PATH: z.string().default("./data/radar.db"),
   /** Hosted libSQL/Turso database (persistent in the cloud). When set, DATABASE_PATH is ignored. */
@@ -78,10 +88,10 @@ const EnvSchema = z.object({
 
 export type AppConfig = z.infer<typeof EnvSchema> & {
   ai: { enabled: boolean; provider: "anthropic" | "openai" | null };
-  googlePlaces: { enabled: boolean };
+  googleMaps: { enabled: boolean };
   webSearch: { provider: "brave" | "duckduckgo" | null };
   overture: { enabled: boolean };
-  browserRender: { enabled: boolean };
+  firecrawl: { enabled: boolean };
   overpassEndpoints: string[];
   /** Running on Vercel serverless: storage is ephemeral and no long-lived worker exists. */
   serverless: boolean;
@@ -102,14 +112,16 @@ export function getConfig(): AppConfig {
   const serverless = Boolean(process.env.VERCEL);
   if (!env.TURSO_DATABASE_URL?.trim()) env.TURSO_DATABASE_URL = undefined;
   // On Vercel the project directory is read-only; /tmp is the only writable location.
-  if (serverless && !process.env.DATABASE_PATH) env.DATABASE_PATH = "/tmp/radar.db";
+  // Only /tmp is writable there, whatever DATABASE_PATH says (measured: the default "./data/radar.db" resolved
+  // under the read-only function directory and every page failed with ENOENT on mkdir).
+  if (serverless && !env.DATABASE_PATH.startsWith("/tmp/") && env.DATABASE_PATH !== ":memory:") env.DATABASE_PATH = "/tmp/radar.db";
   cached = {
     ...env,
     serverless,
     ai: { enabled: provider !== null, provider },
-    googlePlaces: { enabled: Boolean(env.GOOGLE_PLACES_API_KEY?.trim()) },
+    googleMaps: { enabled: Boolean(env.SERPAPI_API_KEY?.trim()) },
     overture: { enabled: env.OVERTURE_ENABLED && !serverless },
-    browserRender: { enabled: env.RESEARCH_BROWSER_RENDER && !serverless },
+    firecrawl: { enabled: Boolean(env.FIRECRAWL_API_KEY) },
     webSearch: { provider: env.WEB_SEARCH_PROVIDER === "brave" || (env.WEB_SEARCH_PROVIDER === "auto" && env.BRAVE_SEARCH_API_KEY?.trim()) ? "brave" : env.WEB_SEARCH_PROVIDER === "duckduckgo" ? "duckduckgo" : null },
     overpassEndpoints: env.OVERPASS_ENDPOINTS.split(",")
       .map((s) => s.trim())
@@ -139,27 +151,20 @@ export function integrationStatus() {
     },
     overture: {
       label: "Overture Maps Places (bulk open data)",
-      status: c.overture.enabled ? ("live" as const) : ("demo" as const),
-      detail: c.overture.enabled
-        ? `Release ${c.OVERTURE_RELEASE}, read with DuckDB directly from the public S3 bucket, no key. Names, categories, websites, phones, emails, socials, brand and open/closed status for ~50M places worldwide (CDLA-Permissive 2.0). Results are cached ${c.OVERTURE_CACHE_DAYS} days per area and category set.`
-        : "Disabled on serverless hosts (needs the native DuckDB binary and a long-lived process) or by OVERTURE_ENABLED=false. OpenStreetMap is used instead.",
+      status: "disabled" as const,
+      detail: "Disabled (D25, 2026-10-28): code and cache kept; Google Maps is the only offered source. Re-enable by flipping the provider status.",
     },
     osm: {
       label: "OpenStreetMap discovery (Overpass + Nominatim)",
-      status: "live" as const,
+      status: "disabled" as const,
       detail: `No credentials needed. Data © OpenStreetMap contributors (ODbL). Endpoints: ${c.overpassEndpoints.join(", ")}. Shared public instances are rate-limited and sometimes overloaded; use a paid or self-hosted instance for sustained volume.`,
     },
-    googlePlaces: {
-      label: "Google Places API (New)",
-      status: c.googlePlaces.enabled ? ("live" as const) : ("missing_credentials" as const),
-      detail: c.googlePlaces.enabled
-        ? "Enabled. Only place IDs are stored indefinitely per Google's Places policies; other fields are refreshed from the API."
-        : "Set GOOGLE_PLACES_API_KEY to enable. Review Google Maps Platform terms (caching limits, attribution) before use.",
-    },
-    txPermits: {
-      label: "Texas sales tax permit holders (Comptroller open data)",
-      status: "live" as const,
-      detail: `Free public registry of active Texas businesses by NAICS code and city (names, addresses, permit dates; no phone or website). Updated by the Comptroller; no key needed${c.SOCRATA_APP_TOKEN ? " (app token set)" : " (set SOCRATA_APP_TOKEN, free, for higher rate limits)"}. Texas only.`,
+    googleMaps: {
+      label: "Google Maps listings (SerpApi)",
+      status: c.googleMaps.enabled ? ("live" as const) : ("missing_credentials" as const),
+      detail: c.googleMaps.enabled
+        ? `The only active discovery source. Up to ${c.SERPAPI_MAX_PAGES} pages of 20 listings per query, monthly budget ${c.SERPAPI_MONTHLY_SEARCH_BUDGET} searches (free plan: 250), pages cached for ${c.SERPAPI_CACHE_DAYS} days. Name, category, address, phone, website, rating, reviews, hours, closed status.`
+        : "Set SERPAPI_API_KEY (free SerpApi plan, 250 searches/month) to enable. Without it no search can run.",
     },
     places: {
       label: "City suggestions (bundled GeoNames places)",
@@ -172,9 +177,11 @@ export function integrationStatus() {
       detail: "Import your own business lists (name, website, phone, address, city, region, country).",
     },
     websiteResearch: {
-      label: "Website research (bounded crawler)",
-      status: "live" as const,
-      detail: `Fetches the homepage plus up to ${c.RESEARCH_MAX_PAGES - 1} key pages per business in parallel (root/scheme/www fallbacks, sitemap for JS-rendered menus), respects robots.txt, ${c.RESEARCH_FETCH_TIMEOUT_MS}ms timeout, SSRF-guarded. Deterministic facts from page resources, schema.org data and text cues.`,
+      label: "Website research (Firecrawl)",
+      status: c.firecrawl.enabled ? ("live" as const) : ("missing_credentials" as const),
+      detail: c.firecrawl.enabled
+        ? `Firecrawl at ${c.FIRECRAWL_API_URL}: the homepage plus up to ${c.RESEARCH_MAX_PAGES - 1} key pages per business (1 credit per page; 1 more for a site map when the menu is script-rendered), ${c.FIRECRAWL_CONCURRENCY} in flight, ${c.FIRECRAWL_RPM} requests/min, monthly budget ${c.FIRECRAWL_MONTHLY_CREDIT_BUDGET} credits. robots.txt respected, bot-protection pages recorded rather than bypassed, every URL guarded. Pages are stored and reused for ${c.RESEARCH_STALE_DAYS} days; re-analysis never costs credits.`
+        : "Set FIRECRAWL_API_KEY (firecrawl.dev; the free plan includes 1,000 credits a month, roughly 150 businesses at 5–6 pages each). Without it: discovery, demo data and re-analysis of stored pages work; new website research does not run.",
     },
     footprint: {
       label: "Off-site footprint (RDAP, DNS, Internet Archive)",

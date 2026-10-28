@@ -6,7 +6,9 @@
 import { z } from "zod";
 import type { SearchFilters } from "@/db/schema";
 import { getPlaybook } from "@/lib/industries";
-import { US_STATE_CODES } from "@/lib/geo/us-states";
+import { listCountries, listRegions } from "@/lib/geo/world";
+import { PROVIDERS } from "@/lib/discovery";
+import { resolveCategories } from "@/lib/discovery/taxonomy";
 
 export const DEFAULT_FILTERS: SearchFilters = {
   segments: [],
@@ -17,6 +19,8 @@ export const DEFAULT_FILTERS: SearchFilters = {
   skipKnown: false,
   minLeadScore: 50,
   autoInvestigateLimit: 25,
+  customCategory: null,
+  autoSave: true,
 };
 
 export const SearchInput = z
@@ -26,6 +30,7 @@ export const SearchInput = z
     segments: z.array(z.string()).default([]),
     keywords: z.string().trim().max(200).optional(),
     categoryQuery: z.string().trim().max(200).optional(),
+    customCategory: z.string().trim().max(80).optional(),
     country: z.string().trim().length(2, "Use a 2-letter country code").transform((v) => v.toUpperCase()).default("US"),
     region: z.string().trim().max(80).optional(),
     city: z.string().trim().max(80).optional(),
@@ -41,20 +46,19 @@ export const SearchInput = z
     autoInvestigate: z.boolean().default(true),
     minLeadScore: z.coerce.number().int().min(0).max(100).default(DEFAULT_FILTERS.minLeadScore),
     autoInvestigateLimit: z.coerce.number().int().min(1).max(500).nullable().default(DEFAULT_FILTERS.autoInvestigateLimit),
-    providers: z.array(z.enum(["overture", "osm", "google_places", "tx_permits", "demo"])).min(1, "Pick at least one source"),
+    autoSave: z.boolean().default(true),
+    providers: z.array(z.enum(["google_maps", "foursquare", "web_search", "linkedin"])).min(1, "Pick at least one source"),
   })
   .superRefine((v, ctx) => {
     const playbook = getPlaybook(v.industry);
-    const demoOnly = v.providers.length === 1 && v.providers[0] === "demo";
-    if (!demoOnly && !v.city && !v.region) ctx.addIssue({ code: "custom", path: ["city"], message: "Enter a city (or at least a state/region)" });
-    if (!demoOnly && v.country === "US" && !v.region) ctx.addIssue({ code: "custom", path: ["region"], message: "Choose a state" });
-    if (v.country === "US" && v.region && !US_STATE_CODES.has(v.region.toUpperCase())) ctx.addIssue({ code: "custom", path: ["region"], message: "Choose a state from the list" });
-    if (v.areaMode === "radius" && !v.city) ctx.addIssue({ code: "custom", path: ["city"], message: "A radius needs a city to center on" });
-    if (v.providers.includes("osm") && !playbook.osmSelectors.length && !demoOnly) ctx.addIssue({ code: "custom", path: ["providers"], message: `${playbook.label} has no OpenStreetMap selectors; use Google Places or a CSV import` });
-    if (v.providers.includes("overture") && !playbook.overture.length) ctx.addIssue({ code: "custom", path: ["providers"], message: `${playbook.label} has no Overture categories; use another source` });
-    if (v.providers.includes("tx_permits") && !/^(tx|texas)$/i.test(v.region ?? "")) ctx.addIssue({ code: "custom", path: ["providers"], message: "The Texas permit registry needs State / region = TX" });
-    if (v.providers.includes("tx_permits") && !v.city) ctx.addIssue({ code: "custom", path: ["city"], message: "The Texas permit registry needs a city" });
-    if (v.providers.includes("tx_permits") && !playbook.naics.length) ctx.addIssue({ code: "custom", path: ["providers"], message: `${playbook.label} has no NAICS codes for the Texas registry` });
+    const future = v.providers.filter((k) => PROVIDERS[k as keyof typeof PROVIDERS]?.status === "future");
+    if (future.length) ctx.addIssue({ code: "custom", path: ["providers"], message: `${future.map((k) => PROVIDERS[k as keyof typeof PROVIDERS].label).join(", ")}: planned integration, not available yet` });
+    if (!listCountries().some((c) => c.code === v.country)) ctx.addIssue({ code: "custom", path: ["country"], message: "Choose a country from the list" });
+    if (!v.city) ctx.addIssue({ code: "custom", path: ["city"], message: "Enter a city: sources are read city by city (a whole state or country is too large for one search)" });
+    if (v.country === "US" && !v.region) ctx.addIssue({ code: "custom", path: ["region"], message: "Choose a state" });
+    if (v.region && listRegions(v.country).length && !listRegions(v.country).some((r) => r.code.toUpperCase() === v.region!.toUpperCase())) ctx.addIssue({ code: "custom", path: ["region"], message: "Choose a region from the list" });
+    const cats = resolveCategories(v.industry, v.segments, v.customCategory);
+    if (playbook.key === "generic" && !cats.custom) ctx.addIssue({ code: "custom", path: ["customCategory"], message: "Enter the business category to look for (e.g. roofing, bakery, veterinarian)" });
     const unknown = v.segments.filter((k) => !playbook.segments.some((s) => s.key === k));
     if (unknown.length) ctx.addIssue({ code: "custom", path: ["segments"], message: `Unknown segment: ${unknown.join(", ")}` });
   });
@@ -74,7 +78,8 @@ export function rawSearchValues(fd: FormData) {
     segments: fd.getAll("segments").map(String),
     keywords: str(fd, "keywords"),
     categoryQuery: str(fd, "categoryQuery"),
-    country: str(fd, "country") || "US",
+    customCategory: str(fd, "customCategory"),
+    country: (str(fd, "country") || "US").toUpperCase(),
     region: str(fd, "region"),
     city: str(fd, "city"),
     areaMode: (str(fd, "areaMode") || "area") as "area" | "radius",
@@ -87,6 +92,7 @@ export function rawSearchValues(fd: FormData) {
     excludeChains: bool(fd, "excludeChains", DEFAULT_FILTERS.excludeChains),
     skipKnown: bool(fd, "skipKnown", DEFAULT_FILTERS.skipKnown),
     autoInvestigate: bool(fd, "autoInvestigate", true),
+    autoSave: bool(fd, "autoSave", true),
     minLeadScore: str(fd, "minLeadScore") || String(DEFAULT_FILTERS.minLeadScore),
     autoInvestigateLimit: str(fd, "autoInvestigateLimit"),
     providers: fd.getAll("providers").map(String),
@@ -101,6 +107,7 @@ export function parseSearchForm(fd: FormData): { ok: true; values: SearchInputVa
     name: raw.name || undefined,
     keywords: raw.keywords || undefined,
     categoryQuery: raw.categoryQuery || undefined,
+    customCategory: raw.customCategory || undefined,
     region: raw.region ? raw.region.toUpperCase() : undefined,
     city: raw.city || undefined,
     centerLat: raw.centerLat === "" ? null : raw.centerLat,
@@ -119,8 +126,8 @@ export function parseSearchForm(fd: FormData): { ok: true; values: SearchInputVa
   const playbook = getPlaybook(v.industry);
   const where = v.areaMode === "radius" && v.city ? `${v.radiusKm} km around ${v.city}` : [v.city, v.region].filter(Boolean).join(", ") || v.country;
   const segs = v.segments.length && v.segments.length < playbook.segments.length ? ` (${v.segments.map((k) => playbook.segments.find((s) => s.key === k)?.label ?? k).join(", ")})` : "";
-  const name = v.name || `${playbook.label}${segs} · ${where}`;
-  const filters: SearchFilters = { segments: v.segments, areaMode: v.areaMode, radiusKm: v.radiusKm, requirePhone: v.requirePhone, excludeChains: v.excludeChains, skipKnown: v.skipKnown, minLeadScore: v.minLeadScore, autoInvestigateLimit: v.autoInvestigateLimit, centerLat: v.centerLat, centerLon: v.centerLon };
+  const name = v.name || `${playbook.key === "generic" && v.customCategory ? v.customCategory : playbook.label}${segs} · ${where}`;
+  const filters: SearchFilters = { segments: v.segments, areaMode: v.areaMode, radiusKm: v.radiusKm, requirePhone: v.requirePhone, excludeChains: v.excludeChains, skipKnown: v.skipKnown, minLeadScore: v.minLeadScore, autoInvestigateLimit: v.autoInvestigateLimit, centerLat: v.centerLat, centerLon: v.centerLon, customCategory: v.customCategory ?? null, autoSave: v.autoSave };
   return { ok: true, values: v, filters, name };
 }
 
@@ -140,6 +147,8 @@ export function describeFilters(search: { filters?: SearchFilters | null; requir
   if (f.requirePhone) out.push("phone required");
   if (f.excludeChains) out.push("chains excluded");
   if (f.skipKnown) out.push("known businesses skipped");
+  if (f.customCategory) out.push(`category "${f.customCategory}"`);
+  if (f.autoSave === false) out.push("results reviewed before saving");
   out.push(search.autoInvestigate ? `auto-investigate${f.autoInvestigateLimit ? ` top ${f.autoInvestigateLimit}` : ""} (lead ≥ ${f.minLeadScore})` : "manual investigation");
   return out;
 }

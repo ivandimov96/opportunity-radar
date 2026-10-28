@@ -19,7 +19,7 @@ export type UpsertOutcome = { businessId: string; wasNew: boolean; matchedBy?: "
 export async function upsertCandidate(
   db: Db,
   c: BusinessCandidate,
-  ctx: { industry: string; searchId?: string | null; isDemo?: boolean; fixedId?: string; leadReasons?: string[] },
+  ctx: { industry: string; searchId?: string | null; isDemo?: boolean; fixedId?: string; leadReasons?: string[]; extraSources?: { provider: BusinessCandidate["provider"]; providerId: string; sourceUrl: string | null; attribution: string; raw: Record<string, unknown> | null }[] },
 ): Promise<UpsertOutcome> {
   const website = normalizeWebsite(c.website);
   const domain = websiteDomain(website);
@@ -108,6 +108,7 @@ export async function upsertCandidate(
         .onConflictDoNothing()
         .run();
     }
+    await addSources(db, existingId, ctx);
     return { businessId: existingId, wasNew: false, matchedBy };
   }
 
@@ -157,5 +158,13 @@ export async function upsertCandidate(
       raw: c.raw ?? null,
     })
     .run();
+  await addSources(db, id, ctx);
   return { businessId: id, wasNew: true };
+}
+
+/** Every other source record that contributed to a merged candidate is kept as provenance. */
+async function addSources(db: Db, businessId: string, ctx: { searchId?: string | null; extraSources?: { provider: BusinessCandidate["provider"]; providerId: string; sourceUrl: string | null; attribution: string; raw: Record<string, unknown> | null }[] }) {
+  for (const s of ctx.extraSources ?? []) {
+    await db.insert(businessSources).values({ id: newId(), businessId, provider: s.provider, providerId: s.providerId, sourceUrl: s.sourceUrl, attribution: s.attribution, searchId: ctx.searchId ?? null, raw: s.raw }).onConflictDoNothing().run();
+  }
 }

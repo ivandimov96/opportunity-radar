@@ -14,7 +14,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body>
-        <AppShell aiEnabled={cfg.ai.enabled} serverless={cfg.serverless && !cfg.TURSO_DATABASE_URL}>
+        <AppShell aiEnabled={cfg.ai.enabled} sourceEnabled={cfg.googleMaps.enabled} researchEnabled={cfg.firecrawl.enabled} serverless={cfg.serverless && !cfg.TURSO_DATABASE_URL}>
           {children}
         </AppShell>
       </body>

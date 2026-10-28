@@ -11,6 +11,9 @@ import { newId, nowIso } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { kickWorker } from "@/lib/jobs/kick";
 import { enqueueInvestigation, enqueueOutreach } from "@/lib/jobs/handlers";
+import { saveCandidates } from "@/lib/discovery/engine";
+import { isFirecrawlConfigured } from "@/lib/research/firecrawl";
+import { filtersOf } from "@/lib/search-input";
 import { addValidationSignal, ensureProspect, logActivity, setNextAction, setStage } from "@/lib/pipeline/prospects";
 import { PIPELINE_STAGE_KEYS, type PipelineStage, type ValidationSignalType } from "@/lib/pipeline/stages";
 import { seedDemo } from "@/db/seed-demo";
@@ -30,7 +33,7 @@ export async function createSearch(_prev: CreateSearchState, fd: FormData): Prom
   const db = await getDb();
   await db
     .insert(searches)
-    .values({ id, name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoInvestigate: v.autoInvestigate, filters, providers: v.providers as DiscoveryProviderKey[], status: "queued", isDemo: v.providers.length === 1 && v.providers[0] === "demo" })
+    .values({ id, name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoInvestigate: v.autoInvestigate, filters, providers: v.providers as DiscoveryProviderKey[], status: "queued" })
     .run();
   await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
   kickWorker();
@@ -48,7 +51,8 @@ export async function rerunSearch(fd: FormData) {
 
 export async function investigateAction(fd: FormData) {
   const id = str(fd, "businessId");
-  await enqueueInvestigation(id);
+  const mode = fd.get("mode");
+  await enqueueInvestigation(id, mode === "recrawl" || mode === "reanalyze" ? mode : "auto");
   kickWorker();
   revalidatePath(`/businesses/${id}`);
 }
@@ -110,6 +114,19 @@ export async function updateDraftAction(fd: FormData) {
   if (status === "approved" && cur.status !== "approved") await logActivity(businessId, "system", "Outreach draft approved for manual sending.", { draftId: id });
   if (edited) await logActivity(businessId, "note", "Outreach draft edited by operator.", { draftId: id });
   revalidatePath(`/businesses/${businessId}`);
+}
+
+/** Drag-and-drop move on the pipeline board: returns the outcome instead of redirecting. */
+export async function moveStageAction(businessId: string, stage: PipelineStage): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!PIPELINE_STAGE_KEYS.includes(stage)) return { ok: false, error: "unknown stage" };
+  try {
+    await setStage(businessId, stage, "moved on the pipeline board");
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  revalidatePath(`/businesses/${businessId}`);
+  revalidatePath("/pipeline");
+  return { ok: true };
 }
 
 export async function updateStageAction(fd: FormData) {
@@ -248,4 +265,36 @@ export async function cancelJobAction(fd: FormData) {
     }
   }
   revalidatePath("/system");
+}
+
+
+/** Save candidates of a search as businesses: the selected ids, or every listed candidate. Optionally queue the saved ones for investigation. */
+export async function saveCandidatesAction(fd: FormData) {
+  const searchId = str(fd, "searchId");
+  const ids = fd.getAll("candidateId").map(String).filter(Boolean);
+  const all = fd.get("all") === "on";
+  const investigate = fd.get("investigate") === "on";
+  const db = await getDb();
+  const search = await db.select().from(searches).where(eq(searches.id, searchId)).get();
+  if (!search || (!all && !ids.length)) return;
+  const outcome = await saveCandidates(db, search, all ? undefined : ids);
+  let queued = 0;
+  if (investigate && isFirecrawlConfigured()) {
+    const limit = filtersOf(search).autoInvestigateLimit ?? outcome.investigable.length;
+    for (const t of outcome.investigable.slice(0, limit)) {
+      await enqueueInvestigation(t.id);
+      queued++;
+    }
+    if (queued) kickWorker();
+  }
+  const stats = search.stats ? { ...search.stats } : null;
+  if (stats) {
+    stats.saved = (stats.saved ?? 0) + outcome.created + outcome.merged;
+    stats.created = (stats.created ?? 0) + outcome.created;
+    stats.merged = (stats.merged ?? 0) + outcome.merged;
+    stats.queuedForInvestigation = (stats.queuedForInvestigation ?? 0) + queued;
+    stats.notes = [...(stats.notes ?? []), `Operator saved ${outcome.created + outcome.merged} candidate(s) (${outcome.created} new, ${outcome.merged} merged)${queued ? `; ${queued} queued for investigation` : investigate ? "; investigation needs FIRECRAWL_API_KEY" : ""}`];
+    await db.update(searches).set({ stats, updatedAt: nowIso() }).where(eq(searches.id, searchId)).run();
+  }
+  revalidatePath(`/searches/${searchId}`);
 }
