@@ -13,6 +13,7 @@
  */
 import { getConfig } from "@/lib/config";
 import { classifyLink, extractPage, KIND_PRIORITY, type PageContent, type PageKind } from "./html";
+import { pickBusinessEmail } from "./detect";
 import { isAllowedByRobots } from "./robots";
 import { FirecrawlCreditsError, mapSite, scrapePage, type MapFn, type ScrapeFn, type ScrapeResult } from "./firecrawl";
 import { UrlBlockedError, validateUrlShape } from "./url-guard";
@@ -50,6 +51,10 @@ export interface CrawlDeps {
   maxPages?: number;
   onProgress?: (m: string) => void;
   signal?: AbortSignal;
+  /** Only follow links of these kinds after the homepage (the contact page for the email probe). */
+  onlyKinds?: PageKind[];
+  /** Continue an earlier crawl of the same site: its pages are kept and only the remaining key pages are fetched. */
+  resume?: CrawlResult;
 }
 
 /** Raw HTML kept per page; beyond this the tail is dropped (detectors read the head and the text). */
@@ -204,27 +209,35 @@ export async function crawlWebsite(website: string, deps: CrawlDeps = {}): Promi
   const done = () => ({ pages, notes, durationMs: Date.now() - started, home: pages.find((p) => p.kind === "home" && p.content) ?? null, credits, stoppedEarly });
 
   try {
-    deps.onProgress?.("Fetching homepage via Firecrawl");
-    let home = add(await fetchPage(website, "home", notes, deps));
-    if (!home.content && !/robots\.txt|Blocked|bot protection/.test(home.error ?? "")) {
-      let root: string | null = null;
-      try {
-        const u = new URL(website);
-        if (u.pathname !== "/" || u.search) root = u.origin;
-      } catch {
-        /* ignore */
-      }
-      if (root && home.status && home.status >= 400 && home.status < 500) {
-        // 1. Dead deep link → site root (one more credit).
-        notes.push(`Deep link returned ${home.error}; retrying site root ${root}`);
-        home = add(await fetchPage(root, "home", notes, deps));
-      } else if (!home.status) {
-        // 2. Connection-level failure (stale www/bare host): one variant.
-        const variant = homepageVariants(website)[0];
-        if (variant) {
-          notes.push(`Homepage failed (${home.error}); trying ${variant}`);
-          home = add(await fetchPage(variant, "home", notes, deps));
-          if (home.content) notes.push(`Homepage reachable at ${home.finalUrl}`);
+    let home: CrawledPage;
+    if (deps.resume?.home) {
+      for (const p of deps.resume.pages) pages.push(p);
+      credits = deps.resume.credits;
+      notes.push(...deps.resume.notes.filter((n) => !n.startsWith("Firecrawl: ")));
+      home = deps.resume.home;
+    } else {
+      deps.onProgress?.("Fetching homepage via Firecrawl");
+      home = add(await fetchPage(website, "home", notes, deps));
+      if (!home.content && !/robots\.txt|Blocked|bot protection/.test(home.error ?? "")) {
+        let root: string | null = null;
+        try {
+          const u = new URL(website);
+          if (u.pathname !== "/" || u.search) root = u.origin;
+        } catch {
+          /* ignore */
+        }
+        if (root && home.status && home.status >= 400 && home.status < 500) {
+          // 1. Dead deep link → site root (one more credit).
+          notes.push(`Deep link returned ${home.error}; retrying site root ${root}`);
+          home = add(await fetchPage(root, "home", notes, deps));
+        } else if (!home.status) {
+          // 2. Connection-level failure (stale www/bare host): one variant.
+          const variant = homepageVariants(website)[0];
+          if (variant) {
+            notes.push(`Homepage failed (${home.error}); trying ${variant}`);
+            home = add(await fetchPage(variant, "home", notes, deps));
+            if (home.content) notes.push(`Homepage reachable at ${home.finalUrl}`);
+          }
         }
       }
     }
@@ -234,14 +247,18 @@ export async function crawlWebsite(website: string, deps: CrawlDeps = {}): Promi
     }
     const homeContent = home.content;
     const base = new URL(home.finalUrl);
-    let picks = chooseLinks(homeContent, base, Math.max(0, maxPages - 1));
-    if (picks.length < 2 && maxPages > 2) {
+    const fetched = new Set(pages.flatMap((p) => [normalizeUrl(p.url), normalizeUrl(p.finalUrl)]));
+    const budget = Math.max(0, maxPages - pages.filter((p) => p.content).length);
+    // Candidate links in priority order; the probe keeps only the wanted kinds, a resumed crawl skips what it already has.
+    const select = (all: { url: string; kind: PageKind }[]) => all.filter((p) => !fetched.has(normalizeUrl(p.url)) && (!deps.onlyKinds || deps.onlyKinds.includes(p.kind))).slice(0, budget);
+    let picks = select(chooseLinks(homeContent, base, maxPages + 6));
+    if (picks.length < 2 && maxPages > 2 && !deps.onlyKinds && budget > 0) {
       // 3. Script-rendered menus expose few links in HTML; Firecrawl's map (sitemap + index) lists the key pages. One credit.
       try {
         const m = await (deps.map ?? mapSite)(base.origin, { limit: 300, signal: deps.signal });
         credits += m.credits;
         notes.push(`Site map: ${m.links.length} URL(s) (${m.credits} credit)`);
-        if (m.links.length) picks = chooseLinks({ ...homeContent, links: [...homeContent.links, ...m.links.map((l) => ({ href: l.url, text: l.title ?? "" }))] }, base, Math.max(0, maxPages - 1));
+        if (m.links.length) picks = select(chooseLinks({ ...homeContent, links: [...homeContent.links, ...m.links.map((l) => ({ href: l.url, text: l.title ?? "" }))] }, base, maxPages + 6));
       } catch (err) {
         if (err instanceof FirecrawlCreditsError) throw err;
         notes.push(`Site map failed: ${(err as Error).message.split("\n")[0]}`);
@@ -260,7 +277,7 @@ export async function crawlWebsite(website: string, deps: CrawlDeps = {}): Promi
           throw err;
         }
       });
-      const seenText = new Set<string>([homeContent.text.slice(0, 2000)]);
+      const seenText = new Set<string>(pages.filter((p) => p.content).map((p) => p.content!.text.slice(0, 2000)));
       for (const p of results) {
         if (!p) continue;
         const sig = p.content?.text.slice(0, 2000);
@@ -284,4 +301,39 @@ export async function crawlWebsite(website: string, deps: CrawlDeps = {}): Promi
     }
     throw err;
   }
+}
+
+/** True when one of the pages publishes an email that belongs to the business (vendor and widget addresses do not count). */
+export function pagesHaveBusinessEmail(pages: CrawledPage[], home: CrawledPage | null): boolean {
+  let host: string | null = null;
+  try {
+    host = new URL(home?.finalUrl ?? pages[0]?.url ?? "").hostname;
+  } catch {
+    /* ignore */
+  }
+  const emails = pages.flatMap((p) => (p.content ? p.content.emails.map((e) => ({ e, url: p.url })) : []));
+  return pickBusinessEmail(emails, host) !== null;
+}
+
+export interface StagedCrawlResult extends CrawlResult {
+  /** The crawl stopped after the homepage and contact page because neither publishes a business email. */
+  stoppedForEmail: boolean;
+}
+
+/**
+ * The email probe: read the homepage and the contact page first (two credits).
+ * When neither publishes a business email and `needEmail` is set, stop there:
+ * the remaining pages and the model call would be spent on a business that
+ * cannot be written to. Otherwise continue with the remaining key pages.
+ */
+export async function crawlStaged(website: string, deps: CrawlDeps & { needEmail: boolean }): Promise<StagedCrawlResult> {
+  if (!deps.needEmail) return { ...(await crawlWebsite(website, deps)), stoppedForEmail: false };
+  const probe = await crawlWebsite(website, { ...deps, maxPages: 2, onlyKinds: ["contact"] });
+  if (!probe.home || probe.stoppedEarly) return { ...probe, stoppedForEmail: false };
+  if (!pagesHaveBusinessEmail(probe.pages, probe.home)) {
+    probe.notes.push(`No business email on the homepage${probe.pages.length > 1 ? " or the contact page" : ""}; research stopped after ${probe.credits} credit(s)`);
+    return { ...probe, stoppedForEmail: true };
+  }
+  const full = await crawlWebsite(website, { ...deps, resume: probe });
+  return { ...full, durationMs: probe.durationMs + full.durationMs, stoppedForEmail: false };
 }

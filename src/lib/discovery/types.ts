@@ -8,7 +8,7 @@
  */
 import type { BBox } from "./cells";
 
-export type DiscoveryProviderKey = "google_maps" | "overture" | "osm" | "foursquare" | "web_search" | "linkedin" | "csv" | "demo";
+export type DiscoveryProviderKey = "google_maps" | "overture" | "osm" | "foursquare" | "web_search" | "linkedin" | "csv";
 export type ProviderStatus = "active" | "internal" | "disabled" | "future";
 
 export interface ResolvedArea {

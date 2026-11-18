@@ -1,0 +1,1 @@
+ALTER TABLE `prospects` ADD `position` integer;

@@ -16,6 +16,8 @@ export interface StoredPages {
   startedAt: string;
   ageDays: number;
   pages: CrawledPage[];
+  /** Kept from an email probe that stopped after the homepage and contact page: not a full crawl. */
+  probeOnly: boolean;
 }
 
 /**
@@ -25,7 +27,7 @@ export interface StoredPages {
 export async function loadStoredPages(businessId: string, website: string, maxAgeDays: number): Promise<StoredPages | null> {
   const db = await getDb();
   const inv = await db
-    .select({ id: investigations.id, startedAt: investigations.startedAt })
+    .select({ id: investigations.id, startedAt: investigations.startedAt, verdict: investigations.verdict })
     .from(investigations)
     .where(and(eq(investigations.businessId, businessId), eq(investigations.status, "done")))
     .orderBy(desc(investigations.startedAt))
@@ -56,7 +58,7 @@ export async function loadStoredPages(businessId: string, website: string, maxAg
     error: null,
     credits: 0,
   }));
-  return { investigationId: inv.id, startedAt: inv.startedAt, ageDays: Math.floor(ageDays), pages: out };
+  return { investigationId: inv.id, startedAt: inv.startedAt, ageDays: Math.floor(ageDays), pages: out, probeOnly: inv.verdict === "no_contact" && out.length <= 2 };
 }
 
 /** Firecrawl credits recorded on investigations started this calendar month (UTC). */

@@ -1,5 +1,7 @@
 # How a business is researched (research engine v3)
 
+> **Historical document.** The product was rebuilt on 2026-11-12 (docs/DECISIONS.md D28 to D36). For how it works now, read docs/ARCHITECTURE.md. Parts of this file describe things that no longer exist (several hypotheses per business, the Patterns page, validation signals, Overture and OpenStreetMap, template drafts, "no sending").
+
 ## Why this exists
 A software consultancy does not need more contacts; it needs to know **what it could
 build for a specific business and why**, with evidence it can put in the first email.

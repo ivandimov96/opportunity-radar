@@ -285,7 +285,7 @@ function SearchFields({ playbooks, providers, countries, initialRegions, aiEnabl
             </p>
           </Step>
 
-          <Step n={3} title="Source" description="Google Maps is the only active source: SerpApi free plan, 250 searches of 20 listings per month, every page cached locally. Planned sources are listed so you know what is coming; they never run.">
+          <Step n={3} title="Source" description="Google Maps is the only active source, read through Serper: a page of 20 listings costs 3 credits (2,500 free credits on sign-up, about 830 pages), every page cached locally. Planned sources are listed so you know what is coming; they never run.">
             <div className="space-y-2">
               {byStatus("active").map((p) => (
                 <ProviderRow key={p.key} p={p} checked={providersSel.includes(p.key) && usable(p)} usable={usable(p)} onToggle={() => toggleProvider(p.key)} note={p.available ? undefined : `Unavailable here: ${p.reason}`} />
@@ -332,7 +332,7 @@ function SearchFields({ playbooks, providers, countries, initialRegions, aiEnabl
                 <input className={`input ${errors.autoInvestigateLimit ? "border-bad" : ""}`} type="number" name="autoInvestigateLimit" defaultValue={v.autoInvestigateLimit} min={1} max={500} placeholder="all" />
               </Field>
             </div>
-            {!aiEnabled && <p className="text-xs text-ink-muted mt-3">Without a model key, verdicts come from deterministic rules over verified facts.</p>}
+            {!aiEnabled && <p className="text-xs text-ink-muted mt-3">Without a model key, research still builds the profile, but ideas come from fixed rules and wait for your review; no email is written.</p>}
           </Step>
         </div>
 

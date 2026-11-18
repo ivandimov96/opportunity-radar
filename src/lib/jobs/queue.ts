@@ -10,7 +10,7 @@ import { getConfig } from "@/lib/config";
 import { jobs } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
 
-export type JobType = "discover_search" | "investigate_business" | "generate_outreach";
+export type JobType = "discover_search" | "investigate_business" | "generate_outreach" | "send_email" | "sync_mailbox" | "process_reply";
 export type JobRow = typeof jobs.$inferSelect;
 
 export async function enqueueJob(type: JobType, payload: Record<string, unknown>, opts: { idempotencyKey?: string; maxAttempts?: number; delayMs?: number } = {}): Promise<{ id: string; created: boolean }> {

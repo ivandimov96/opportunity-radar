@@ -43,7 +43,7 @@ export default async function SearchDetail({ params, searchParams }: { params: P
         crumbs={[{ href: "/searches", label: "Discover" }, { label: search.name }]}
         title={
           <span className="flex items-center gap-2 flex-wrap">
-            {search.name} {search.isDemo && <Badge tone="demo">demo</Badge>}
+            {search.name}
           </span>
         }
         subtitle={
@@ -108,11 +108,6 @@ export default async function SearchDetail({ params, searchParams }: { params: P
           </Callout>
         </div>
       )}
-      {search.isDemo && (
-        <div className="mb-4">
-          <Callout tone="demo" title="Synthetic demo search">These businesses do not exist. Use them to explore the workflow.</Callout>
-        </div>
-      )}
 
       <div className="surface p-4 mb-5">
         <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
@@ -129,7 +124,7 @@ export default async function SearchDetail({ params, searchParams }: { params: P
         {active && <div className="relative h-1.5 rounded-full bg-surface-3 overflow-hidden mb-3 progress-indeterminate" />}
         <ol className="grid grid-cols-2 md:grid-cols-4 gap-3">
           {[
-            { label: "Found", n: data.counts.total, hint: st ? [st.candidates != null ? `${st.candidates} source records` : "", st.skippedClosed ? `${st.skippedClosed} closed` : "", st.skippedChains ? `${st.skippedChains} chains` : "", st.skippedNoWebsite ? `${st.skippedNoWebsite} no website` : "", st.skippedNoPhone ? `${st.skippedNoPhone} no phone` : "", st.skippedKnown ? `${st.skippedKnown} known` : "", data.counts.possibleDuplicates ? `${data.counts.possibleDuplicates} possible duplicates` : ""].filter(Boolean).join(" · ") : "" },
+            { label: "Found", n: data.counts.total, hint: st ? [st.candidates != null ? `${st.candidates} source records` : "", st.skippedClosed ? `${st.skippedClosed} closed` : "", st.skippedChains ? `${st.skippedChains} chains` : "", st.skippedNoWebsite ? `${st.skippedNoWebsite} no website` : "", st.skippedNoPhone ? `${st.skippedNoPhone} no phone` : "", st.skippedKnown ? `${st.skippedKnown} known` : "", st.skippedRemoved ? `${st.skippedRemoved} removed by you earlier` : "", data.counts.possibleDuplicates ? `${data.counts.possibleDuplicates} possible duplicates` : ""].filter(Boolean).join(" · ") : "" },
             { label: "Saved", n: data.counts.saved, hint: `${unsaved} not saved${st ? ` · ${st.created} new · ${st.merged} merged` : ""}` },
             { label: "Reachable", n: data.counts.withWebsite, hint: `${data.counts.withWebsite} website · ${data.counts.withPhone} phone` },
             { label: "Researched", n: businessStats.investigated, hint: `${businessStats.processing} in progress · ${businessStats.investigable} waiting · ${businessStats.withOpportunity} with opportunity${businessStats.failed ? ` · ${businessStats.failed} failed` : ""}` },

@@ -1,102 +1,228 @@
 # Architecture
 
-## Stack (chosen 2026-10-27)
-- **Next.js 16 (App Router) + React 19 + TypeScript**: one process serves UI, server
-  actions, route handlers and the embedded background worker.
-- **SQLite via libSQL (`@libsql/client`) + Drizzle ORM**: a local file in development,
-  a hosted Turso database in the cloud; same dialect, SQL migrations in `drizzle/`, FK
-  cascades, async queries.
-- **Zod 4** for env, input and model-output schemas.
-- **Anthropic SDK** with structured outputs (`messages.parse` + `zodOutputFormat`).
-- **cheerio** (HTML→text), **robots-parser**, **undici** (pinned-IP agent).
-- **Tailwind 4** for a compact, consistent UI; no component library.
-- **Vitest** (unit/integration), **Playwright** (browser journey).
+Current as of 2026-11-12. The code is the source of truth; this document says
+where things are and why they are shaped the way they are.
 
-## Components
+## The shape of it
+
+One Next.js process serves the pages and server actions and runs a background
+worker. All state is one SQLite file. Pages only read and enqueue; the worker
+does everything that takes time or costs money.
+
 ```
-src/app/            pages (server components), server actions, API routes
-src/components/     small UI primitives, nav, auto-refresh poller
-src/db/             schema, client (migrations on open), demo seed
-src/lib/config.ts   env parsing + integration status
-src/lib/discovery/  providers (google_maps active; overture, osm disabled; demo, csv), engine, normalize, dedupe
-src/lib/research/   fetcher (SSRF guard), robots, html extraction, signals, crawler
-src/lib/ai/         client (structured calls, spend guard), schemas, prompts,
-                    extract / analyze / outreach stages with validators, usage/cost
-src/lib/scoring/    deterministic explainable scoring
-src/lib/industries/ playbooks + opportunity taxonomy + capability fit
-src/lib/jobs/       SQLite job queue, handlers, worker loop
-src/lib/pipeline/   stages, prospects, activities, validation signals
-src/lib/queries.ts  read models for pages
-src/instrumentation.ts  starts the embedded worker
+src/app/            pages (server components), server actions (actions.ts), API routes
+src/components/     small UI primitives, navigation, the email editor, the activity timeline
+src/db/             schema.ts, client.ts (one connection, migrations on open)
+src/lib/config.ts   environment: keys, limits, the mailbox (secrets live only here)
+src/lib/settings.ts operator settings in the database: sender, sending limits, automation
+src/lib/discovery/  finding businesses: Google Maps via Serper, merge, dedupe, CSV import
+src/lib/research/   Firecrawl client, staged crawl, stored pages, deterministic fact detection
+src/lib/ai/         model client (spend guard, usage), research call, email writer and checker
+src/lib/scoring/    lead score, rule patterns, opportunity scores, qualification
+src/lib/outreach/   evidence pack, fixed email checks, review operations, batches, sending
+src/lib/email/      address checks, the do-not-contact list
+src/lib/mail/       the mailbox: SMTP + IMAP adapter, in-memory test mailbox, parsing, inbox sync
+src/lib/pipeline/   the ten stages, stage changes, activity log
+src/lib/jobs/       queue, worker, scheduler, job handlers
 ```
 
-## Data model (SQLite)
-- `searches` → `search_results` ↔ `businesses` ← `business_sources` (one business, many
-  provider records; dedupe by provider id → website domain → phone → name+city).
-- `businesses` carries the single investigation state: `status` (new | queued |
-  investigating | profiled | failed | no_website), `verdict` (opportunity |
-  no_opportunity | needs_ai), `summary`, best scores and `priority`.
-- `investigations` → `pages` (fetched text) and `facts` (one row per profile field:
-  `status` verified|not_found|unknown, value, evidence quote, source URL, method
-  detected|ai|manual|demo).
-- `opportunities` (category taxonomy, hypothesis, solution, cited fact keys,
-  assumptions, validation questions, effort, reusability, risks, AI ratings,
-  attractiveness + confidence + breakdown).
-- `outreach_drafts` (style, body, claims→fact keys, warnings, status, edited flag).
-- `prospects` (stage, priority, next action), `activities`, `validation_signals`.
-- `jobs` (type, payload, idempotency key, attempts, backoff, progress), `ai_usage`,
-  `geocode_cache`.
+## The flow
 
-## Processing lifecycle
-1. **Discover** (`discover_search` job): each selected provider returns candidates →
-   normalize → upsert/dedupe → `search_results`. With auto-investigate (default on)
-   every new business with a website is queued immediately.
-2. **Investigate** (`investigate_business` job, one per business): crawl the homepage
-   plus up to 4 key pages in parallel → deterministic detection fills precise profile
-   fields (tools from resource hosts, contact channels, booking method; explicit
-   `not_found` for tool fields that were checked) → if AI is enabled, ONE model call
-   returns the remaining profile facts (accepted only when the quote appears verbatim
-   in the cited page), documented workflows, up to 3 opportunity hypotheses citing
-   fact keys, and a verdict → scoring in code → business gets `status=profiled`,
-   `verdict` (opportunity | no_opportunity | needs_ai), summary, priority. Previous
-   facts/opportunities are replaced atomically.
-3. **Outreach** (`generate_outreach`): opportunity + profile facts + style → draft
-   whose claims map to fact keys; validator flags unsupported claims, placeholders,
-   statistics. Nothing is sent.
-4. **Pipeline**: `qualified` is set automatically when an opportunity is found;
-   contacted/in conversation/validated/won/lost are set by the operator (logging a call,
-   email or meeting marks the business contacted).
-5. **Patterns**: opportunities grouped by category × industry with the profile facts
-   they cite, common assumptions, effort mix, and real validation signals.
+1. **Find** (`discover_search`). Google Maps listings through Serper, cached per
+   page. Records are merged and deduplicated, scored from listing data alone
+   (website, phone, address, review count; chains are set aside) and saved.
+2. **Research** (`investigate_business`), one job per business:
+   - *Email probe.* The homepage and the contact page are read first (2 credits).
+     If neither publishes a business email, research stops there with the
+     outcome `no_contact`: the remaining pages and the model call would be spent
+     on a business nobody can write to. Adding an address by hand continues it.
+   - *Pages and public records.* Up to `RESEARCH_MAX_PAGES` pages (6) through
+     Firecrawl, kept with their HTML so later analysis is free; in parallel the
+     domain's registration year, mail servers and first archive capture. Pages
+     are chosen by what they are likely to show, one of each kind first:
+     services or products, quote/booking/order, "how it works", forms to
+     download, about, pricing, careers, FAQ. The kinds are not tied to one
+     industry (`KIND_PATTERNS` in `src/lib/research/html.ts`).
+   - *Detected facts.* Deterministic: tools from the resources a page loads,
+     structured data, contact channels, a customer portal link, online payments,
+     conservative text cues, and explicit `not_found` for things looked for.
+   - *What the model reads.* The pages in order of how much they explain the
+     business, not in crawl order: the contact page (already mined for the
+     address) and testimonials come last and short, so they never push a
+     services or quote page out of the 40,000-character budget.
+   - *One model call.* Returns profile facts, **observations** (free-form things a
+     page shows, each with a verbatim quote), and **one primary opportunity**
+     made of components that each cite evidence, plus at most two independent
+     secondary ideas, or `no_opportunity`. Fixed rule patterns that matched are
+     handed to the model as candidates; they are never kept beside its answer.
+     The model chooses from a catalogue of solution families (quotes, job
+     tracking, planning deliveries, stock, customer self-service, paperwork,
+     connecting tools, reporting, AI help and others; `SOLUTION_GUIDE`) and
+     labels each idea with its kind: improves something they offer, new for
+     their customers, or a tool for the team. The alternatives must differ from
+     the main idea, and the operator can choose one of them for the email
+     (`src/lib/outreach/ideas.ts`).
+     The prompt sets a bar for a proposal: a problem the owner would recognise,
+     tied to something on the pages; who uses it and what gets easier; a first
+     version small enough for one developer in a few weeks; working with what
+     they already have; never a category ("a portal", "a CRM"). It also returns
+     the idea in plain words (`sales_angle`), which is what the email is built on.
+   - *Validation in code.* A fact or observation is dropped unless its quote is
+     verbatim on the cited page. A component that cites nothing established is
+     dropped; an opportunity with no established evidence is dropped; the model's
+     "no" is final.
+   - *Scores and qualification.* Attractiveness and confidence are computed in
+     code and stay separate. `qualify()` then gives one outcome, stored in
+     `businesses.verdict` with its reasons: `qualified`, `needs_review`,
+     `not_a_fit`, `insufficient_evidence` (or `no_contact` from the probe).
+     Things not found on a website never count as evidence that qualifies.
+   - Without a model, rule patterns are grouped into one idea in code and the
+     business always lands in `needs_review`.
+3. **Write** (`generate_outreach`), automatically for a qualified business with a
+   usable address:
+   - An **evidence pack** is built: verified facts and observations with the
+     business's own words. Measurements, registry dates and contact details are
+     left out. Things not seen on the site are listed separately and may only be
+     raised as questions.
+   - The writer produces subject, body and the list of statements it makes about
+     the business with the evidence for each. The email is a short, friendly
+     note (70 to 120 words): something specific it noticed, one line on who is
+     writing, the idea in everyday words with at most one example, and an easy
+     invitation to a short call or a reply. The parts of the solution are given
+     to the writer as background only; it is told not to list them.
+   - **Fixed checks** read the text: length, stock phrases, placeholders,
+     statements of absence, numbers and product names that are not in the
+     evidence, links, a missing invitation, a subject or opening repeated within
+     the batch.
+   - An **independent claim check** (a second call that did not write the email)
+     lists every statement about the business and marks it supported, phrased as
+     a question, or unsupported.
+   - Any failure triggers one rewrite with the problems named. The result is
+     `ready`, or `needs_review` with the reasons. The signature, postal address
+     and opt-out line are appended by code from Settings, never by the model.
+4. **Review and send.** Under Outreach the operator reads, edits (the fixed
+   checks run again on the edit), approves or excludes. **Send approved emails**
+   shows a summary computed by the same function that then queues: recipients are
+   checked again (valid address, allowed country, not on the do-not-contact list,
+   never emailed before, no duplicate in the batch), each email gets its
+   Message-ID and a send time (paced, inside the sending hours, within the daily
+   cap), and one `send_email` job per email is queued.
+5. **Replies** (`sync_mailbox`, `process_reply`). The inbox is read every few
+   minutes while sent mail is waiting for an answer. Only messages that belong to
+   an email sent from here are stored: a reply in the thread, a message from an
+   address that was written to, or a bounce naming the email. A person's reply
+   moves the business to "Replied" and withdraws a pending follow-up. An opt-out
+   is recognised by a fixed rule and suppresses the address at once. Other
+   replies are classified by the model (the original text is kept; the label can
+   be corrected) with a suggested answer that is never sent by the app.
+6. **Follow-up.** After the configured working days without an answer the
+   scheduler drafts one follow-up in the same thread. It waits for approval like
+   any other email.
 
-## AI design
-- Two model calls per business at most (investigate, outreach), each with a code-level
-  validator; no agent loop. Prompts are stable strings (prompt-cached system blocks); all
-  volatile content goes in the user message inside `<website_content>` tags with an
-  explicit untrusted-data notice.
-- Model/effort per stage via env (`AI_INVESTIGATE_*`, `AI_OUTREACH_*`); default
-  `claude-opus-5-5`, medium effort for investigation.
-- Spend guard: every call records token usage and estimated cost; work stops at
-  `AI_SPEND_LIMIT_USD`. `refusal` and `max_tokens` stop reasons are explicit errors.
-- Failure handling: AI errors mark the stage failed for that business only; the job
-  queue retries transient errors with backoff and never retries configuration errors.
+## Data model
 
-## Security
-- SSRF: http/https only, default ports, hostname allow-rules, DNS resolution with
-  private/loopback/link-local/metadata rejection, **connection pinned to the validated
-  IP** (no rebinding), redirects re-validated hop by hop (max 5), size cap, timeout,
-  HTML/text only.
-- Crawl politeness: robots.txt, identifying User-Agent, delay between requests,
-  same-site only, ≤ N pages, duplicate-content skipping.
-- Prompt injection: website text is wrapped as data; outputs are schema-validated and
-  grounded; no tool use is exposed to the model.
-- Inputs: Zod validation on forms; CSV size limit; parameterized SQL via Drizzle.
-- Secrets: env only; never rendered. No auth yet (single-operator local tool); add
-  before any public deployment (see OPERATIONS.md).
+- `searches`, `search_candidates`, `search_results`, `businesses`,
+  `business_sources`: what was found and where it came from. A business carries
+  its research `status`, its `verdict` with `verdict_reasons`, its scores, the
+  email address with `email_source` (site | listing | manual), its source URL
+  and `email_status`.
+- `investigations` → `pages` (text and HTML of what was read), `facts` (one row
+  per profile field: verified with quote and URL, or not found), `observations`
+  (free-form, quote and URL), `opportunities` (`role` primary | secondary,
+  `components`, `why_relevant`, scores with their breakdown, prompt version).
+- `campaigns` (batches), `outreach_drafts` (one outbound email per business and
+  step: status, validation result, Message-ID, schedule, attempts, cost),
+  `email_events` (append-only: queued, attempt, sent, failed, bounced, reconciled,
+  unconfirmed, cancelled), `inbound_emails` (replies and bounces, with
+  classification), `suppressions` (do-not-contact).
+- `prospects` (pipeline stage, order on the board, next action), `activities`
+  (everything that happened to a business, including every stage change).
+- `jobs`, `ai_usage`, `provider_usage`, `provider_cache`, `settings` (operator
+  settings and small pieces of system state such as the inbox cursor).
+- Unused, kept because they may hold data: `source_places`, `source_cells`,
+  `place_cache`, `geocode_cache` (the last is still used for whole-city
+  boundaries), `validation_signals`.
+
+## Pipeline stages
+
+Discovered → Researching → Qualified → Ready to contact → Contacted → Replied →
+Meeting scheduled → Proposal sent → Won / Lost. The first four and "Contacted"
+and "Replied" are set by the system (research, qualification, a checked email,
+a send, a reply). The board shows Qualified onward as columns; Discovered and
+Researching can hold hundreds of businesses and are shown as counters. Every
+change, automatic or manual, is logged in `activities`.
+
+## Jobs
+
+| Job | Does | Notes |
+|---|---|---|
+| `discover_search` | One search | Unchanged core; retries on provider errors |
+| `investigate_business` | Research, consolidation, qualification | Queues the email when the outcome is `qualified` |
+| `generate_outreach` | Write + check one email (step 0 or the follow-up) | Replaces an earlier unsent email for the same step |
+| `send_email` | Send one email | One at a time; see below |
+| `sync_mailbox` | Read the inbox | One at a time; queued by the scheduler or "Check now" |
+| `process_reply` | Classify one reply, suggest an answer | Opt-outs need no model |
+
+The queue is the `jobs` table: claimed with one atomic statement, idempotency
+keys, exponential backoff for retryable errors, a time limit per type, recovery
+of jobs left running by a dead process. The **scheduler** runs inside the worker
+once a minute: inbox sync, follow-up drafts, emails for qualified businesses that
+have none, and research of saved businesses (best leads first, within the daily
+allowance, paused while enough emails wait for review). It never sends and never
+starts a search.
+
+## Sending exactly once
+
+- The Message-ID is assigned when the email is queued, before any attempt.
+- `queued → sending` is one `UPDATE … WHERE status = 'queued'`: only one run can
+  take an email.
+- A temporary refusal or a connection that never got as far as handing the
+  message over puts the email back to `queued` and the job retries with a pause.
+- A permanent refusal of the recipient is recorded as a bounce and the address
+  is suppressed.
+- If a run ends without a known outcome (crash, timeout, a connection that broke
+  mid-message), the next step is to look for the Message-ID in the Sent folder.
+  Found: it counts as sent. Not found, or no way to tell: the email is marked
+  failed with an explanation and the operator decides (Retry, or "It was sent").
+  The app never re-sends on a guess.
+- The recipient checks and the daily cap run once more inside the send job.
+
+## AI
+
+- Four kinds of call, all structured output validated in code: research, write,
+  check, read a reply. No agent loop, no tools given to the model.
+- Website and email text is wrapped as untrusted data in every prompt.
+- List sizes and rating ranges are stated in the schema descriptions and enforced
+  in code after the call, not as schema constraints: the API's schema format does
+  not carry them, and a strict local check would discard a paid answer.
+- Every call records tokens and estimated cost in `ai_usage`. Work stops for the
+  month when the monthly budget is reached. The cost of each email is stored on
+  it; the cost of each investigation on its row.
+- Prompt versions (`research-2`, `outreach-2`) are stored with each result.
+
+## Security and privacy
+
+- Secrets (model, search and crawl keys, the mailbox app password) are read from
+  the environment only; the Settings page shows status, never values.
+- No authentication: this is a local single-operator tool. Sending is disabled on
+  serverless deployments. Do not put a mailbox or model key on a public
+  deployment, and do not ship a database snapshot that contains `inbound_emails`
+  or `suppressions` to one.
+- Only replies to outreach are stored from the mailbox; nothing else is read into
+  the database.
+- Addresses are only ever those a business published on its own site, its
+  listing, or ones the operator typed. Nothing is guessed. Provenance is stored.
+- Crawling: robots.txt respected, URL guard, bot-protection pages recorded and
+  never bypassed.
 
 ## Trade-offs accepted
-- SQLite/libSQL + in-process (or post-response) worker: simplest possible ops; fine
-  for one operator and thousands of businesses, not for multi-tenant scale.
-- No vector clustering: category taxonomy grouping is sufficient and transparent at
-  this scale; revisit when categories prove too coarse.
-- Google Maps (SerpApi) provider not yet exercised live (key pending); OSM public instances unreliable under load (provider disabled).
+
+- SQLite with one connection and no multi-statement transactions: simple and
+  enough for one operator; atomic work is a single statement or a batch.
+- The worker lives in the app process: automation runs while the app runs.
+  Unattended operation needs an always-on host with authentication in front.
+- SMTP + IMAP with an app password instead of a provider API: works with almost
+  any mailbox with three lines of configuration; no delivery receipts beyond
+  "accepted" and bounces, and no open tracking (by choice).
+- The operator answers replies from their own mail program; the app suggests and
+  records, it does not compose. Replies the operator sends are not synced back.

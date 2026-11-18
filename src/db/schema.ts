@@ -23,7 +23,6 @@ export const searches = sqliteTable("searches", {
   status: text("status").notNull().default("queued"), // queued|running|done|failed
   stats: json<SearchStats>("stats"),
   error: text("error"),
-  isDemo: integer("is_demo", { mode: "boolean" }).notNull().default(false),
   createdAt: text("created_at").notNull().default(now()),
   updatedAt: text("updated_at").notNull().default(now()),
 });
@@ -42,6 +41,8 @@ export type SearchStats = {
   skippedNoPhone?: number;
   skippedChains?: number;
   skippedKnown?: number;
+  /** Found again after the operator removed them: left out. */
+  skippedRemoved?: number;
   skippedClosed?: number;
   queuedForInvestigation?: number;
   area?: string | null;
@@ -86,7 +87,8 @@ export type SearchFilters = {
 /**
  * status: the single investigation state.
  *   new | queued | investigating | profiled | failed | no_website
- * verdict (set when profiled): opportunity | no_opportunity | needs_ai
+ * verdict (set when profiled) is the qualification outcome:
+ *   qualified | needs_review | not_a_fit | insufficient_evidence | no_contact
  */
 export const businesses = sqliteTable(
   "businesses",
@@ -128,7 +130,18 @@ export const businesses = sqliteTable(
     operatingStatus: text("operating_status"),
     /** Brand name when the source marks the place as part of a brand (chains). */
     brand: text("brand"),
-    isDemo: integer("is_demo", { mode: "boolean" }).notNull().default(false),
+    /** Why the verdict is what it is, in plain sentences for the operator. */
+    verdictReasons: json<string[]>("verdict_reasons"),
+    /** Where the email came from: site (published on their own website) | listing | manual. Never guessed. */
+    emailSource: text("email_source"),
+    emailSourceUrl: text("email_source_url"),
+    /** valid (syntax + mail servers answer) | invalid | unchecked. */
+    emailStatus: text("email_status"),
+    /** A contact person named on the site, only when verified with a quote. */
+    contactName: text("contact_name"),
+    /** Listing rating and review count (Google Maps): a verifiable signal of activity and size. */
+    rating: real("rating"),
+    reviewCount: integer("review_count"),
     createdAt: text("created_at").notNull().default(now()),
     updatedAt: text("updated_at").notNull().default(now()),
   },
@@ -194,6 +207,8 @@ export const investigations = sqliteTable(
     verdictReason: text("verdict_reason"),
     warnings: json<string[]>("warnings"),
     notes: json<string[]>("notes"),
+    /** Version of the research prompt and output contract that produced this result. */
+    promptVersion: text("prompt_version"),
   },
   (t) => [index("investigations_business_idx").on(t.businessId)],
 );
@@ -244,10 +259,34 @@ export const facts = sqliteTable(
     value: text("value"),
     evidenceQuote: text("evidence_quote"),
     sourceUrl: text("source_url"),
-    method: text("method").notNull(), // detected | ai | manual | demo
+    method: text("method").notNull(), // detected | ai | manual
     createdAt: text("created_at").notNull().default(now()),
   },
   (t) => [uniqueIndex("facts_business_key").on(t.businessId, t.key)],
+);
+
+/**
+ * Free-form things the pages show that the fixed profile fields cannot hold: an
+ * offering, a described process, an online capability, or a limitation the page
+ * itself states. Each one carries a verbatim quote and its page (checked in code).
+ */
+export const observations = sqliteTable(
+  "observations",
+  {
+    id: text("id").primaryKey(),
+    businessId: text("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "cascade" }),
+    investigationId: text("investigation_id").references(() => investigations.id, { onDelete: "set null" }),
+    /** Short reference opportunities cite ("o1", "o2", ...), unique per business. */
+    ref: text("ref").notNull(),
+    kind: text("kind").notNull(), // offering | process | capability | limitation
+    statement: text("statement").notNull(),
+    evidenceQuote: text("evidence_quote").notNull(),
+    sourceUrl: text("source_url").notNull(),
+    createdAt: text("created_at").notNull().default(now()),
+  },
+  (t) => [uniqueIndex("observations_business_ref").on(t.businessId, t.ref)],
 );
 
 export const opportunities = sqliteTable(
@@ -273,13 +312,22 @@ export const opportunities = sqliteTable(
     reusability: text("reusability").notNull(),
     risks: json<string[]>("risks").notNull(),
     salesAngle: text("sales_angle"),
-    aiRatings: json<{ value: number; feasibility: number; evidenceStrength: number; buyingReadiness: number }>("ai_ratings"),
+    aiRatings: json<{ value: number; feasibility: number; evidenceStrength: number; buyingReadiness?: number }>("ai_ratings"),
     attractivenessScore: integer("attractiveness_score").notNull(),
     confidenceScore: integer("confidence_score").notNull(),
     scoreBreakdown: json<ScoreBreakdown>("score_breakdown").notNull(),
     rank: integer("rank").notNull().default(1),
-    /** rules = deterministic pattern from verified facts/gaps; ai = model hypothesis (fact-cited); demo. */
+    /** rules = deterministic pattern from verified facts/gaps; ai = model hypothesis (fact-cited). */
     source: text("source").notNull().default("ai"),
+    /** primary = the one consolidated opportunity outreach is built on; secondary = independent idea kept internally. */
+    role: text("role").notNull().default("secondary"),
+    /** Parts of the consolidated solution, each with the fact keys / observation refs that motivate it. */
+    components: json<{ name: string; description: string; evidence: string[] }[]>("components"),
+    /** Why this solution fits this specific business. */
+    whyRelevant: text("why_relevant"),
+    /** existing | new_for_customers | internal (see SOLUTION_SCOPES); null on ideas from before this was recorded. */
+    scope: text("scope"),
+    promptVersion: text("prompt_version"),
     createdAt: text("created_at").notNull().default(now()),
   },
   (t) => [index("opportunities_business_idx").on(t.businessId), index("opportunities_category_idx").on(t.category)],
@@ -292,6 +340,32 @@ export type ScoreBreakdown = {
 };
 
 // ----------------------------------------------------------------- outreach
+/** A batch of outreach emails reviewed and sent together. One is open at a time; sending closes it. */
+export const campaigns = sqliteTable("campaigns", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  status: text("status").notNull().default("open"), // open | sending | sent
+  createdAt: text("created_at").notNull().default(now()),
+  sentAt: text("sent_at"),
+});
+
+export type DraftIssue = { severity: "block" | "warn"; code: string; message: string };
+/** Result of the quality checks on one email: fixed checks in code plus the independent claim check. */
+export type DraftValidation = {
+  passed: boolean;
+  issues: DraftIssue[];
+  /** Every statement about the recipient the checker found, and whether the evidence supports it. */
+  statements?: { text: string; verdict: "supported" | "hypothesis" | "unsupported"; evidence: string[] }[];
+  checkedBy?: string | null;
+  checkedAt: string;
+  /** The operator approved the email although a check failed. */
+  overridden?: boolean;
+};
+
+/**
+ * One outbound email per business and step (0 = first email, 1 = follow-up).
+ * status: needs_review | ready | approved | excluded | queued | sending | sent | failed | bounced | archived
+ */
 export const outreachDrafts = sqliteTable(
   "outreach_drafts",
   {
@@ -310,21 +384,133 @@ export const outreachDrafts = sqliteTable(
     status: text("status").notNull().default("draft"),
     editedByUser: integer("edited_by_user", { mode: "boolean" }).notNull().default(false),
     model: text("model"),
+    campaignId: text("campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
+    /** 0 = first email, 1 = follow-up in the same thread. */
+    step: integer("step").notNull().default(0),
+    validation: json<DraftValidation>("validation"),
+    costUsd: real("cost_usd").notNull().default(0),
+    promptVersion: text("prompt_version"),
+    /** RFC Message-ID assigned before the first send attempt: the anchor for "never send twice" and for matching replies. */
+    messageId: text("message_id"),
+    /** Message-ID of the email this one continues (a follow-up threads under the first email). */
+    inReplyTo: text("in_reply_to"),
+    scheduledAt: text("scheduled_at"),
+    sentAt: text("sent_at"),
+    attempts: integer("attempts").notNull().default(0),
+    lastError: text("last_error"),
     createdAt: text("created_at").notNull().default(now()),
     updatedAt: text("updated_at").notNull().default(now()),
   },
-  (t) => [index("outreach_business_idx").on(t.businessId)],
+  (t) => [index("outreach_business_idx").on(t.businessId), index("outreach_status_idx").on(t.status), uniqueIndex("outreach_message_id_idx").on(t.messageId)],
 );
+
+/** Append-only log of everything that happens to an outbound email: queued, attempt, sent, failed, bounced, reconciled, cancelled. */
+export const emailEvents = sqliteTable(
+  "email_events",
+  {
+    id: text("id").primaryKey(),
+    draftId: text("draft_id")
+      .notNull()
+      .references(() => outreachDrafts.id, { onDelete: "cascade" }),
+    businessId: text("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "cascade" }),
+    type: text("type").notNull(),
+    detail: json<Record<string, unknown>>("detail"),
+    createdAt: text("created_at").notNull().default(now()),
+  },
+  (t) => [index("email_events_draft_idx").on(t.draftId)],
+);
+
+/**
+ * Messages received in reply to outreach (and bounces). Only messages matched
+ * to an email this app sent are stored; the rest of the mailbox is never kept.
+ * The original text is preserved; the classification can be corrected.
+ */
+export const inboundEmails = sqliteTable(
+  "inbound_emails",
+  {
+    id: text("id").primaryKey(),
+    businessId: text("business_id")
+      .notNull()
+      .references(() => businesses.id, { onDelete: "cascade" }),
+    draftId: text("draft_id").references(() => outreachDrafts.id, { onDelete: "set null" }),
+    messageId: text("message_id").notNull(),
+    inReplyTo: text("in_reply_to"),
+    fromEmail: text("from_email"),
+    fromName: text("from_name"),
+    subject: text("subject"),
+    bodyText: text("body_text").notNull(),
+    receivedAt: text("received_at").notNull(),
+    kind: text("kind").notNull().default("reply"), // reply | auto_reply | bounce
+    /** thread = reply headers point at our email; address = same sender address only (probable). */
+    matchedBy: text("matched_by").notNull().default("thread"),
+    /** interested | wants_meeting | wants_info | not_now | declined | unsubscribe | wrong_person | other */
+    classification: text("classification"),
+    classificationConfidence: real("classification_confidence"),
+    classificationSummary: text("classification_summary"),
+    classifiedBy: text("classified_by"), // model name | rules | operator
+    suggestedReply: text("suggested_reply"),
+    handledAt: text("handled_at"),
+    createdAt: text("created_at").notNull().default(now()),
+  },
+  (t) => [uniqueIndex("inbound_message_id_idx").on(t.messageId), index("inbound_business_idx").on(t.businessId)],
+);
+
+/** Addresses and domains that must never be emailed: opt-outs, hard bounces, manual entries. Checked before every send. */
+/**
+ * Businesses the operator removed for good. The business row and its research
+ * are gone; this is what is remembered so a later search or import leaves the
+ * same business out (matched by listing id, website, phone, or name and city).
+ */
+export const removedBusinesses = sqliteTable(
+  "removed_businesses",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    nameNormalized: text("name_normalized").notNull(),
+    city: text("city"),
+    websiteDomain: text("website_domain"),
+    phone: text("phone"),
+    /** "provider:providerId" of every listing the business was found through. */
+    sourceIds: json<string[]>("source_ids"),
+    /** The research outcome at the time it was removed, for the record. */
+    verdict: text("verdict"),
+    note: text("note"),
+    removedAt: text("removed_at").notNull().default(now()),
+  },
+  (t) => [index("removed_domain_idx").on(t.websiteDomain), index("removed_name_idx").on(t.nameNormalized)],
+);
+
+export const suppressions = sqliteTable("suppressions", {
+  id: text("id").primaryKey(),
+  /** Lower-case email address, or a bare domain. */
+  value: text("value").notNull().unique(),
+  kind: text("kind").notNull().default("email"), // email | domain
+  reason: text("reason").notNull(), // unsubscribed | bounced | declined | manual
+  note: text("note"),
+  createdAt: text("created_at").notNull().default(now()),
+});
+
+/** Operator settings (sender identity, limits, automation). Secrets stay in the environment, never here. */
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(),
+  value: json<unknown>("value"),
+  updatedAt: text("updated_at").notNull().default(now()),
+});
 
 // ----------------------------------------------------------------- pipeline
 export const prospects = sqliteTable("prospects", {
   businessId: text("business_id")
     .primaryKey()
     .references(() => businesses.id, { onDelete: "cascade" }),
+  /** Legacy column default; the code always sets the stage explicitly (see src/lib/pipeline/stages.ts). */
   stage: text("stage").notNull().default("lead"),
   priority: text("priority").notNull().default("normal"),
   nextAction: text("next_action"),
   nextActionAt: text("next_action_at"),
+  /** Manual order inside a pipeline column (lower first); null = not ordered yet, falls back to priority. */
+  position: integer("position"),
   updatedAt: text("updated_at").notNull().default(now()),
 });
 
@@ -516,7 +702,7 @@ export const placeCache = sqliteTable("place_cache", {
   createdAt: text("created_at").notNull().default(now()),
 });
 
-/** Cached responses of metered providers (SerpApi pages), keyed by the exact request. */
+/** Cached responses of metered providers (Serper pages), keyed by the exact request. */
 export const providerCache = sqliteTable("provider_cache", {
   key: text("key").primaryKey(),
   provider: text("provider").notNull(),

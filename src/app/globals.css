@@ -24,8 +24,6 @@
   --bad-soft: #fdecec;
   --info: #0369a1;
   --info-soft: #e6f4fb;
-  --demo: #7c3aed;
-  --demo-soft: #f3ecff;
   --ring: rgba(79, 70, 229, 0.35);
   --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.05);
   --shadow-md: 0 4px 14px -4px rgba(16, 24, 40, 0.12), 0 1px 2px rgba(16, 24, 40, 0.05);
@@ -57,8 +55,6 @@
     --bad-soft: #3b1515;
     --info: #38bdf8;
     --info-soft: #0f2a3a;
-    --demo: #c4b5fd;
-    --demo-soft: #2b2145;
     --ring: rgba(129, 140, 248, 0.4);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
     --shadow-md: 0 4px 14px -4px rgba(0, 0, 0, 0.6);
@@ -89,8 +85,6 @@
   --color-bad-soft: var(--bad-soft);
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
-  --color-demo: var(--demo);
-  --color-demo-soft: var(--demo-soft);
   --font-sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
@@ -135,6 +129,9 @@ details > summary {
 }
 details > summary::-webkit-details-marker {
   display: none;
+}
+details[open] > summary .chevron {
+  transform: rotate(90deg);
 }
 
 }
@@ -320,6 +317,65 @@ details > summary::-webkit-details-marker {
   border-color: transparent;
   color: var(--accent-text);
 }
+.btn-danger-solid {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+}
+.btn-danger-solid:hover {
+  background: var(--bad);
+  border-color: var(--bad);
+  color: #fff;
+  filter: brightness(0.92);
+}
+/* The one dialog of the product (see components/confirm-button.tsx). */
+.modal {
+  width: min(28rem, calc(100vw - 2rem));
+  padding: 0;
+  margin: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 20px 50px -12px rgba(16, 24, 40, 0.35);
+  text-align: left;
+  white-space: normal;
+  font-size: 0.875rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  cursor: default;
+}
+.modal::backdrop {
+  background: rgba(15, 18, 24, 0.5);
+  backdrop-filter: blur(2px);
+}
+.modal[open] {
+  animation: modal-in 0.14s ease-out;
+}
+.modal-body {
+  display: flex;
+  gap: 0.85rem;
+  align-items: flex-start;
+  padding: 1.25rem 1.25rem 1rem;
+}
+.modal-icon {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.85rem 1.25rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 0 0 var(--radius) var(--radius);
+}
 .kbd {
   font-family: var(--font-mono);
   font-size: 0.7rem;
@@ -344,6 +400,12 @@ mark.claim-unsupported {
 }
 .prose-sm p + p {
   margin-top: 0.6rem;
+}
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
 }
 .scrollbar-thin::-webkit-scrollbar {
   height: 8px;
@@ -374,4 +436,8 @@ mark.claim-unsupported {
   background: var(--accent);
   border-radius: inherit;
   animation: progress-slide 1.4s ease-in-out infinite;
+}
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.98); }
+  to { opacity: 1; transform: none; }
 }

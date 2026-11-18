@@ -1,50 +1,41 @@
 "use client";
 /**
- * App shell: a fixed sidebar on wide screens (brand, two navigation groups,
- * status footer) and a top bar with a slide-in drawer on
- * narrow screens. Navigation items are single-line; the hint is the tooltip.
+ * App shell: a fixed sidebar on wide screens (brand, five destinations with a
+ * count of what is waiting in each, one line of setup status) and a top bar
+ * with a slide-in drawer on narrow screens.
  */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Icon, type IconName } from "./icons";
 
-const groups: { title: string; items: { href: string; label: string; icon: IconName; hint: string }[] }[] = [
-  {
-    title: "Workflow",
-    items: [
-      { href: "/", label: "Overview", icon: "home", hint: "What needs attention" },
-      { href: "/searches", label: "Discover", icon: "search", hint: "Find businesses" },
-      { href: "/businesses", label: "Businesses", icon: "building", hint: "Research & opportunities" },
-      { href: "/pipeline", label: "Pipeline", icon: "kanban", hint: "Conversations & outcomes" },
-      { href: "/patterns", label: "Patterns", icon: "layers", hint: "Recurring opportunities" },
-    ],
-  },
-  {
-    title: "System",
-    items: [
-      { href: "/import", label: "Import CSV", icon: "upload", hint: "Bring your own list" },
-      { href: "/system", label: "System", icon: "bolt", hint: "Jobs & source health" },
-      { href: "/settings", label: "Settings", icon: "settings", hint: "Integrations & limits" },
-    ],
-  },
-];
-
-function StatusRow({ ok, label, detail }: { ok: boolean; label: string; detail: string }) {
-  return (
-    <span className="flex items-center gap-2 min-w-0" title={detail}>
-      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ok ? "bg-ok" : "bg-warn"}`} />
-      <span className="text-ink-muted truncate">{label}</span>
-      <span className={`ml-auto text-[10px] uppercase tracking-wide shrink-0 ${ok ? "text-ok" : "text-warn"}`}>{ok ? "live" : "key"}</span>
-    </span>
-  );
+export interface NavCounts {
+  /** Businesses the research could not decide on. */
+  businesses: number;
+  /** Emails waiting for a decision: to review, failed a check, or not sent. */
+  outreach: number;
+  /** Replies nobody has answered yet. */
+  pipeline: number;
+}
+/** One thing that still has to be set up before the whole flow works, and where to do it. */
+export interface SetupGap {
+  label: string;
+  href: string;
 }
 
-export function AppShell({ aiEnabled, sourceEnabled = false, researchEnabled = false, serverless = false, children }: { aiEnabled: boolean; sourceEnabled?: boolean; researchEnabled?: boolean; serverless?: boolean; children: React.ReactNode }) {
+const items: { href: string; label: string; icon: IconName; hint: string; also?: string[]; count?: keyof NavCounts; countHint?: string }[] = [
+  { href: "/", label: "Dashboard", icon: "home", hint: "What is waiting for you and where everything stands" },
+  { href: "/businesses", label: "Businesses", icon: "building", hint: "Everything found and researched", also: ["/searches", "/import"], count: "businesses", countHint: "to judge yourself" },
+  { href: "/outreach", label: "Outreach", icon: "mail", hint: "Review, approve and send emails", count: "outreach", countHint: "waiting for you" },
+  { href: "/pipeline", label: "Pipeline", icon: "kanban", hint: "Where each conversation stands", count: "pipeline", countHint: "to answer" },
+  { href: "/settings", label: "Settings", icon: "settings", hint: "Sender, mailbox, limits and automation", also: ["/system"] },
+];
+
+export function AppShell({ counts, setup = [], serverless = false, children }: { counts?: NavCounts; setup?: SetupGap[]; serverless?: boolean; children: React.ReactNode }) {
   const path = usePathname();
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [path]);
-  const isActive = (href: string) => (href === "/" ? path === "/" : path.startsWith(href));
+  const isActive = (href: string, also: string[] = []) => (href === "/" ? path === "/" : [href, ...also].some((h) => path.startsWith(h)));
 
   const sidebar = (
     <div className="flex flex-col h-full">
@@ -59,32 +50,39 @@ export function AppShell({ aiEnabled, sourceEnabled = false, researchEnabled = f
           <Icon name="x" />
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-6">
-        {groups.map((g) => (
-          <div key={g.title}>
-            <div className="px-2.5 text-[10.5px] font-semibold uppercase tracking-[0.08em] text-ink-faint mb-1.5">{g.title}</div>
-            <div className="space-y-0.5">
-              {g.items.map((it) => {
-                const active = isActive(it.href);
-                return (
-                  <Link key={it.href} href={it.href} title={it.hint} aria-current={active ? "page" : undefined} className={`relative flex items-center gap-2.5 rounded-lg px-2.5 h-9 text-[13.5px] hover:no-underline transition-colors ${active ? "bg-accent-soft text-accent-text font-medium" : "text-ink-muted hover:bg-surface-3 hover:text-ink"}`}>
-                    {active && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r bg-accent" aria-hidden />}
-                    <Icon name={it.icon} className={`w-4 h-4 shrink-0 ${active ? "text-accent" : "text-ink-faint"}`} />
-                    <span className="truncate">{it.label}</span>
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        ))}
+      <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-0.5">
+        {items.map((it) => {
+          const active = isActive(it.href, it.also);
+          const n = it.count ? (counts?.[it.count] ?? 0) : 0;
+          return (
+            <Link key={it.href} href={it.href} title={it.hint} aria-current={active ? "page" : undefined} className={`relative flex items-center gap-2.5 rounded-lg px-2.5 h-9 text-[13.5px] hover:no-underline transition-colors ${active ? "bg-accent-soft text-accent-text font-medium" : "text-ink-muted hover:bg-surface-3 hover:text-ink"}`}>
+              {active && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r bg-accent" aria-hidden />}
+              <Icon name={it.icon} className={`w-4 h-4 shrink-0 ${active ? "text-accent" : "text-ink-faint"}`} />
+              <span className="truncate">{it.label}</span>
+              {n > 0 && (
+                <span className="ml-auto rounded-full bg-accent text-accent-fg text-[11px] font-semibold leading-none px-1.5 py-1 tabular-nums" title={`${n} ${it.countHint}`} aria-hidden>
+                  {n}
+                </span>
+              )}
+            </Link>
+          );
+        })}
       </nav>
-      <div className="px-4 py-3 border-t border-line text-xs space-y-1.5">
-        <StatusRow ok={sourceEnabled} label="Google Maps source" detail={sourceEnabled ? "SerpApi key set" : "Set SERPAPI_API_KEY in .env"} />
-        <StatusRow ok={researchEnabled} label="Website research" detail={researchEnabled ? "Firecrawl key set" : "Set FIRECRAWL_API_KEY in .env"} />
-        <StatusRow ok={aiEnabled} label="AI analysis" detail={aiEnabled ? "Model key set" : "Set a model key in .env; rules apply meanwhile"} />
-        <Link href="/settings" className="block pt-1 text-[11px] text-ink-faint hover:text-ink hover:no-underline">
-          Configuration → Settings
-        </Link>
+      <div className="px-4 py-3 border-t border-line text-xs">
+        {setup.length === 0 ? (
+          <span className="flex items-center gap-2 text-ink-muted">
+            <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
+            Everything is connected
+          </span>
+        ) : (
+          <Link href={setup[0].href} className="flex items-start gap-2 text-ink-muted hover:text-ink hover:no-underline" title={setup.map((g) => g.label).join(", ")}>
+            <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0 mt-1.5" />
+            <span className="min-w-0">
+              <span className="block text-warn font-medium">{setup.length} thing{setup.length === 1 ? "" : "s"} to set up</span>
+              <span className="block truncate">{setup.map((g) => g.label).join(", ")}</span>
+            </span>
+          </Link>
+        )}
       </div>
     </div>
   );
@@ -111,8 +109,8 @@ export function AppShell({ aiEnabled, sourceEnabled = false, researchEnabled = f
       )}
       <main className="flex-1 min-w-0">
         {serverless && (
-          <div className="bg-demo-soft text-demo text-xs px-4 py-2 text-center border-b border-demo/20">
-            <strong>Preview deployment without persistent storage.</strong> Each server instance keeps its own temporary database, so changes may not survive the next request. Demo data is re-seeded automatically.{" "}
+          <div className="bg-warn-soft text-warn text-xs px-4 py-2 text-center border-b border-warn/20">
+            <strong>Preview deployment without persistent storage.</strong> Each server instance keeps its own temporary database, so changes may not survive the next request. Connect a Turso database to keep data.{" "}
             <Link href="/settings" className="underline">
               Details
             </Link>

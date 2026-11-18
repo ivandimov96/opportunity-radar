@@ -3,7 +3,7 @@ import { scoreOpportunity, type ScoreInput } from "@/lib/scoring/score";
 
 const base: ScoreInput = {
   category: "estimate_quote_followup",
-  aiRatings: { value: 4, feasibility: 4, evidenceStrength: 4, buyingReadiness: 3 },
+  aiRatings: { value: 4, feasibility: 4, evidenceStrength: 4 },
   implementationEffort: "medium",
   reusability: "high",
   supportingVerifiedCount: 3,
@@ -11,7 +11,6 @@ const base: ScoreInput = {
   totalVerifiedFacts: 10,
   pagesResearched: 4,
   assumptionCount: 2,
-  contact: { email: true, phone: true, contactForm: true },
 };
 
 describe("scoreOpportunity", () => {
@@ -37,8 +36,9 @@ describe("scoreOpportunity", () => {
     expect(gaps.confidence).toBeLessThanOrEqual(45);
     expect(gaps.confidence).toBeGreaterThan(scoreOpportunity({ ...base, supportingVerifiedCount: 0, supportingGapCount: 0 }).confidence);
   });
-  it("rewards reachability and reusability", () => {
-    expect(scoreOpportunity({ ...base, contact: { email: false, phone: false, contactForm: false } }).attractiveness).toBeLessThan(scoreOpportunity(base).attractiveness);
+  it("rewards reusability and value; whether the business can be reached is not part of the score", () => {
     expect(scoreOpportunity({ ...base, reusability: "low" }).attractiveness).toBeLessThan(scoreOpportunity(base).attractiveness);
+    expect(scoreOpportunity({ ...base, aiRatings: { ...base.aiRatings, value: 2 } }).attractiveness).toBeLessThan(scoreOpportunity(base).attractiveness);
+    expect(scoreOpportunity(base).breakdown.attractiveness.map((f) => f.factor)).toEqual(["Potential value", "Feasibility", "Reusability", "Capability fit"]);
   });
 });

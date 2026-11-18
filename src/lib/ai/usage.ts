@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { gte, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { aiUsage } from "@/db/schema";
 import { newId } from "@/lib/ids";
@@ -38,6 +38,17 @@ export async function totalSpendUsd(): Promise<number> {
   return row?.total ?? 0;
 }
 
+/** Start of the current calendar month (UTC), the period budgets are counted over. */
+export function monthStartIso(d = new Date()): string {
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1)).toISOString();
+}
+
+export async function monthSpendUsd(): Promise<number> {
+  const db = await getDb();
+  const row = await db.select({ total: sql<number>`coalesce(sum(${aiUsage.estimatedCostUsd}), 0)` }).from(aiUsage).where(gte(aiUsage.createdAt, monthStartIso())).get();
+  return row?.total ?? 0;
+}
+
 export async function usageSummary() {
   const db = await getDb();
   const byStage = await db
@@ -45,5 +56,5 @@ export async function usageSummary() {
     .from(aiUsage)
     .groupBy(aiUsage.stage)
     .all();
-  return { total: await totalSpendUsd(), byStage };
+  return { total: await totalSpendUsd(), month: await monthSpendUsd(), byStage };
 }

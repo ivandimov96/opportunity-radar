@@ -26,6 +26,8 @@ export const FACT_FIELDS = [
   { key: "warranty", label: "Warranty", group: "business", hint: "Warranty terms on work (e.g. 24 month / 24k miles)." },
   { key: "reviews_on_site", label: "Reviews / testimonials shown", group: "business", hint: "Whether the site shows reviews or testimonials.", options: ["yes", "no"] },
   { key: "multi_location", label: "Multiple locations", group: "business", hint: "Whether the site presents several locations (a location finder, 'our locations').", options: ["yes", "no"] },
+  { key: "service_area", label: "Service area", group: "business", hint: "Cities, regions or radius the site says they serve." },
+  { key: "team_size", label: "Team / size", group: "business", hint: "Employees, technicians, trucks or locations, only when the site states a number." },
   { key: "booking_method", label: "How customers book", group: "operations", hint: "The primary way the site asks customers to book or request service.", options: ["phone_only", "walk_in", "online_form", "online_booking", "mixed"] },
   { key: "estimate_policy", label: "Estimates & pricing", group: "operations", hint: "Free estimates, quote on request, published prices, diagnostic fee.", options: ["free_estimates", "quote_on_request", "prices_published", "diagnostic_fee"] },
   { key: "customer_updates", label: "Customer status updates", group: "operations", hint: "How customers are kept informed: text/SMS, email, phone, digital inspection reports." },
@@ -35,6 +37,8 @@ export const FACT_FIELDS = [
   { key: "promotions", label: "Promotions & coupons", group: "operations", hint: "Coupons, specials, discounts advertised." },
   { key: "conveniences", label: "Customer conveniences", group: "operations", hint: "Shuttle, loaner, pickup/delivery, after-hours drop-off, waiting room." },
   { key: "hours", label: "Business hours", group: "operations", hint: "Opening hours as listed." },
+  { key: "customer_portal", label: "Customer portal / login", group: "operations", hint: "Customer login, client portal, account area, order or project tracking offered on the site.", options: ["yes", "no"] },
+  { key: "online_payments", label: "Online payments", group: "operations", hint: "Whether customers can pay a bill or invoice online, and the provider if named." },
   { key: "website_platform", label: "Website platform", group: "tools", hint: "CMS or site builder detected (Wix, WordPress, Squarespace, GoDaddy...)." },
   { key: "booking_tool", label: "Online booking tool", group: "tools", hint: "Third-party scheduling/booking widget detected." },
   { key: "shop_management_tool", label: "Shop / field management software", group: "tools", hint: "Vertical software detected or named (Tekmetric, Shopmonkey, ServiceTitan, Jobber...)." },
@@ -42,6 +46,7 @@ export const FACT_FIELDS = [
   { key: "review_tool", label: "Reviews / reputation tool", group: "tools", hint: "Podium, Birdeye, NiceJob, review widgets." },
   { key: "marketing_tool", label: "Marketing / CRM tool", group: "tools", hint: "HubSpot, Kukui, Steer, email marketing providers." },
   { key: "financing_provider", label: "Financing provider", group: "tools", hint: "Wisetack, Sunbit, Synchrony, Affirm..." },
+  { key: "contact_person", label: "Contact person", group: "contact", hint: "Owner or main contact named on the site, as 'First Last, role'. Only when the site names them." },
   { key: "email", label: "Public email", group: "contact", hint: "A public email address on the site." },
   { key: "phone", label: "Public phone", group: "contact", hint: "A public phone number on the site." },
   { key: "contact_form", label: "Contact / request form", group: "contact", hint: "Whether the site has a contact or request form.", options: ["yes", "no"] },
@@ -67,7 +72,7 @@ export const FACT_GROUPS: { key: FactGroup; label: string }[] = [
 ];
 
 /** Keys where "not found" is itself a useful signal (a gap hypothesis base). */
-export const GAP_KEYS: FactKey[] = ["booking_tool", "chat_tool", "customer_updates", "maintenance_plans", "fleet_program", "financing", "review_tool", "contact_form", "email", "reviews_on_site", "estimate_policy"];
+export const GAP_KEYS: FactKey[] = ["booking_tool", "chat_tool", "customer_updates", "maintenance_plans", "fleet_program", "financing", "review_tool", "contact_form", "email", "reviews_on_site", "estimate_policy", "customer_portal", "online_payments"];
 
 export function factLabel(key: string) {
   return FACT_BY_KEY[key]?.label ?? key.replace(/_/g, " ");

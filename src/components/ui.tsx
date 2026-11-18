@@ -2,7 +2,7 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { Icon, type IconName } from "./icons";
 
-export type Tone = "neutral" | "ok" | "warn" | "bad" | "accent" | "demo" | "info";
+export type Tone = "neutral" | "ok" | "warn" | "bad" | "accent" | "info";
 
 const toneClass: Record<Tone, string> = {
   neutral: "bg-surface-3 text-ink-muted",
@@ -10,10 +10,9 @@ const toneClass: Record<Tone, string> = {
   warn: "bg-warn-soft text-warn",
   bad: "bg-bad-soft text-bad",
   accent: "bg-accent-soft text-accent-text",
-  demo: "bg-demo-soft text-demo",
   info: "bg-info-soft text-info",
 };
-const dotClass: Record<Tone, string> = { neutral: "bg-ink-faint", ok: "bg-ok", warn: "bg-warn", bad: "bg-bad", accent: "bg-accent", demo: "bg-demo", info: "bg-info" };
+const dotClass: Record<Tone, string> = { neutral: "bg-ink-faint", ok: "bg-ok", warn: "bg-warn", bad: "bg-bad", accent: "bg-accent", info: "bg-info" };
 
 export function Badge({ tone = "neutral", children, title, dot, className = "" }: { tone?: Tone; children: ReactNode; title?: string; dot?: boolean; className?: string }) {
   return (
@@ -33,14 +32,19 @@ const STATUS: Record<string, { tone: Tone; label: string; pulse?: boolean }> = {
   done: { tone: "ok", label: "Done" },
   failed: { tone: "bad", label: "Failed" },
   no_website: { tone: "warn", label: "No website" },
-  opportunity: { tone: "ok", label: "Opportunity" },
-  no_opportunity: { tone: "warn", label: "No opportunity" },
-  needs_ai: { tone: "warn", label: "AI pending" },
-  cancelled: { tone: "neutral", label: "Cancelled" },
-  draft: { tone: "accent", label: "Draft" },
-  approved: { tone: "ok", label: "Approved" },
-  archived: { tone: "neutral", label: "Archived" },
+  qualified: { tone: "ok", label: "Qualified" },
+  needs_review: { tone: "warn", label: "Needs review" },
+  not_a_fit: { tone: "neutral", label: "Not a fit" },
+  no_contact: { tone: "warn", label: "No public email" },
   insufficient_evidence: { tone: "warn", label: "Insufficient evidence" },
+  cancelled: { tone: "neutral", label: "Cancelled" },
+  ready: { tone: "accent", label: "Ready to review" },
+  approved: { tone: "ok", label: "Approved" },
+  excluded: { tone: "neutral", label: "Excluded" },
+  sending: { tone: "accent", label: "Sending", pulse: true },
+  sent: { tone: "ok", label: "Sent" },
+  bounced: { tone: "bad", label: "Bounced" },
+  archived: { tone: "neutral", label: "Replaced" },
 };
 export function StatusPill({ status, label }: { status: string; label?: string }) {
   const m = STATUS[status] ?? { tone: "neutral" as Tone, label: status.replace(/_/g, " ") };
@@ -92,6 +96,27 @@ export function Stat({ label, value, hint, href, icon, tone = "neutral" }: { lab
   );
 }
 
+/** A budget line: how much of a limit is used, with a bar that turns amber and red as it fills. */
+export function Meter({ label, used, limit, unit, hint }: { label: string; used: number; limit: number; unit: string; hint?: ReactNode }) {
+  const pct = Math.min(100, (used / Math.max(limit, 0.0001)) * 100);
+  const money = unit === "$";
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 text-sm">
+        <span className="text-ink-muted truncate">{label}</span>
+        <span className="tabular-nums shrink-0">
+          <strong>{money ? `$${used.toFixed(2)}` : used.toLocaleString()}</strong>
+          <span className="text-ink-faint">{money ? ` / $${limit}` : ` / ${limit.toLocaleString()} ${unit}`}</span>
+        </span>
+      </div>
+      <div className="h-1.5 rounded-full bg-surface-3 mt-1.5 overflow-hidden" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={limit} aria-valuenow={Math.min(used, limit)}>
+        <div className={`h-full rounded-full ${pct > 85 ? "bg-bad" : pct > 60 ? "bg-warn" : "bg-ok"}`} style={{ width: `${used > 0 ? Math.max(2, pct) : 0}%` }} />
+      </div>
+      {hint && <div className="text-[11px] text-ink-faint mt-1">{hint}</div>}
+    </div>
+  );
+}
+
 export function scoreTone(value: number): Tone {
   return value >= 70 ? "ok" : value >= 40 ? "accent" : "warn";
 }
@@ -103,7 +128,7 @@ export function ScoreRing({ value, label, size = 56, tone, sub }: { value: numbe
   const r = (size - stroke) / 2;
   const c = 2 * Math.PI * r;
   const pct = Math.max(0, Math.min(100, value));
-  const color = { ok: "var(--ok)", accent: "var(--accent)", warn: "var(--warn)", bad: "var(--bad)", neutral: "var(--text-faint)", demo: "var(--demo)", info: "var(--info)" }[t];
+  const color = { ok: "var(--ok)", accent: "var(--accent)", warn: "var(--warn)", bad: "var(--bad)", neutral: "var(--text-faint)", info: "var(--info)" }[t];
   return (
     <div className="inline-flex flex-col items-center gap-1" title={label ? `${label}: ${value}/100` : `${value}/100`}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="block">
@@ -203,7 +228,7 @@ export function EmptyState({ icon = "info", title, description, action, compact 
 }
 
 export function Callout({ tone = "info", title, children, icon, action }: { tone?: Tone; title?: ReactNode; children?: ReactNode; icon?: IconName; action?: ReactNode }) {
-  const border: Record<Tone, string> = { neutral: "border-line", ok: "border-ok/30", warn: "border-warn/30", bad: "border-bad/30", accent: "border-accent/30", demo: "border-demo/30", info: "border-info/30" };
+  const border: Record<Tone, string> = { neutral: "border-line", ok: "border-ok/30", warn: "border-warn/30", bad: "border-bad/30", accent: "border-accent/30", info: "border-info/30" };
   return (
     <div className={`rounded-[var(--radius)] border ${border[tone]} ${toneClass[tone]} px-4 py-3 flex gap-3 items-start`}>
       <Icon name={icon ?? (tone === "bad" || tone === "warn" ? "alert" : tone === "ok" ? "check" : "info")} className="w-4 h-4 mt-0.5 shrink-0" />
@@ -249,9 +274,11 @@ export function PageHeader({ eyebrow, title, subtitle, actions, crumbs }: { eyeb
 
 export function Tabs({ items }: { items: { href: string; label: string; count?: number | null; active: boolean }[] }) {
   return (
-    <nav className="flex gap-1 border-b border-line mb-5 overflow-x-auto scrollbar-thin -mx-1 px-1">
+    // The bottom line is an inset shadow, not a border: the active tab's underline sits on it without sticking out
+    // of the box, so the bar never grows a scrollbar of its own. On a narrow screen it can still be swiped sideways.
+    <nav className="flex gap-1 mb-5 overflow-x-auto overflow-y-hidden no-scrollbar shadow-[inset_0_-1px_0_var(--border)]">
       {items.map((t) => (
-        <Link key={t.href} href={t.href} className={`px-3 py-2.5 text-sm whitespace-nowrap hover:no-underline border-b-2 -mb-px transition-colors ${t.active ? "border-accent text-ink font-semibold" : "border-transparent text-ink-muted hover:text-ink hover:border-line-strong"}`}>
+        <Link key={t.href} href={t.href} className={`px-3 py-2.5 text-sm whitespace-nowrap hover:no-underline border-b-2 transition-colors ${t.active ? "border-accent text-ink font-semibold" : "border-transparent text-ink-muted hover:text-ink hover:border-line-strong"}`}>
           {t.label}
           {t.count != null && <span className={`ml-1.5 text-[11px] rounded-full px-1.5 py-0.5 ${t.active ? "bg-accent-soft text-accent-text" : "bg-surface-3 text-ink-faint"}`}>{t.count}</span>}
         </Link>

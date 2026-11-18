@@ -1,5 +1,5 @@
-/** Live check: re-investigate every real (non-demo, non-chain) business and print a compact report. */
-import { and, eq, ne } from "drizzle-orm";
+/** Live check: re-investigate every non-chain business and print a compact report. */
+import { eq, ne } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { businesses, facts, investigations, opportunities } from "@/db/schema";
 import { drainQueue } from "@/lib/jobs/worker";
@@ -7,7 +7,7 @@ import { enqueueInvestigation } from "@/lib/jobs/handlers";
 
 const db = await getDb();
 const only = process.argv[2];
-const rows = (await db.select().from(businesses).where(and(eq(businesses.isDemo, false), ne(businesses.kind, "chain"))).all()).filter((b) => !only || b.name.toLowerCase().includes(only.toLowerCase()));
+const rows = (await db.select().from(businesses).where(ne(businesses.kind, "chain")).all()).filter((b) => !only || b.name.toLowerCase().includes(only.toLowerCase()));
 for (const b of rows) await enqueueInvestigation(b.id);
 console.log(`Queued ${rows.length} investigation(s)…`);
 const t0 = Date.now();

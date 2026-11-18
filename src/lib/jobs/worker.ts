@@ -7,19 +7,29 @@ import { getConfig } from "@/lib/config";
 import { ProviderError } from "@/lib/discovery/types";
 import { claimNextJob, completeJob, failJob, recoverStaleJobs, updateJobProgress, type JobRow, type JobType } from "./queue";
 import os from "node:os";
-import { handleDiscoverSearch, handleGenerateOutreach, handleInvestigateBusiness, markJobTimedOut, NonRetryableError, type ProgressFn } from "./handlers";
+import { handleDiscoverSearch, handleGenerateOutreach, handleInvestigateBusiness, markJobTimedOut, NonRetryableError, RetryableError, type ProgressFn } from "./handlers";
+import { handleProcessReply, handleSendEmail, handleSyncMailbox } from "./mail-handlers";
+import { runScheduler } from "./scheduler";
 
 const HANDLERS: Record<JobType, (job: JobRow, progress: ProgressFn, signal: AbortSignal) => Promise<void>> = {
   discover_search: handleDiscoverSearch,
   investigate_business: handleInvestigateBusiness,
   generate_outreach: handleGenerateOutreach,
+  send_email: handleSendEmail,
+  sync_mailbox: handleSyncMailbox,
+  process_reply: handleProcessReply,
 };
 
-type WorkerState = { running: boolean; active: number; timer?: NodeJS.Timeout; id: string; stop?: () => void };
+/** Jobs that must not run side by side: one email leaves at a time, one inbox read at a time. */
+const TYPE_LIMITS: Partial<Record<JobType, number>> = { send_email: 1, sync_mailbox: 1 };
+const SCHEDULER_EVERY_MS = 60_000;
+
+type WorkerState = { running: boolean; active: number; byType: Record<string, number>; lastSchedule: number; timer?: NodeJS.Timeout; id: string; stop?: () => void };
 const g = globalThis as unknown as { __radarWorker?: WorkerState };
 
 function isRetryable(err: unknown) {
   if (err instanceof NonRetryableError) return false;
+  if (err instanceof RetryableError) return true;
   if (err instanceof ProviderError) return err.retryable;
   const msg = err instanceof Error ? err.message : "";
   return /timeout|ECONN|ENOTFOUND|EAI_AGAIN|429|5\d\d|overloaded|rate limit|fetch failed/i.test(msg);
@@ -61,7 +71,7 @@ export async function runJob(job: JobRow) {
 }
 
 /** Upper bound per job type; a hung external call must not hold a worker slot forever. */
-export const JOB_TIMEOUT_MS: Record<string, number> = { discover_search: 20 * 60_000, investigate_business: 10 * 60_000, generate_outreach: 5 * 60_000 };
+export const JOB_TIMEOUT_MS: Record<string, number> = { discover_search: 20 * 60_000, investigate_business: 10 * 60_000, generate_outreach: 6 * 60_000, send_email: 2 * 60_000, sync_mailbox: 5 * 60_000, process_reply: 3 * 60_000 };
 export class JobTimeoutError extends Error {}
 
 /** Message plus the cause chain (database driver errors hide the real reason in `cause`). */
@@ -90,7 +100,7 @@ export async function drainQueue(types: JobType[] = Object.keys(HANDLERS) as Job
 export function startWorker(opts: { pollMs?: number } = {}) {
   if (g.__radarWorker?.running) return g.__radarWorker;
   const cfg = getConfig();
-  const state: WorkerState = { running: true, active: 0, id: `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}@${os.hostname()}` };
+  const state: WorkerState = { running: true, active: 0, byType: {}, lastSchedule: 0, id: `worker-${process.pid}-${Math.random().toString(36).slice(2, 8)}@${os.hostname()}` };
   g.__radarWorker = state;
   const maxConcurrent = cfg.RESEARCH_CONCURRENCY;
   void recoverStaleJobs().catch((err) => console.warn("[worker] stale recovery failed", err));
@@ -99,12 +109,19 @@ export function startWorker(opts: { pollMs?: number } = {}) {
     if (!state.running || ticking) return;
     ticking = true;
     try {
+      if (Date.now() - state.lastSchedule >= SCHEDULER_EVERY_MS) {
+        state.lastSchedule = Date.now();
+        await runScheduler().catch((err) => console.warn("[worker] scheduler failed", err));
+      }
       while (state.active < maxConcurrent) {
-        const job = await claimNextJob(state.id, Object.keys(HANDLERS) as JobType[]);
+        const types = (Object.keys(HANDLERS) as JobType[]).filter((t) => (state.byType[t] ?? 0) < (TYPE_LIMITS[t] ?? Number.POSITIVE_INFINITY));
+        const job = await claimNextJob(state.id, types);
         if (!job) break;
         state.active++;
+        state.byType[job.type] = (state.byType[job.type] ?? 0) + 1;
         void runJob(job).finally(() => {
           state.active--;
+          state.byType[job.type] = Math.max(0, (state.byType[job.type] ?? 1) - 1);
         });
       }
     } catch (err) {

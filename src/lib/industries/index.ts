@@ -43,20 +43,29 @@ export interface IndustryPlaybook {
 /** Chains and franchises common to every industry: dealerships, big-box, national brands. */
 export const GENERIC_CHAIN_RE = /\b(walmart|costco|sam'?s club|sears|home depot|lowe'?s|best buy|u-?haul|enterprise rent-?a-?car|hertz|avis|budget (rent-?a-?car|truck)|carmax|carvana|autonation|(toyota|honda|ford|chevrolet|chevy|nissan|hyundai|kia|subaru|mazda|volkswagen|vw|bmw|mercedes(-benz)?|audi|lexus|acura|infiniti|jeep|dodge|ram|chrysler|gmc|buick|cadillac|volvo|tesla|porsche|land rover|jaguar|mini|genesis|mitsubishi|lincoln) (of|dealer|dealership)|dealership)\b/i;
 
+/**
+ * What the consultancy offers, as families of solutions. The keys are stored
+ * with every idea; the labels are what the operator reads. The range is
+ * deliberately wider than "make the website form better": most of what a
+ * company needs is behind the scenes.
+ */
 export const OPPORTUNITY_CATEGORIES = {
-  online_booking: "Online scheduling / booking",
-  estimate_quote_followup: "Estimate & quote follow-up",
-  reminder_automation: "Maintenance / recall reminders",
-  customer_communication: "Customer status updates & two-way messaging",
-  review_reputation: "Review requests & reputation",
-  website_conversion: "Website lead capture & conversion",
-  customer_portal: "Customer / fleet portal",
-  invoicing_payments: "Invoicing, deposits & payments",
-  inventory_parts: "Inventory, parts & supplier workflows",
-  reporting_analytics: "Reporting & operational analytics",
-  integration_automation: "Integrating & automating existing tools",
-  document_processing: "Document & form processing",
-  fleet_b2b: "Fleet / B2B account management",
+  estimate_quote_followup: "Quotes: complete requests, tracking and follow-up",
+  online_booking: "Booking and ordering online",
+  job_tracking: "Job and production tracking",
+  scheduling_dispatch: "Planning people, visits and deliveries",
+  inventory_parts: "Stock, catalogue and suppliers",
+  customer_portal: "Customer self-service",
+  customer_communication: "Status updates for customers",
+  document_processing: "Paperwork, forms and certificates",
+  invoicing_payments: "Invoicing and payments",
+  integration_automation: "Connecting the tools already in use",
+  reporting_analytics: "Numbers at a glance",
+  ai_assistant: "AI help with routine questions and documents",
+  reminder_automation: "Reminders and repeat business",
+  review_reputation: "Review requests",
+  website_conversion: "Turning website visitors into enquiries",
+  fleet_b2b: "Accounts for business customers",
   other: "Other",
 } as const;
 
@@ -66,6 +75,9 @@ export const OPPORTUNITY_CATEGORY_KEYS = Object.keys(OPPORTUNITY_CATEGORIES) as 
 /** Categories we (the operator) are well positioned to build. Affects "fit" in scoring. */
 export const OUR_CAPABILITIES: Record<OpportunityCategory, number> = {
   online_booking: 0.9,
+  job_tracking: 1,
+  scheduling_dispatch: 0.9,
+  ai_assistant: 0.8,
   estimate_quote_followup: 1,
   reminder_automation: 1,
   customer_communication: 0.9,
@@ -80,6 +92,46 @@ export const OUR_CAPABILITIES: Record<OpportunityCategory, number> = {
   fleet_b2b: 0.8,
   other: 0.5,
 };
+
+/**
+ * The catalogue the research chooses from: for each family, what it does in
+ * plain words and what on a website (or in what a business plainly does)
+ * suggests it could matter. Signals are reasons to consider a family, never
+ * proof that the business needs it.
+ */
+export const SOLUTION_GUIDE: Record<Exclude<OpportunityCategory, "other">, { what: string; signals: string }> = {
+  estimate_quote_followup: { what: "Quote requests arrive with everything needed to price them; sent quotes are tracked and followed up.", signals: "work priced per job, free quotes or estimates, a general enquiry form, drawings or measurements needed" },
+  online_booking: { what: "Customers book a visit, a slot or a repeat order themselves.", signals: "appointments, call-to-book, standard services or products ordered again and again" },
+  job_tracking: { what: "One place that shows every job from order to delivery: what stage it is at, who has it, what is due.", signals: "bespoke or multi-step work, design then manufacture then installation, several trades or departments, lead times that depend on workload" },
+  scheduling_dispatch: { what: "Planning who goes where and when: crews, site visits, deliveries, routes, proof of delivery.", signals: "own delivery vehicles, on-site work, installation or maintenance teams, a service area, emergency call-outs" },
+  inventory_parts: { what: "Stock that is up to date and visible: what is on the shelf, an online list or catalogue, reorder alerts, supplier orders.", signals: "stockholding, a product range, offcuts or clearance items, parts, materials bought to order" },
+  customer_portal: { what: "A place where their customers see their own orders, job status, documents and history, and reorder.", signals: "repeat or account customers, trade accounts, contracts, documents sent to customers" },
+  customer_communication: { what: "Customers are told automatically where their job or order stands.", signals: "customers told to call for progress, lead times, collection or delivery, work that takes days or weeks" },
+  document_processing: { what: "Paperwork produced or read automatically: job sheets, certificates, compliance records, forms, data pulled out of PDFs and emails.", signals: "certifications, test or mill certificates, forms to download or print, regulated work, inspections, drawings" },
+  invoicing_payments: { what: "Invoices, deposits and payments raised from the job itself and chased automatically.", signals: "deposits, account terms, payment on collection, credit accounts" },
+  integration_automation: { what: "The tools they already use pass data to each other, so nothing is typed twice.", signals: "several named tools, an online shop next to an accounts package, spreadsheets, a website form that ends in an inbox" },
+  reporting_analytics: { what: "The numbers that matter on one screen: quotes won and lost, margin per job, late deliveries, workload ahead.", signals: "many jobs or orders, several services or sites, growth, capacity or lead-time pressure" },
+  ai_assistant: { what: "Routine questions answered and routine documents drafted from their own material, with a person checking the result.", signals: "the same questions asked again and again (an FAQ), a large product or technical range, enquiries by email, quotes written from descriptions or drawings" },
+  reminder_automation: { what: "Customers are reminded when something is due again.", signals: "servicing, inspections, renewals, maintenance contracts, consumables" },
+  review_reputation: { what: "Happy customers are asked for a review at the right moment.", signals: "testimonials shown, consumer customers, local reputation matters" },
+  website_conversion: { what: "Visitors to the website find it easy to get in touch and are answered quickly.", signals: "phone-only contact, no enquiry form, a site that is hard to use on a phone" },
+  fleet_b2b: { what: "Business customers get their own terms, approvals, statements and order history.", signals: "trade or fleet accounts, commercial customers, account application forms" },
+};
+
+/**
+ * Where an idea sits. "existing" improves something the business already
+ * offers online; "new_for_customers" adds something its customers could use;
+ * "internal" is a tool for the people who work there. A website shows the
+ * first, hints at the second and rarely shows the third, so the last two are
+ * always put to the owner as a question.
+ */
+export const SOLUTION_SCOPES = {
+  existing: "Improves something they already offer",
+  new_for_customers: "Something new for their customers",
+  internal: "A tool for the team",
+} as const;
+export type SolutionScope = keyof typeof SOLUTION_SCOPES;
+export const SOLUTION_SCOPE_KEYS = Object.keys(SOLUTION_SCOPES) as SolutionScope[];
 
 const PLAYBOOKS: Record<string, IndustryPlaybook> = {
   auto_repair: {

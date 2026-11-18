@@ -1,15 +1,19 @@
 /**
- * One model call per business: profile facts (quote-grounded) + opportunity
- * hypotheses (fact-cited) + verdict. Everything is validated in code:
- * quotes must appear verbatim in the cited page, cited fact keys must exist.
+ * One model call per business: profile facts (quote-grounded), observations
+ * (quote-grounded), and ONE consolidated opportunity with its components (plus
+ * at most two independent secondary ideas), or an explicit "no opportunity".
+ * Everything is validated in code: quotes must appear verbatim in the cited
+ * page, cited evidence must exist, unsupported parts are dropped, and the
+ * model's "no" is final.
  */
 import { getConfig } from "@/lib/config";
-import { getPlaybook, OPPORTUNITY_CATEGORY_KEYS, type OpportunityCategory } from "@/lib/industries";
+import { getPlaybook, OPPORTUNITY_CATEGORY_KEYS, SOLUTION_SCOPE_KEYS, type OpportunityCategory } from "@/lib/industries";
 import { FACT_BY_KEY, type FactKey } from "@/lib/profile/fields";
 import type { DetectedFact } from "@/lib/research/detect";
+import { MODEL_CHARS_BY_KIND, MODEL_READ_ORDER, type PageKind } from "@/lib/research/html";
 import { callStructured } from "./client";
 import { investigateSystem } from "./prompts";
-import { InvestigationSchema, type Investigation } from "./schemas";
+import { InvestigationSchema, type Investigation, type ObservationKind, type OpportunityOutput } from "./schemas";
 
 export interface PageForModel {
   url: string;
@@ -31,29 +35,49 @@ export function quoteAppearsIn(quote: string, text: string): boolean {
 }
 
 const MAX_CHARS_PER_PAGE = 9_000;
-const MAX_TOTAL_CHARS = 32_000;
+const MAX_TOTAL_CHARS = 40_000;
 
-export function buildInvestigationInput(business: { name: string; city?: string | null; region?: string | null; category?: string | null }, pages: PageForModel[], detected: DetectedFact[]): string {
+/** Pages in the order the model should read them (see MODEL_READ_ORDER); crawl order is kept within a kind. */
+export function orderForModel<T extends { kind: string }>(pages: T[]): T[] {
+  const rank = (k: string) => {
+    const i = MODEL_READ_ORDER.indexOf(k as PageKind);
+    return i === -1 ? MODEL_READ_ORDER.indexOf("other") : i;
+  };
+  return pages.map((p, i) => ({ p, i })).sort((a, b) => rank(a.p.kind) - rank(b.p.kind) || a.i - b.i).map((x) => x.p);
+}
+
+export interface InvestigationContext {
+  /** What the listing says about activity and size (rating, review count), when known. */
+  listing?: string | null;
+  /** Fixed rule patterns that fired on the detected facts: candidates for the model to weigh, not conclusions. */
+  patterns?: { category: string; title: string; keys: string[] }[];
+}
+
+export function buildInvestigationInput(business: { name: string; city?: string | null; region?: string | null; category?: string | null }, pages: PageForModel[], detected: DetectedFact[], ctx: InvestigationContext = {}): string {
   let budget = MAX_TOTAL_CHARS;
   const blocks: string[] = [];
-  for (const p of pages) {
+  for (const p of orderForModel(pages)) {
     if (budget <= 0) break;
-    const text = p.text.slice(0, Math.min(MAX_CHARS_PER_PAGE, budget));
+    const text = p.text.slice(0, Math.min(MODEL_CHARS_BY_KIND[p.kind as PageKind] ?? MAX_CHARS_PER_PAGE, budget));
     budget -= text.length;
     blocks.push(`<page url="${p.url}" kind="${p.kind}" title="${(p.title ?? "").replace(/"/g, "'")}">\n${text}\n</page>`);
   }
   const det = detected.map((d) => `- ${d.key}: ${d.status}${d.value ? ` = ${d.value}` : ""}${d.evidenceQuote ? ` (${d.evidenceQuote})` : ""}`).join("\n");
+  const patterns = (ctx.patterns ?? []).map((p) => `- [${p.category}] ${p.title} (rests on: ${p.keys.join(", ") || "nothing"})`).join("\n");
   return `Business: ${business.name}${business.category ? ` (${business.category})` : ""}
-Location: ${[business.city, business.region].filter(Boolean).join(", ") || "unknown"}
+Location: ${[business.city, business.region].filter(Boolean).join(", ") || "unknown"}${ctx.listing ? `\nListing: ${ctx.listing}` : ""}
 
 Already detected from page resources (treat as given):
 ${det || "(none)"}
+
+Patterns a fixed rule set matched on those facts (candidates to weigh, not conclusions; ignore any that do not hold up):
+${patterns || "(none)"}
 
 <website_content>
 ${blocks.join("\n\n")}
 </website_content>
 
-Produce the profile facts, workflows, opportunities and verdict.`;
+Produce the profile facts, the observations, and the consolidated opportunity or a no_opportunity verdict.`;
 }
 
 export interface ValidatedFact {
@@ -64,11 +88,20 @@ export interface ValidatedFact {
   sourceUrl: string | null;
 }
 
+export interface ValidatedObservation {
+  ref: string;
+  kind: ObservationKind;
+  statement: string;
+  evidenceQuote: string;
+  sourceUrl: string;
+}
+
 export interface InvestigationOutcome {
   facts: ValidatedFact[];
+  observations: ValidatedObservation[];
   rejected: { key: string; reason: string }[];
-  workflows: { name: string; factKeys: string[] }[];
-  opportunities: Investigation["opportunities"];
+  /** Primary first (at most one), then at most two secondary. */
+  opportunities: OpportunityOutput[];
   verdict: "opportunity" | "no_opportunity";
   verdictReason: string;
   warnings: string[];
@@ -76,18 +109,23 @@ export interface InvestigationOutcome {
   costUsd: number;
 }
 
-export async function investigateWithModel(business: { id: string; name: string; industry: string; city?: string | null; region?: string | null; category?: string | null }, pages: PageForModel[], detected: DetectedFact[]): Promise<InvestigationOutcome> {
+export async function investigateWithModel(business: { id: string; name: string; industry: string; city?: string | null; region?: string | null; category?: string | null }, pages: PageForModel[], detected: DetectedFact[], ctx: InvestigationContext = {}): Promise<InvestigationOutcome> {
   const cfg = getConfig();
   const result = await callStructured({
     stage: "investigate",
     effort: cfg.AI_INVESTIGATE_EFFORT,
     system: investigateSystem(getPlaybook(business.industry)),
-    user: buildInvestigationInput(business, pages, detected),
+    user: buildInvestigationInput(business, pages, detected, ctx),
     schema: InvestigationSchema,
     businessId: business.id,
   });
   return { ...validateInvestigation(result.data, pages, detected), model: result.model, costUsd: result.usage.costUsd };
 }
+
+export const MAX_OBSERVATIONS = 10;
+export const MAX_SECONDARY = 2;
+export const MIN_VERIFIED_FOR_ALTERNATIVE = 2;
+export const MAX_COMPONENTS = 5;
 
 export function validateInvestigation(data: Investigation, pages: PageForModel[], detected: DetectedFact[]): Omit<InvestigationOutcome, "model" | "costUsd"> {
   const byUrl = new Map(pages.map((p) => [norm(p.url), p]));
@@ -130,33 +168,87 @@ export function validateInvestigation(data: Investigation, pages: PageForModel[]
     facts.set(key, { key, status: "verified", value: value || null, evidenceQuote: f.evidence_quote.trim().slice(0, 400), sourceUrl: page.url });
   }
 
-  const known = new Set([...facts.keys()]);
-  const verifiedKeys = new Set([...facts.values()].filter((f) => f.status === "verified").map((f) => f.key));
-  const filterKeys = (keys: string[], ctx: string) => {
-    const ok = keys.filter((k) => known.has(k as FactKey));
-    if (ok.length !== keys.length) warnings.push(`${ctx}: dropped ${keys.length - ok.length} citation(s) to fact keys that were not established`);
-    return [...new Set(ok)];
-  };
-  const opportunities = data.opportunities.map((o, i) => {
+  // Observations: same rule as facts. No verbatim quote on the cited page, no observation.
+  const observations: ValidatedObservation[] = [];
+  const refs = new Set<string>();
+  for (const o of data.observations ?? []) {
+    const ref = o.ref.trim().toLowerCase();
+    const label = `observation ${ref || "?"}`;
+    if (!/^o\d{1,2}$/.test(ref) || refs.has(ref)) {
+      rejected.push({ key: label, reason: "missing or duplicate ref" });
+      continue;
+    }
+    const page = byUrl.get(norm(o.source_url));
+    if (!page) {
+      rejected.push({ key: label, reason: `source_url not among fetched pages (${o.source_url})` });
+      continue;
+    }
+    if (!quoteAppearsIn(o.evidence_quote, page.text)) {
+      rejected.push({ key: label, reason: "evidence quote not found verbatim in the cited page" });
+      continue;
+    }
+    if (!o.statement.trim()) continue;
+    if (observations.length >= MAX_OBSERVATIONS) break;
+    refs.add(ref);
+    observations.push({ ref, kind: o.kind, statement: o.statement.trim().slice(0, 300), evidenceQuote: o.evidence_quote.trim().slice(0, 400), sourceUrl: page.url });
+  }
+
+  const known = new Set<string>([...facts.keys(), ...refs]);
+  const verified = new Set<string>([...[...facts.values()].filter((f) => f.status === "verified").map((f) => f.key as string), ...refs]);
+  const keep = (keys: string[]) => [...new Set(keys.map((k) => k.trim()).filter((k) => known.has(k)))];
+
+  let opportunities: OpportunityOutput[] = [];
+  data.opportunities.forEach((o, i) => {
+    const n = i + 1;
     const category = (OPPORTUNITY_CATEGORY_KEYS as string[]).includes(o.category) ? (o.category as OpportunityCategory) : "other";
-    if (category !== o.category) warnings.push(`Opportunity ${i + 1}: unknown category "${o.category}" mapped to "other"`);
-    const supporting = filterKeys(o.supporting_fact_keys, `Opportunity ${i + 1}`);
-    let ratings = o.ratings;
-    if (!supporting.some((k) => verifiedKeys.has(k as FactKey)) && ratings.evidence_strength > 2) {
-      warnings.push(`Opportunity ${i + 1}: evidence_strength lowered to 2 because no verified fact supports it`);
+    if (category !== o.category) warnings.push(`Opportunity ${n}: unknown category "${o.category}" mapped to "other"`);
+    // A component stays only when it cites something that was actually established.
+    const components = (o.components ?? []).map((c) => ({ name: c.name.trim(), description: c.description.trim(), evidence: keep(c.evidence) })).filter((c) => c.name && c.evidence.length).slice(0, MAX_COMPONENTS);
+    const droppedComponents = (o.components ?? []).length - components.length;
+    if (droppedComponents) warnings.push(`Opportunity ${n}: dropped ${droppedComponents} component(s) that cited no established evidence`);
+    const own = keep(o.supporting_fact_keys);
+    if (own.length !== new Set(o.supporting_fact_keys).size) warnings.push(`Opportunity ${n}: dropped ${new Set(o.supporting_fact_keys).size - own.length} citation(s) to evidence that was not established`);
+    const supporting = [...new Set([...own, ...components.flatMap((c) => c.evidence)])];
+    if (!supporting.length) {
+      warnings.push(`Opportunity ${n} ("${o.title}"): dropped, no established evidence supports it`);
+      return;
+    }
+    const clamp = (n: number) => Math.max(1, Math.min(5, Math.round(Number.isFinite(n) ? n : 3)));
+    let ratings = { value: clamp(o.ratings.value), feasibility: clamp(o.ratings.feasibility), evidence_strength: clamp(o.ratings.evidence_strength) };
+    if (!supporting.some((k) => verified.has(k)) && ratings.evidence_strength > 2) {
+      warnings.push(`Opportunity ${n}: evidence_strength lowered to 2 because nothing verified supports it`);
       ratings = { ...ratings, evidence_strength: 2 };
     }
-    return { ...o, category, supporting_fact_keys: supporting, ratings };
+    const scope = (SOLUTION_SCOPE_KEYS as string[]).includes(o.scope) ? o.scope : "existing";
+    opportunities.push({ ...o, category, scope, components, supporting_fact_keys: supporting, ratings });
   });
-  const workflows = data.workflows.map((w) => ({ name: w.name, factKeys: filterKeys(w.fact_keys, `Workflow "${w.name}"`) }));
+
+  // Exactly one primary: the first one marked so, or simply the first; the rest are secondary (at most two).
+  if (opportunities.length) {
+    const primaryIndex = Math.max(0, opportunities.findIndex((o) => o.role === "primary"));
+    const primary = { ...opportunities[primaryIndex], role: "primary" as const };
+    const verifiedCount = (o: OpportunityOutput) => o.supporting_fact_keys.filter((k) => verified.has(k)).length;
+    const others = opportunities.filter((_, i) => i !== primaryIndex);
+    // An alternative can be chosen for the email, so it needs verified ground of its own; the primary is judged by qualification.
+    const rest = others.filter((o) => verifiedCount(o) >= MIN_VERIFIED_FOR_ALTERNATIVE).map((o) => ({ ...o, role: "secondary" as const }));
+    if (rest.length < others.length) warnings.push(`Dropped ${others.length - rest.length} alternative idea(s) that rested on fewer than ${MIN_VERIFIED_FOR_ALTERNATIVE} verified facts`);
+    if (rest.length > MAX_SECONDARY) warnings.push(`Kept ${MAX_SECONDARY} of ${rest.length} secondary opportunities`);
+    opportunities = [primary, ...rest.slice(0, MAX_SECONDARY)];
+  }
+
   let verdict = data.verdict;
+  let verdictReason = data.verdict_reason;
+  if (verdict === "no_opportunity" && opportunities.length) {
+    // The model's "no" is final: leftovers it returned alongside it are not kept.
+    warnings.push(`Model returned ${opportunities.length} opportunity(ies) with a no_opportunity verdict; they were dropped`);
+    opportunities = [];
+  }
   if (!opportunities.length && verdict !== "no_opportunity") {
     verdict = "no_opportunity";
-    warnings.push("Model returned no opportunities; verdict set to no_opportunity");
+    if (data.opportunities.length) {
+      verdictReason = `The model's hypotheses cited no established evidence and were dropped. ${data.verdict_reason}`.trim();
+      warnings.push("Every model opportunity was dropped for lack of established evidence; verdict set to no_opportunity");
+    } else warnings.push("Model returned no opportunities; verdict set to no_opportunity");
   }
-  if (opportunities.length && verdict === "no_opportunity") {
-    warnings.push("Model returned opportunities with a no_opportunity verdict; opportunities kept, verdict set to opportunity");
-    verdict = "opportunity";
-  }
-  return { facts: [...facts.values()], rejected, workflows, opportunities, verdict, verdictReason: data.verdict_reason, warnings };
+  return { facts: [...facts.values()], observations, rejected, opportunities, verdict, verdictReason, warnings };
 }

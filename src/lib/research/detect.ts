@@ -90,6 +90,17 @@ export function isVendorEmail(email: string): boolean {
   return VENDOR_EMAIL_DOMAINS.test(email.split("@")[1] ?? "") || EMAIL_NOISE_RE.test(email);
 }
 
+/** A customer-facing login or portal link (staff, vendor and career logins excluded). */
+const PORTAL_TEXT_RE = /\b(client|customer|patient|member|owner|tenant|resident|partner|dealer)s?['’]?s?\s*(portal|log[\s-]?in|sign[\s-]?in|area|account|access)\b|\bmy account\b|(?<!employee |staff |vendor |career |careers )\bportal\b/i;
+const PORTAL_PATH_RE = /\/(portal|client-?(login|portal|area)|customer-?(login|portal|area)|patient-?portal|my-?account)(\/|$|\?)/i;
+const PAY_TEXT_RE = /\b(pay (online|now|my bill|your bill|a bill|an invoice|my invoice|your invoice|invoice)|online (bill )?pay(ment)?s?|make a payment|bill pay)\b/i;
+const PAY_HOSTS: [string, RegExp][] = [
+  ["Stripe", /(^|\.)stripe\.com$/],
+  ["PayPal", /(^|\.)paypal(objects)?\.com$/],
+  ["Authorize.net", /(^|\.)authorize\.net$/],
+  ["QuickBooks Payments", /(^|\.)(connect|quickbooks)\.intuit\.com$/],
+];
+
 const SOCIAL_RE = /(facebook|instagram|yelp|tiktok|youtube|linkedin|nextdoor)\.com\//i;
 const ONLINE_BOOKING_RE = /(book|schedule|request)( an| your| a)? (appointment|service|visit) online|online (booking|scheduling)|book online|schedule online/i;
 const CALL_TO_BOOK_RE = /call (us )?(today |now )?to (schedule|book|make an appointment)|schedule by phone|call for (an )?appointment|give us a call to (schedule|book)/i;
@@ -177,6 +188,22 @@ export function detectFacts(pages: { content: PageContent; url: string; kind: Pa
   const socials = [...new Set(socialLinks.filter((h) => SOCIAL_RE.test(h)).map((h) => h.replace(/\?.*$/, "")))].slice(0, 5);
   if (socials.length) set({ key: "social_profiles", status: "verified", value: socials.join(" "), evidenceQuote: socials.join(" "), sourceUrl: pages[0].url });
 
+  // 3b. Self-service: a customer login or portal link, and online payment (link text or a payment provider the page loads).
+  const pathOf = (href: string) => {
+    try {
+      return new URL(href).pathname;
+    } catch {
+      return "";
+    }
+  };
+  const allLinks = pages.flatMap((p) => p.content.links.map((l) => ({ ...l, url: p.url })));
+  const portal = allLinks.find((l) => PORTAL_TEXT_RE.test(l.text) || PORTAL_PATH_RE.test(pathOf(l.href)));
+  if (portal) set({ key: "customer_portal", status: "verified", value: "yes", evidenceQuote: `Link "${portal.text || pathOf(portal.href)}" (${portal.href})`, sourceUrl: portal.url });
+  const payLink = allLinks.find((l) => PAY_TEXT_RE.test(l.text));
+  const payHosts = pages.flatMap((p) => p.content.resourceHosts.flatMap((h) => PAY_HOSTS.filter(([, re]) => re.test(h)).map(([name]) => ({ name, host: h, url: p.url }))));
+  if (payLink) set({ key: "online_payments", status: "verified", value: payHosts.length ? `yes (${[...new Set(payHosts.map((x) => x.name))].join(", ")})` : "yes", evidenceQuote: `Link "${payLink.text}" (${payLink.href})`, sourceUrl: payLink.url });
+  else if (payHosts.length) set({ key: "online_payments", status: "verified", value: `yes (${[...new Set(payHosts.map((x) => x.name))].join(", ")})`, evidenceQuote: `Resource loaded from ${[...new Set(payHosts.map((x) => x.host))].join(", ")}`, sourceUrl: payHosts[0].url });
+
   // 4. Text cues (main content only; evidence is the matched sentence).
   const textHit = (re: RegExp) => {
     for (const p of pages) {
@@ -212,7 +239,8 @@ export function detectFacts(pages: { content: PageContent; url: string; kind: Pa
   if (home) {
     const https = home.finalUrl.startsWith("https://");
     const viewport = pages.some((p) => p.content.hasViewport);
-    const parts = [https ? "HTTPS" : "no HTTPS", viewport ? "mobile viewport" : "no mobile viewport", `homepage ${Math.round(home.bytes / 1024)} KB in ${(home.ms / 1000).toFixed(1)} s`];
+    // The fetch time is not recorded: pages come through Firecrawl, so it says nothing about how fast the site is for a visitor.
+    const parts = [https ? "HTTPS" : "no HTTPS", viewport ? "mobile viewport" : "no mobile viewport", `homepage ${Math.round(home.bytes / 1024)} KB`];
     set({ key: "website_health", status: "verified", value: parts.join("; "), evidenceQuote: "Measured while fetching the homepage", sourceUrl: home.finalUrl });
   }
   const years = pages.map((p) => ({ y: p.content.latestYear, url: p.url })).filter((x) => x.y);
@@ -222,7 +250,7 @@ export function detectFacts(pages: { content: PageContent; url: string; kind: Pa
   }
 
   // 7. Explicit "not found" for fields we actively looked for: a gap signal, not a guess.
-  for (const key of ["booking_tool", "chat_tool", "review_tool", "shop_management_tool", "financing_provider", "contact_form", "email", "customer_updates", "maintenance_plans", "fleet_program", "financing", "reviews_on_site", "estimate_policy", "multi_location"] as FactKey[]) {
+  for (const key of ["booking_tool", "chat_tool", "review_tool", "shop_management_tool", "financing_provider", "contact_form", "email", "customer_updates", "maintenance_plans", "fleet_program", "financing", "reviews_on_site", "estimate_policy", "multi_location", "customer_portal", "online_payments"] as FactKey[]) {
     if (!out.has(key)) set({ key, status: "not_found", value: null, evidenceQuote: `Not detected across ${pages.length} fetched page(s)`, sourceUrl: null });
   }
   return [...out.values()];

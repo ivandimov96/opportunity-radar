@@ -57,6 +57,55 @@
       "when": 1793201947083,
       "tag": "0007_google_maps",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1793272807478,
+      "tag": "0008_board_positions",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1793278123240,
+      "tag": "0009_drop_demo",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1794494741872,
+      "tag": "0010_intelligence",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1794495449650,
+      "tag": "0011_outreach",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1794498001018,
+      "tag": "0012_outreach_cleanup",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "6",
+      "when": 1795014983099,
+      "tag": "0013_solution_scope",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1795016764906,
+      "tag": "0014_removed_businesses",
+      "breakpoints": true
     }
   ]
 }

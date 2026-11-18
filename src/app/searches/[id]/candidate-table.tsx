@@ -15,6 +15,7 @@ import { useState } from "react";
 import { saveCandidatesAction } from "@/app/actions";
 import { Badge, Icon, StatusPill, fmtRelative } from "@/components/ui";
 import { SortHeader, type SP } from "@/components/table";
+import { formatPhone } from "@/lib/phone";
 import type { TableParams } from "@/lib/table";
 
 export interface CandidateRow {
@@ -46,7 +47,7 @@ export interface CandidateRow {
   businessId: string | null;
   savedVia: string | null;
   createdAt: string;
-  business: { id: string; status: string; verdict: string | null; priority: number | null; investigatedAt: string | null; isDemo: boolean } | null;
+  business: { id: string; status: string; verdict: string | null; priority: number | null; investigatedAt: string | null } | null;
 }
 
 function Meter({ value, title }: { value: number; title: string }) {
@@ -70,7 +71,6 @@ function NameCell({ r }: { r: CandidateRow }) {
         ) : (
           <span className="font-medium truncate max-w-full">{r.name}</span>
         )}
-        {r.business?.isDemo && <Badge tone="demo">demo</Badge>}
         {r.kind === "chain" && <Badge tone="neutral" title="Chain or franchise">chain</Badge>}
         {r.brand && r.kind !== "chain" && <Badge tone="neutral" title={`Brand: ${r.brand}`}>brand</Badge>}
         {r.operatingStatus === "closed" && <Badge tone="bad" title="The source marks this listing as closed">closed</Badge>}
@@ -94,7 +94,7 @@ function Contact({ r, compact = false }: { r: CandidateRow; compact?: boolean })
           <span className="text-ink-faint">no website</span>
         )}
       </div>
-      <div className="text-ink-muted truncate">{r.phone ?? <span className="text-ink-faint">no phone</span>}</div>
+      <div className="text-ink-muted truncate tabular-nums">{r.phone ? <a href={`tel:${r.phone}`} className="text-ink-muted hover:text-ink">{formatPhone(r.phone, r.country)}</a> : <span className="text-ink-faint">no phone</span>}</div>
       {r.email && (
         <div className="text-ink-muted truncate">
           <a href={`mailto:${r.email}`}>{r.email}</a>
@@ -105,13 +105,12 @@ function Contact({ r, compact = false }: { r: CandidateRow; compact?: boolean })
 }
 
 function Status({ r }: { r: CandidateRow }) {
-  return r.business ? (
+  if (!r.business) return <span className="text-xs text-ink-faint">not saved</span>;
+  return (
     <div className="flex flex-col gap-1 items-start">
       <StatusPill status={r.business.verdict ?? r.business.status} />
-      <span className="text-[11px] text-ink-faint">{r.savedVia === "new" ? "saved" : `matched by ${r.savedVia?.replace(/_/g, " ")}`}</span>
+      {r.savedVia && r.savedVia !== "new" && <span className="text-[11px] text-ink-faint">matched an existing record ({r.savedVia.replace(/_/g, " ")})</span>}
     </div>
-  ) : (
-    <span className="text-xs text-ink-faint">not saved</span>
   );
 }
 
@@ -169,10 +168,10 @@ export function CandidateTable({ rows, searchId, basePath, sp, params, providerL
         <colgroup>
           <col className="w-9" />
           <col />
-          <col className="w-[200px] xl:w-[230px]" />
-          <col className="w-[92px]" />
-          <col className="w-[150px] hidden lg:table-column" />
-          <col className="w-[128px]" />
+          <col className="w-[210px] xl:w-[250px]" />
+          <col className="w-[104px]" />
+          <col className="w-[190px] hidden lg:table-column" />
+          <col className="w-[140px]" />
         </colgroup>
         <thead>
           <tr>
@@ -191,32 +190,36 @@ export function CandidateTable({ rows, searchId, basePath, sp, params, providerL
             const d = describe(r);
             return (
               <tr key={r.id} className={selected.has(r.id) ? "bg-accent-soft/20" : ""}>
-                <td className="align-top pt-3.5">{!r.businessId && <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} aria-label={`Select ${r.name}`} className="accent-[var(--accent)]" />}</td>
-                <td className="min-w-0">
+                <td className="align-middle">{!r.businessId && <input type="checkbox" checked={selected.has(r.id)} onChange={() => toggle(r.id)} aria-label={`Select ${r.name}`} className="accent-[var(--accent)]" />}</td>
+                <td className="min-w-0 align-middle">
                   <NameCell r={r} />
                   <div className="text-xs text-ink-faint truncate" title={[d.category, r.matchedBy?.join("; "), d.location].filter(Boolean).join(" · ")}>
                     {d.category ?? "category unknown"}
                     {d.location ? ` · ${d.location}` : ""}
                   </div>
                 </td>
-                <td className="min-w-0">
+                <td className="min-w-0 align-middle">
                   <Contact r={r} />
                 </td>
-                <td>
-                  <div className="text-sm font-semibold tabular-nums leading-tight" title={r.leadReasons?.join(", ") ?? undefined}>
-                    {r.leadScore}
+                <td className="align-middle">
+                  <div className="flex items-baseline gap-1.5" title={r.leadReasons?.join(", ") ?? undefined}>
+                    <span className="text-sm font-semibold tabular-nums leading-none">{r.leadScore}</span>
+                    <span className="text-[10.5px] text-ink-faint">lead</span>
                   </div>
-                  <div className="mt-1.5">
-                    <Meter value={r.completeness} title={`Data completeness ${r.completeness}% (name, coordinates, street, city, phone, website, email)`} />
-                  </div>
-                </td>
-                <td className="hidden lg:table-cell">
-                  {sources(r)}
-                  <div className="text-[11px] text-ink-faint mt-1 truncate" title={d.refreshed ? `Source record read ${fmtRelative(d.refreshed)}` : undefined}>
-                    found {fmtRelative(r.createdAt)}
+                  <div className="mt-1.5 flex items-center gap-1.5" title={`Data completeness ${r.completeness}% (name, coordinates, street, city, phone, website, email)`}>
+                    <Meter value={r.completeness} title={`Data completeness ${r.completeness}%`} />
+                    <span className="text-[10.5px] text-ink-faint tabular-nums shrink-0">{r.completeness}%</span>
                   </div>
                 </td>
-                <td>
+                <td className="hidden lg:table-cell align-middle">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {sources(r)}
+                    <span className="text-[11px] text-ink-faint whitespace-nowrap" title={`Found ${fmtRelative(r.createdAt)}${d.refreshed ? ` · source record read ${fmtRelative(d.refreshed)}` : ""}`}>
+                      {fmtRelative(r.createdAt)}
+                    </span>
+                  </div>
+                </td>
+                <td className="align-middle">
                   <Status r={r} />
                 </td>
               </tr>

@@ -1,11 +1,13 @@
 /** Read-side queries for pages. Kept in one place so pages stay thin. */
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { activities, businesses, businessSources, facts, investigations, jobs, opportunities, outreachDrafts, pages, prospects, searchCandidates, searchResults, searches, validationSignals } from "@/db/schema";
+import { activities, businesses, businessSources, facts, inboundEmails, investigations, jobs, observations, opportunities, outreachDrafts, pages, prospects, searchCandidates, searchResults, searches } from "@/db/schema";
 import { usageSummary } from "@/lib/ai/usage";
 import { getConfig } from "@/lib/config";
-import { PIPELINE_STAGE_KEYS } from "@/lib/pipeline/stages";
+import { MACHINE_STAGES, PIPELINE_STAGE_KEYS } from "@/lib/pipeline/stages";
 import { priorityScore } from "@/lib/scoring/score";
+import { getSettings, missingSenderDetails } from "@/lib/settings";
+import { settingsHref } from "@/lib/settings-nav";
 
 export type BusinessRow = typeof businesses.$inferSelect;
 
@@ -14,6 +16,7 @@ async function draftSubquery() {
   return db
     .select({ businessId: outreachDrafts.businessId, drafts: sql<number>`count(*)`.as("drafts") })
     .from(outreachDrafts)
+    .where(ne(outreachDrafts.status, "archived"))
     .groupBy(outreachDrafts.businessId)
     .as("drafts");
 }
@@ -26,83 +29,7 @@ async function oppSubquery() {
     .as("opps");
 }
 
-export async function funnelCounts() {
-  const db = await getDb();
-  const n = async (where: ReturnType<typeof sql>) => (await db.select({ n: sql<number>`count(*)` }).from(businesses).leftJoin(prospects, eq(prospects.businessId, businesses.id)).where(where).get())?.n ?? 0;
-  const found = await n(sql`1=1`);
-  const investigated = await n(sql`${businesses.status} = 'profiled'`);
-  const withOpps = await n(sql`${businesses.verdict} = 'opportunity'`);
-  const outreach = (await db.select({ n: sql<number>`count(distinct ${outreachDrafts.businessId})` }).from(outreachDrafts).get())?.n ?? 0;
-  const contacted = await n(sql`${prospects.stage} in ('contacted','in_conversation','validated','won')`);
-  const validated = await n(sql`${prospects.stage} in ('validated','won')`);
-  return [
-    { key: "found", label: "Found", n: found, href: "/businesses" },
-    { key: "investigated", label: "Investigated", n: investigated, href: "/businesses?status=profiled" },
-    { key: "opportunities", label: "With opportunity", n: withOpps, href: "/businesses?quick=has_opps" },
-    { key: "outreach", label: "Draft ready", n: outreach, href: "/businesses?quick=drafts" },
-    { key: "contacted", label: "Contacted", n: contacted, href: "/pipeline" },
-    { key: "validated", label: "Validated", n: validated, href: "/pipeline" },
-  ];
-}
-
 export type AttentionItem = { kind: "failed" | "draft" | "due" | "ready_draft" | "ready_investigate"; businessId: string; businessName: string; detail: string; href: string; when?: string | null };
-
-/** The operator's inbox: what needs a human decision right now. */
-export async function attentionItems(limit = 12): Promise<AttentionItem[]> {
-  const db = await getDb();
-  const items: AttentionItem[] = [];
-  const failed = await db.select().from(businesses).where(eq(businesses.status, "failed")).orderBy(desc(businesses.updatedAt)).limit(5).all();
-  for (const b of failed) items.push({ kind: "failed", businessId: b.id, businessName: b.name, detail: `Investigation failed: ${(b.statusMessage ?? "").slice(0, 90)}`, href: `/businesses/${b.id}`, when: b.updatedAt });
-  const drafts = await db
-    .select({ d: outreachDrafts, name: businesses.name })
-    .from(outreachDrafts)
-    .innerJoin(businesses, eq(outreachDrafts.businessId, businesses.id))
-    .where(eq(outreachDrafts.status, "draft"))
-    .orderBy(desc(outreachDrafts.createdAt))
-    .limit(6)
-    .all();
-  for (const d of drafts) items.push({ kind: "draft", businessId: d.d.businessId, businessName: d.name, detail: `Outreach draft awaiting review${d.d.warnings.length ? ` · ${d.d.warnings.length} warning${d.d.warnings.length === 1 ? "" : "s"}` : ""}`, href: `/businesses/${d.d.businessId}?tab=outreach`, when: d.d.createdAt });
-  const due = await db
-    .select({ p: prospects, name: businesses.name })
-    .from(prospects)
-    .innerJoin(businesses, eq(prospects.businessId, businesses.id))
-    .where(sql`${prospects.nextAction} is not null`)
-    .orderBy(sql`coalesce(${prospects.nextActionAt}, '9999')`)
-    .limit(6)
-    .all();
-  for (const d of due) items.push({ kind: "due", businessId: d.p.businessId, businessName: d.name, detail: d.p.nextAction!, href: `/businesses/${d.p.businessId}?tab=activity`, when: d.p.nextActionAt });
-  if (getConfig().ai.enabled) {
-    const readyDraft = await db
-      .select({ b: businesses })
-      .from(businesses)
-      .innerJoin(prospects, eq(prospects.businessId, businesses.id))
-      .leftJoin(outreachDrafts, eq(outreachDrafts.businessId, businesses.id))
-      .where(and(eq(businesses.verdict, "opportunity"), eq(prospects.stage, "qualified"), sql`${outreachDrafts.id} is null`))
-      .orderBy(desc(businesses.priority))
-      .limit(5)
-      .all();
-    for (const r of readyDraft) items.push({ kind: "ready_draft", businessId: r.b.id, businessName: r.b.name, detail: `Opportunity found (priority ${r.b.priority ?? "—"}) — ready for an outreach draft`, href: `/businesses/${r.b.id}?tab=opportunities` });
-  }
-  const readyInvestigate = await db.select().from(businesses).where(and(eq(businesses.status, "new"), eq(businesses.isDemo, false), sql`${businesses.website} is not null`)).limit(3).all();
-  for (const b of readyInvestigate) items.push({ kind: "ready_investigate", businessId: b.id, businessName: b.name, detail: "Found but not investigated yet", href: `/businesses/${b.id}` });
-  return items.slice(0, limit);
-}
-
-export async function dashboardStats() {
-  const db = await getDb();
-  const total = (await db.select({ n: sql<number>`count(*)` }).from(businesses).get())?.n ?? 0;
-  const queue = await db.select({ status: jobs.status, n: sql<number>`count(*)` }).from(jobs).groupBy(jobs.status).all();
-  const recentSearches = await db.select().from(searches).orderBy(desc(searches.createdAt)).limit(5).all();
-  const top = await db
-    .select({ opp: opportunities, business: businesses })
-    .from(opportunities)
-    .innerJoin(businesses, eq(opportunities.businessId, businesses.id))
-    .where(eq(opportunities.rank, 1))
-    .orderBy(desc(sql`${opportunities.attractivenessScore} * 0.6 + ${opportunities.confidenceScore} * 0.4`))
-    .limit(8)
-    .all();
-  return { total, queue, recentSearches, top, ai: await usageSummary() };
-}
 
 export interface SearchListFilters {
   q?: string;
@@ -168,10 +95,10 @@ export async function exportSearchCsv(searchId: string) {
   const data = await getSearchWithResults(searchId);
   if (!data) return null;
   const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const header = ["rank", "name", "kind", "lead_score", "sources", "website", "website_source", "email", "phone", "street", "city", "region", "postal_code", "country", "category", "status", "status_message", "verdict", "priority", "best_attractiveness", "best_confidence", "top_opportunity", "top_opportunity_category", "top_opportunity_source", "opportunities", "drafts", "stage", "pages_fetched", "facts_verified", "investigation_seconds", "investigated_at", "summary", "is_demo"];
+  const header = ["rank", "name", "kind", "lead_score", "sources", "website", "website_source", "email", "phone", "street", "city", "region", "postal_code", "country", "category", "status", "status_message", "verdict", "priority", "best_attractiveness", "best_confidence", "top_opportunity", "top_opportunity_category", "top_opportunity_source", "opportunities", "drafts", "stage", "pages_fetched", "facts_verified", "investigation_seconds", "investigated_at", "summary"];
   const lines = data.rows.map((r) => {
     const b = r.business;
-    return [r.rank, b.name, b.kind, b.leadScore, r.sources.join("|"), b.website, b.websiteSource, b.email, b.phone, b.street, b.city, b.region, b.postalCode, b.country, b.category, b.status, b.statusMessage, b.verdict, b.priority, b.bestAttractiveness, b.bestConfidence, r.topOpp?.title, r.topOpp?.category, r.topOpp?.source, r.oppCount ?? 0, r.draftCount ?? 0, r.stage ?? "lead", r.investigation?.pagesFetched, r.investigation?.factsVerified, r.investigation?.durationMs != null ? (r.investigation.durationMs / 1000).toFixed(1) : "", b.investigatedAt, b.summary, b.isDemo ? "DEMO" : ""].map(esc).join(",");
+    return [r.rank, b.name, b.kind, b.leadScore, r.sources.join("|"), b.website, b.websiteSource, b.email, b.phone, b.street, b.city, b.region, b.postalCode, b.country, b.category, b.status, b.statusMessage, b.verdict, b.priority, b.bestAttractiveness, b.bestConfidence, r.topOpp?.title, r.topOpp?.category, r.topOpp?.source, r.oppCount ?? 0, r.draftCount ?? 0, r.stage ?? "lead", r.investigation?.pagesFetched, r.investigation?.factsVerified, r.investigation?.durationMs != null ? (r.investigation.durationMs / 1000).toFixed(1) : "", b.investigatedAt, b.summary].map(esc).join(",");
   });
   return { name: data.search.name, csv: [header.join(","), ...lines].join("\n") };
 }
@@ -184,10 +111,9 @@ export interface BusinessFilters {
   verdict?: string;
   minPriority?: number;
   website?: "yes" | "no";
-  demo?: "hide" | "only";
   sort?: "priority" | "lead" | "name" | "updated" | "discovered" | "investigated";
   dir?: "asc" | "desc";
-  quick?: "needs_investigation" | "has_opps" | "drafts" | "no_opportunity" | "failed" | "chains" | "stale" | "insufficient";
+  quick?: "needs_investigation" | "qualified" | "needs_review" | "drafts" | "not_a_fit" | "no_contact" | "stale" | "failed" | "chains";
   dateField?: "createdAt" | "investigatedAt" | "updatedAt";
   from?: string | null; // ISO lower bound
   to?: string | null; // ISO upper bound
@@ -198,38 +124,80 @@ export interface BusinessFilters {
 
 export const BUSINESS_SORTS = ["priority", "lead", "name", "updated", "discovered", "investigated"] as const;
 export const BUSINESS_DATE_FIELDS = [
-  { key: "createdAt", label: "Discovered" },
-  { key: "investigatedAt", label: "Investigated" },
+  { key: "createdAt", label: "Found" },
+  { key: "investigatedAt", label: "Researched" },
   { key: "updatedAt", label: "Updated" },
 ] as const;
 
-export async function listBusinesses(f: BusinessFilters = {}) {
-  const db = await getDb();
-  const dr = await draftSubquery();
-  const op = await oppSubquery();
-  const conds = [];
-  if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`), like(businesses.email, `%${f.q}%`), like(businesses.phone, `%${f.q}%`)));
+/** The "quick" views of the businesses list, in the order the page shows them. */
+export const BUSINESS_QUICK_VIEWS = ["", "needs_investigation", "qualified", "needs_review", "drafts", "not_a_fit", "no_contact", "stale", "failed", "chains"] as const;
+
+type DraftSub = Awaited<ReturnType<typeof draftSubquery>>;
+
+function quickCondition(quick: BusinessFilters["quick"], dr: DraftSub): SQL | undefined {
+  const staleBefore = new Date(Date.now() - getConfig().RESEARCH_STALE_DAYS * 86_400_000).toISOString();
+  switch (quick) {
+    case "needs_investigation":
+      return and(inArray(businesses.status, ["new", "failed"]), sql`${businesses.kind} != 'chain'`);
+    case "chains":
+      return eq(businesses.kind, "chain");
+    case "qualified":
+      return eq(businesses.verdict, "qualified");
+    case "needs_review":
+      return inArray(businesses.verdict, ["needs_review", "insufficient_evidence"]);
+    case "drafts":
+      return sql`coalesce(${dr.drafts}, 0) > 0`;
+    case "not_a_fit":
+      return eq(businesses.verdict, "not_a_fit");
+    case "no_contact":
+      return eq(businesses.verdict, "no_contact");
+    case "failed":
+      return eq(businesses.status, "failed");
+    case "stale":
+      return and(eq(businesses.status, "profiled"), sql`${businesses.investigatedAt} < ${staleBefore}`);
+    default:
+      return undefined;
+  }
+}
+
+/** WHERE clause for the businesses list: text search, the labeled filters, the date range and the quick view. */
+function businessWhere(f: BusinessFilters, dr: DraftSub): SQL | undefined {
+  const conds: SQL[] = [];
+  if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`), like(businesses.email, `%${f.q}%`), like(businesses.phone, `%${f.q}%`))!);
   if (f.industry) conds.push(eq(businesses.industry, f.industry));
   if (f.stage) conds.push(eq(prospects.stage, f.stage));
   if (f.status) conds.push(eq(businesses.status, f.status));
   if (f.verdict) conds.push(eq(businesses.verdict, f.verdict));
   if (f.website === "yes") conds.push(sql`${businesses.website} is not null`);
   if (f.website === "no") conds.push(sql`${businesses.website} is null`);
-  if (f.demo === "hide") conds.push(eq(businesses.isDemo, false));
-  if (f.demo === "only") conds.push(eq(businesses.isDemo, true));
   if (f.minPriority) conds.push(sql`coalesce(${businesses.priority}, 0) >= ${f.minPriority}`);
   const dateCol = { createdAt: businesses.createdAt, investigatedAt: businesses.investigatedAt, updatedAt: businesses.updatedAt }[f.dateField ?? "createdAt"];
   if (f.from) conds.push(sql`${dateCol} >= ${f.from}`);
   if (f.to) conds.push(sql`${dateCol} <= ${f.to}`);
-  const staleBefore = new Date(Date.now() - getConfig().RESEARCH_STALE_DAYS * 86_400_000).toISOString();
-  if (f.quick === "needs_investigation") conds.push(and(inArray(businesses.status, ["new", "failed"]), eq(businesses.isDemo, false), sql`${businesses.kind} != 'chain'`));
-  if (f.quick === "chains") conds.push(eq(businesses.kind, "chain"));
-  if (f.quick === "has_opps") conds.push(eq(businesses.verdict, "opportunity"));
-  if (f.quick === "drafts") conds.push(sql`coalesce(${dr.drafts}, 0) > 0`);
-  if (f.quick === "no_opportunity") conds.push(eq(businesses.verdict, "no_opportunity"));
-  if (f.quick === "failed") conds.push(eq(businesses.status, "failed"));
-  if (f.quick === "stale") conds.push(and(eq(businesses.status, "profiled"), sql`${businesses.investigatedAt} < ${staleBefore}`));
-  if (f.quick === "insufficient") conds.push(eq(businesses.verdict, "insufficient_evidence"));
+  const quick = quickCondition(f.quick, dr);
+  if (quick) conds.push(quick);
+  return conds.length ? and(...conds) : undefined;
+}
+
+/** How many businesses each quick view holds under the current search and filters (the chips' counts). */
+export async function quickViewCounts(f: BusinessFilters = {}) {
+  const db = await getDb();
+  const dr = await draftSubquery();
+  // One pass: the shared filters in WHERE, one conditional sum per view.
+  const where = businessWhere({ ...f, quick: undefined }, dr);
+  const cols = Object.fromEntries(BUSINESS_QUICK_VIEWS.map((key) => {
+    const cond = quickCondition((key || undefined) as BusinessFilters["quick"], dr);
+    return [key || "all", cond ? sql<number>`sum(case when ${cond} then 1 else 0 end)` : sql<number>`count(*)`];
+  }));
+  const row = await db.select(cols).from(businesses).leftJoin(prospects, eq(prospects.businessId, businesses.id)).leftJoin(dr, eq(dr.businessId, businesses.id)).where(where).get();
+  return Object.fromEntries(BUSINESS_QUICK_VIEWS.map((key) => [key, Number(row?.[key || "all"] ?? 0)])) as Record<string, number>;
+}
+
+export async function listBusinesses(f: BusinessFilters = {}) {
+  const db = await getDb();
+  const dr = await draftSubquery();
+  const op = await oppSubquery();
+  const where = businessWhere(f, dr);
   const dir = f.dir === "asc" ? asc : desc;
   const orderExpr = {
     priority: sql`coalesce(${businesses.priority}, -1)`,
@@ -240,7 +208,6 @@ export async function listBusinesses(f: BusinessFilters = {}) {
     investigated: sql`coalesce(${businesses.investigatedAt}, '')`,
   }[f.sort ?? "priority"];
   const secondary = f.sort === "priority" || !f.sort ? desc(sql`coalesce(${businesses.leadScore}, -1)`) : asc(businesses.name);
-  const where = conds.length ? and(...conds) : undefined;
   const base = db
     .select({ business: businesses, stage: prospects.stage, nextAction: prospects.nextAction, nextActionAt: prospects.nextActionAt, oppCount: op.count, draftCount: dr.drafts })
     .from(businesses)
@@ -275,149 +242,103 @@ export async function getBusinessDetail(id: string) {
   const factRows = await db.select().from(facts).where(eq(facts.businessId, id)).all();
   const opps = await db.select().from(opportunities).where(eq(opportunities.businessId, id)).orderBy(opportunities.rank).all();
   const drafts = await db.select().from(outreachDrafts).where(eq(outreachDrafts.businessId, id)).orderBy(desc(outreachDrafts.createdAt)).all();
-  const acts = await db.select().from(activities).where(eq(activities.businessId, id)).orderBy(desc(activities.createdAt)).limit(100).all();
-  const signals = await db.select().from(validationSignals).where(eq(validationSignals.businessId, id)).orderBy(desc(validationSignals.createdAt)).all();
+  const activityCount = (await db.select({ n: sql<number>`count(*)` }).from(activities).where(eq(activities.businessId, id)).get())?.n ?? 0;
+  const observationRows = await db.select().from(observations).where(eq(observations.businessId, id)).orderBy(observations.ref).all();
+  const inbound = await db.select().from(inboundEmails).where(eq(inboundEmails.businessId, id)).orderBy(desc(inboundEmails.receivedAt)).all();
   const activeJobs = await db
     .select()
     .from(jobs)
     .where(and(inArray(jobs.status, ["queued", "running"]), sql`json_extract(${jobs.payload}, '$.businessId') = ${id}`))
     .all();
-  return { business, sources, prospect, runs, latest, pages: pageRows, facts: factRows, opportunities: opps, drafts, activities: acts, signals, activeJobs, foundBy };
+  return { business, sources, prospect, runs, latest, pages: pageRows, facts: factRows, opportunities: opps, observations: observationRows, drafts, inbound, activityCount, activeJobs, foundBy };
 }
 
-export async function pipelineBoard(f: { q?: string; industry?: string; demo?: "hide" | "only" } = {}) {
+/**
+ * The board for a period: the businesses in the stages a person works with
+ * that last moved (stage, next action, order) between two moments. Either
+ * moment may be open; with both open it is the whole board.
+ */
+export async function pipelineBoard(f: { q?: string; industry?: string; fromIso?: string | null; toIso?: string | null } = {}) {
   const db = await getDb();
   const dr = await draftSubquery();
-  const conds = [];
+  // The board shows the stages a person works with. "Discovered" and "Researching" can hold hundreds of
+  // businesses the system is still handling, so they are counted, not listed.
+  const conds = [notInArray(prospects.stage, MACHINE_STAGES)];
   if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`))!);
   if (f.industry) conds.push(eq(businesses.industry, f.industry));
-  if (f.demo === "hide") conds.push(eq(businesses.isDemo, false));
-  if (f.demo === "only") conds.push(eq(businesses.isDemo, true));
+  if (f.fromIso) conds.push(gte(prospects.updatedAt, f.fromIso));
+  if (f.toIso) conds.push(lte(prospects.updatedAt, f.toIso));
   const rows = await db
     .select({ business: businesses, prospect: prospects, draftCount: dr.drafts })
     .from(prospects)
     .innerJoin(businesses, eq(prospects.businessId, businesses.id))
     .leftJoin(dr, eq(dr.businessId, businesses.id))
-    .where(conds.length ? and(...conds) : undefined)
-    .orderBy(desc(sql`coalesce(${businesses.priority}, -1)`))
+    .where(and(...conds))
+    // Manual board order first (cards never ordered by hand go after the ordered ones), then priority.
+    .orderBy(asc(sql`coalesce(${prospects.position}, 1000000000)`), desc(sql`coalesce(${businesses.priority}, -1)`))
     .all();
-  const byStage = Object.fromEntries(PIPELINE_STAGE_KEYS.map((k) => [k, [] as typeof rows]));
+  const byStage = Object.fromEntries(PIPELINE_STAGE_KEYS.filter((k) => !MACHINE_STAGES.includes(k)).map((k) => [k, [] as typeof rows]));
   for (const r of rows) (byStage[r.prospect.stage] ?? (byStage[r.prospect.stage] = [])).push(r);
   return byStage;
 }
 
-export async function patternSummary() {
+/** How many businesses sit in the stages the system manages, with the research outcome of those that were looked at. */
+/**
+ * What the app shell shows on every page: how much is waiting in each section,
+ * and what still has to be set up before the whole flow can run. Three counts
+ * and one settings read; nothing here touches the network.
+ */
+export async function navStatus(): Promise<{ counts: { businesses: number; outreach: number; pipeline: number }; setup: { label: string; href: string }[] }> {
   const db = await getDb();
-  const groups = await db
-    .select({ category: opportunities.category, industry: businesses.industry, businesses: sql<number>`count(distinct ${opportunities.businessId})`, avgAttr: sql<number>`round(avg(${opportunities.attractivenessScore}))`, avgConf: sql<number>`round(avg(${opportunities.confidenceScore}))`, demoCount: sql<number>`sum(case when ${businesses.isDemo} then 1 else 0 end)` })
-    .from(opportunities)
-    .innerJoin(businesses, eq(opportunities.businessId, businesses.id))
-    .groupBy(opportunities.category, businesses.industry)
-    .orderBy(desc(sql`count(distinct ${opportunities.businessId})`))
-    .all();
-  const allOpps = await db.select({ opp: opportunities, business: businesses }).from(opportunities).innerJoin(businesses, eq(opportunities.businessId, businesses.id)).all();
-  const allFacts = await db.select({ businessId: facts.businessId, key: facts.key, status: facts.status, value: facts.value }).from(facts).all();
-  const factIndex = new Map(allFacts.map((f) => [`${f.businessId}:${f.key}`, f]));
-  const signalRows = await db.select({ category: validationSignals.opportunityCategory, type: validationSignals.signalType, n: sql<number>`count(*)` }).from(validationSignals).groupBy(validationSignals.opportunityCategory, validationSignals.signalType).all();
-  return groups.map((g) => {
-    const members = allOpps.filter((o) => o.opp.category === g.category && o.business.industry === g.industry);
-    const evidence = new Map<string, number>();
-    const assumptions = new Map<string, number>();
-    const efforts: Record<string, number> = {};
-    for (const m of members) {
-      for (const key of m.opp.supportingFactKeys) {
-        const f = factIndex.get(`${m.business.id}:${key}`);
-        if (!f) continue;
-        const label = f.status === "verified" ? `${key}: ${f.value ?? "yes"}` : `${key}: not found on site`;
-        evidence.set(label, (evidence.get(label) ?? 0) + 1);
-      }
-      for (const a of m.opp.assumptions) assumptions.set(a, (assumptions.get(a) ?? 0) + 1);
-      efforts[m.opp.implementationEffort] = (efforts[m.opp.implementationEffort] ?? 0) + 1;
-    }
-    const top = (m: Map<string, number>, n = 4) => [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, n);
-    const hypotheses = new Map<string, number>();
-    for (const m of members) {
-      const key = m.opp.title.replace(/\s*\(.*?\)\s*$/, "").replace(/^[A-Za-z0-9 .&'-]+ in use, but/, "Shop system in use, but");
-      hypotheses.set(key, (hypotheses.get(key) ?? 0) + 1);
-    }
-    const ruleCount = members.filter((m) => m.opp.source === "rules").length;
-    const strong = members.filter((m) => m.opp.supportingFactKeys.some((k) => factIndex.get(`${m.business.id}:${k}`)?.status === "verified")).length;
-    return {
-      ...g,
-      hypotheses: top(hypotheses, 5),
-      ruleShare: members.length ? Math.round((ruleCount / members.length) * 100) : 0,
-      strongShare: members.length ? Math.round((strong / members.length) * 100) : 0,
-      titles: [...members].sort((a, b) => priorityScore(b.opp.attractivenessScore, b.opp.confidenceScore) - priorityScore(a.opp.attractivenessScore, a.opp.confidenceScore)).slice(0, 5).map((m) => ({ title: m.opp.title, businessId: m.business.id, businessName: m.business.name, priority: priorityScore(m.opp.attractivenessScore, m.opp.confidenceScore) })),
-      sharedEvidence: top(evidence),
-      commonAssumptions: top(assumptions),
-      efforts,
-      signals: signalRows.filter((s) => s.category === g.category),
-    };
-  });
+  const cfg = getConfig();
+  const one = async (q: Promise<{ n: number } | undefined>) => Number((await q)?.n ?? 0);
+  const [toJudge, emails, replies, settings] = await Promise.all([
+    one(
+      db
+        .select({ n: sql<number>`count(*)` })
+        .from(businesses)
+        .leftJoin(prospects, eq(prospects.businessId, businesses.id))
+        .where(sql`${businesses.verdict} in ('needs_review', 'insufficient_evidence') and coalesce(${prospects.stage}, 'discovered') in ('discovered', 'researching')`)
+        .get(),
+    ),
+    one(db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(inArray(outreachDrafts.status, ["ready", "needs_review", "failed"])).get()),
+    one(db.select({ n: sql<number>`count(*)` }).from(inboundEmails).where(and(eq(inboundEmails.kind, "reply"), isNull(inboundEmails.handledAt))).get()),
+    getSettings(),
+  ]);
+  const setup: { label: string; href: string }[] = [];
+  if (!cfg.googleMaps.enabled) setup.push({ label: "Business search key", href: settingsHref("connections") });
+  if (!cfg.firecrawl.enabled) setup.push({ label: "Website research key", href: settingsHref("connections") });
+  if (!cfg.ai.enabled) setup.push({ label: "AI key", href: settingsHref("connections") });
+  if (!cfg.mail.enabled) setup.push({ label: "Mailbox", href: settingsHref("mailbox") });
+  if (missingSenderDetails(settings).length > 0) setup.push({ label: "Your sender details", href: settingsHref("sender") });
+  return { counts: { businesses: toJudge, outreach: emails, pipeline: replies }, setup };
 }
 
+export async function machineStageCounts() {
+  const db = await getDb();
+  const rows = await db
+    .select({ stage: prospects.stage, verdict: businesses.verdict, status: businesses.status, n: sql<number>`count(*)` })
+    .from(prospects)
+    .innerJoin(businesses, eq(prospects.businessId, businesses.id))
+    .where(inArray(prospects.stage, MACHINE_STAGES))
+    .groupBy(prospects.stage, businesses.verdict, businesses.status)
+    .all();
+  const sum = (pred: (r: (typeof rows)[number]) => boolean) => rows.filter(pred).reduce((n, r) => n + Number(r.n), 0);
+  return {
+    discovered: sum((r) => r.stage === "discovered"),
+    researching: sum((r) => r.stage === "researching"),
+    notResearched: sum((r) => r.stage === "discovered" && r.status !== "profiled"),
+    needsReview: sum((r) => r.verdict === "needs_review" || r.verdict === "insufficient_evidence"),
+    notAFit: sum((r) => r.verdict === "not_a_fit"),
+    noContact: sum((r) => r.verdict === "no_contact"),
+  };
+}
 export async function exportBusinessesCsv() {
   const { rows } = await listBusinesses({ limit: 10000 });
   const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const header = ["name", "industry", "website", "email", "phone", "city", "region", "country", "status", "verdict", "priority", "best_attractiveness", "best_confidence", "stage", "summary", "is_demo"];
-  const lines = rows.map((r) => [r.business.name, r.business.industry, r.business.website, r.business.email, r.business.phone, r.business.city, r.business.region, r.business.country, r.business.status, r.business.verdict, r.business.priority, r.business.bestAttractiveness, r.business.bestConfidence, r.stage, r.business.summary, r.business.isDemo ? "DEMO" : ""].map(esc).join(","));
+  const header = ["name", "industry", "website", "email", "phone", "city", "region", "country", "status", "verdict", "priority", "best_attractiveness", "best_confidence", "stage", "summary"];
+  const lines = rows.map((r) => [r.business.name, r.business.industry, r.business.website, r.business.email, r.business.phone, r.business.city, r.business.region, r.business.country, r.business.status, r.business.verdict, r.business.priority, r.business.bestAttractiveness, r.business.bestConfidence, r.stage, r.business.summary].map(esc).join(","));
   return [header.join(","), ...lines].join("\n");
-}
-
-/** Everything the overview needs, in one pass: counts + the lists behind each action. */
-export async function overviewSnapshot() {
-  const db = await getDb();
-  const n = async (where: ReturnType<typeof sql>) => (await db.select({ n: sql<number>`count(*)` }).from(businesses).leftJoin(prospects, eq(prospects.businessId, businesses.id)).where(where).get())?.n ?? 0;
-  const counts = {
-    found: await n(sql`1=1`),
-    toInvestigate: await n(sql`${businesses.status} in ('new') and ${businesses.isDemo} = 0 and ${businesses.kind} != 'chain'`),
-    chains: await n(sql`${businesses.kind} = 'chain' and ${businesses.isDemo} = 0`),
-    investigating: await n(sql`${businesses.status} in ('queued','investigating')`),
-    investigated: await n(sql`${businesses.status} = 'profiled'`),
-    opportunities: await n(sql`${businesses.verdict} = 'opportunity'`),
-    noOpportunity: await n(sql`${businesses.verdict} = 'no_opportunity'`),
-    aiPending: await n(sql`${businesses.verdict} = 'needs_ai'`),
-    failed: await n(sql`${businesses.status} = 'failed'`),
-    noWebsite: await n(sql`${businesses.status} = 'no_website'`),
-    contacted: await n(sql`${prospects.stage} in ('contacted','in_conversation','validated','won')`),
-  };
-  const toInvestigate = await db.select().from(businesses).where(and(eq(businesses.status, "new"), eq(businesses.isDemo, false), sql`${businesses.kind} != 'chain'`)).orderBy(desc(sql`coalesce(${businesses.leadScore}, -1)`), desc(businesses.createdAt)).limit(6).all();
-  const failed = await db.select().from(businesses).where(eq(businesses.status, "failed")).orderBy(desc(businesses.updatedAt)).limit(5).all();
-  const drafts = await db
-    .select({ d: outreachDrafts, b: businesses })
-    .from(outreachDrafts)
-    .innerJoin(businesses, eq(outreachDrafts.businessId, businesses.id))
-    .where(eq(outreachDrafts.status, "draft"))
-    .orderBy(desc(outreachDrafts.createdAt))
-    .limit(6)
-    .all();
-  const due = await db
-    .select({ p: prospects, b: businesses })
-    .from(prospects)
-    .innerJoin(businesses, eq(prospects.businessId, businesses.id))
-    .where(sql`${prospects.nextAction} is not null`)
-    .orderBy(sql`coalesce(${prospects.nextActionAt}, '9999')`)
-    .limit(6)
-    .all();
-  const readyToDraft = await db
-    .select({ b: businesses })
-    .from(businesses)
-    .leftJoin(outreachDrafts, eq(outreachDrafts.businessId, businesses.id))
-    .where(and(eq(businesses.verdict, "opportunity"), sql`${outreachDrafts.id} is null`))
-    .orderBy(desc(businesses.priority))
-    .limit(6)
-    .all();
-  const best = await db
-    .select({ opp: opportunities, b: businesses, drafts: sql<number>`(select count(*) from ${outreachDrafts} where ${outreachDrafts.businessId} = ${businesses.id})` })
-    .from(opportunities)
-    .innerJoin(businesses, eq(opportunities.businessId, businesses.id))
-    .where(eq(opportunities.rank, 1))
-    .orderBy(desc(businesses.priority))
-    .limit(8)
-    .all();
-  const recentSearches = await db.select().from(searches).orderBy(desc(searches.createdAt)).limit(4).all();
-  const queue = await db.select({ status: jobs.status, n: sql<number>`count(*)` }).from(jobs).groupBy(jobs.status).all();
-  return { counts, toInvestigate, failed, drafts, due, readyToDraft, best, recentSearches, queue, ai: await usageSummary() };
 }
 
 /** Recent jobs for the system page, newest first, with the business/search they belong to. */
@@ -501,7 +422,7 @@ export async function getSearchCandidates(searchId: string, f: CandidateFilters 
   const page = f.page ?? 1;
   const where = and(...conds);
   const rows = await db
-    .select({ candidate: searchCandidates, business: { id: businesses.id, status: businesses.status, verdict: businesses.verdict, priority: businesses.priority, investigatedAt: businesses.investigatedAt, isDemo: businesses.isDemo } })
+    .select({ candidate: searchCandidates, business: { id: businesses.id, status: businesses.status, verdict: businesses.verdict, priority: businesses.priority, investigatedAt: businesses.investigatedAt } })
     .from(searchCandidates)
     .leftJoin(businesses, eq(searchCandidates.businessId, businesses.id))
     .where(where)
@@ -529,8 +450,92 @@ export async function getSearchOverview(id: string) {
     investigated: saved.filter((b) => b.status === "profiled").length,
     processing: saved.filter((b) => b.status === "queued" || b.status === "investigating").length,
     investigable: saved.filter((b) => b.kind !== "chain" && ["new", "failed", "no_website"].includes(b.status)).length,
-    withOpportunity: saved.filter((b) => b.verdict === "opportunity").length,
+    withOpportunity: saved.filter((b) => b.verdict === "qualified").length,
     failed: saved.filter((b) => b.status === "failed").length,
   };
   return { search, job, businessStats };
+}
+
+/** Stage changes across all prospects, newest first: the pipeline's move history. */
+/** How many businesses are on the board at all, whatever the period, and which of them have a reply nobody answered yet. */
+export async function boardTotals(): Promise<{ onBoard: number; openReplies: Record<string, number> }> {
+  const db = await getDb();
+  const [total, replies] = await Promise.all([
+    db.select({ n: sql<number>`count(*)` }).from(prospects).where(notInArray(prospects.stage, MACHINE_STAGES)).get(),
+    db.select({ businessId: inboundEmails.businessId, n: sql<number>`count(*)` }).from(inboundEmails).where(and(eq(inboundEmails.kind, "reply"), isNull(inboundEmails.handledAt))).groupBy(inboundEmails.businessId).all(),
+  ]);
+  return { onBoard: Number(total?.n ?? 0), openReplies: Object.fromEntries(replies.filter((r) => r.businessId).map((r) => [r.businessId as string, Number(r.n)])) };
+}
+
+/** The kinds of event the process history can be narrowed to, with the activity types each covers. */
+export const HISTORY_KINDS = [
+  { key: "all", label: "Everything", types: [] as string[] },
+  { key: "stage", label: "Stage moves", types: ["stage_change"] },
+  { key: "contact", label: "Emails, calls and notes", types: ["email", "call", "meeting", "note"] },
+  { key: "system", label: "Research and system", types: ["system"] },
+] as const;
+export type HistoryKind = (typeof HISTORY_KINDS)[number]["key"];
+
+/**
+ * The history of the whole process: every recorded event across all businesses
+ * in a period (found and researched, verdicts, emails written and sent,
+ * replies, stage moves by the system or by hand, notes), newest first.
+ */
+export async function pipelineHistory({ fromIso, toIso, kind = "all", q, page = 1, pageSize = 40 }: { fromIso?: string | null; toIso?: string | null; kind?: HistoryKind; q?: string; page?: number; pageSize?: number }) {
+  const db = await getDb();
+  const period = [fromIso ? gte(activities.createdAt, fromIso) : undefined, toIso ? lte(activities.createdAt, toIso) : undefined, q ? or(like(businesses.name, `%${q}%`), like(businesses.city, `%${q}%`), like(businesses.websiteDomain, `%${q}%`)) : undefined];
+  const types = HISTORY_KINDS.find((k) => k.key === kind)?.types ?? [];
+  const where = and(...period, types.length ? inArray(activities.type, types) : undefined);
+  const [rows, total, byType] = await Promise.all([
+    db
+      .select({ id: activities.id, type: activities.type, content: activities.content, metadata: activities.metadata, createdAt: activities.createdAt, businessId: businesses.id, businessName: businesses.name })
+      .from(activities)
+      .innerJoin(businesses, eq(activities.businessId, businesses.id))
+      .where(where)
+      .orderBy(desc(activities.createdAt), desc(activities.id))
+      .limit(pageSize)
+      .offset((page - 1) * pageSize)
+      .all(),
+    db.select({ n: sql<number>`count(*)` }).from(activities).innerJoin(businesses, eq(activities.businessId, businesses.id)).where(where).get(),
+    db.select({ type: activities.type, n: sql<number>`count(*)` }).from(activities).innerJoin(businesses, eq(activities.businessId, businesses.id)).where(and(...period)).groupBy(activities.type).all(),
+  ]);
+  const perType = Object.fromEntries(byType.map((r) => [r.type, Number(r.n)])) as Record<string, number>;
+  const counts = Object.fromEntries(HISTORY_KINDS.map((k) => [k.key, k.types.length ? k.types.reduce((n, t) => n + (perType[t] ?? 0), 0) : Object.values(perType).reduce((a, b) => a + b, 0)])) as Record<HistoryKind, number>;
+  return {
+    items: rows.map((r) => ({ id: r.id, type: r.type, content: r.content, metadata: (r.metadata ?? null) as Record<string, unknown> | null, createdAt: r.createdAt, business: { id: r.businessId, name: r.businessName } })),
+    total: Number(total?.n ?? 0),
+    counts,
+  };
+}
+
+export async function recentStageChanges({ limit = 20, offset = 0 }: { limit?: number; offset?: number } = {}) {
+  const db = await getDb();
+  const total = (await db.select({ n: sql<number>`count(*)` }).from(activities).where(eq(activities.type, "stage_change")).get())?.n ?? 0;
+  const rows = await db
+    .select({ id: activities.id, businessId: activities.businessId, name: businesses.name, content: activities.content, metadata: activities.metadata, createdAt: activities.createdAt })
+    .from(activities)
+    .innerJoin(businesses, eq(activities.businessId, businesses.id))
+    .where(eq(activities.type, "stage_change"))
+    .orderBy(desc(activities.createdAt), desc(activities.id))
+    .limit(limit)
+    .offset(offset)
+    .all();
+  const items = rows.map((r) => {
+    const m = (r.metadata ?? {}) as { from?: string; to?: string; automatic?: boolean };
+    const reason = r.content.replace(/^Stage (?:changed|set) to \w+:?\s*/, "");
+    return { id: r.id, businessId: r.businessId, name: r.name, from: m.from ?? null, to: m.to ?? null, automatic: Boolean(m.automatic), reason, at: r.createdAt };
+  });
+  return { items, total };
+}
+
+/** One page of a business's activity log, newest first, optionally limited to some event types; plus counts per type. */
+export async function businessActivities(id: string, { types, page, pageSize }: { types?: string[]; page: number; pageSize: number }) {
+  const db = await getDb();
+  const where = types?.length ? and(eq(activities.businessId, id), inArray(activities.type, types)) : eq(activities.businessId, id);
+  const [items, total, byType] = await Promise.all([
+    db.select().from(activities).where(where).orderBy(desc(activities.createdAt), desc(activities.id)).limit(pageSize).offset((page - 1) * pageSize).all(),
+    db.select({ n: sql<number>`count(*)` }).from(activities).where(where).get().then((r) => r?.n ?? 0),
+    db.select({ type: activities.type, n: sql<number>`count(*)` }).from(activities).where(eq(activities.businessId, id)).groupBy(activities.type).all(),
+  ]);
+  return { items, total, countsByType: Object.fromEntries(byType.map((r) => [r.type, r.n])) as Record<string, number> };
 }

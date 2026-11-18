@@ -1,6 +1,8 @@
 # How business search works (search engine v2, 2026-10-28)
 
-> **2026-10-28, D25: Google Maps (via SerpApi) is the only active source.** Overture Maps and
+> **Historical document.** The product was rebuilt on 2026-11-12 (docs/DECISIONS.md D28 to D36). For how it works now, read docs/ARCHITECTURE.md. Parts of this file describe things that no longer exist (several hypotheses per business, the Patterns page, validation signals, Overture and OpenStreetMap, template drafts, "no sending").
+
+> **2026-10-28, D25: Google Maps is the only active source (via Serper since D27, 2026-10-29).** Overture Maps and
 > OpenStreetMap are disabled: their code, tests and cell cache remain, they are never offered on
 > the form and the engine refuses them. The sections below that describe them document the
 > disabled path. See "Google Maps" for the live one.
@@ -37,10 +39,9 @@ form ──► validated search row ──► discover_search job ──► engi
 ## Sources (`src/lib/discovery/index.ts`)
 | Key | Status | What it is | Key |
 |---|---|---|---|
-| `google_maps` | active | Google Maps listings through SerpApi (`engine=google_maps`), 20 per page | `SERPAPI_API_KEY` (free plan) |
+| `google_maps` | active | Google Maps listings through Serper (`POST google.serper.dev/maps`), up to 20 per page | `SERPER_API_KEY` (2,500 free credits) |
 | `overture` | disabled | Overture Maps Places, GeoParquet on public S3, read with DuckDB | none |
 | `osm` | disabled | OpenStreetMap via Overpass (nodes, ways, relations) | none |
-| `demo` | internal | Synthetic, labeled; seeded by "Load demo data" and used by the tests, never offered on the form | — |
 | `google_places`, `foursquare`, `web_search`, `linkedin` | future | Shown with a "New" badge, disabled, never executed, no keys asked | — |
 
 The Texas sales tax permit registry was removed on 2026-10-28 (D24): Texas-only, no phone or
@@ -52,25 +53,28 @@ one: write the module, add it to `PROVIDERS` and `PROVIDER_ORDER`, give it a tax
 has categories, and the form, engine, validation and results page pick it up. Flip `status` from
 `future` to `active` when it is real.
 
-## Google Maps via SerpApi (the active source)
-- **Request**: `https://serpapi.com/search.json?engine=google_maps&type=search&q=…&ll=@lat,lon,{m}m&gl=…&hl=en&start=…`.
-  `q` is one query per chosen sub-type (`googleQuery` in the industry playbooks), the industry's
-  query when no sub-type is chosen, or the free text for "Other business type"; a whole-city search
-  appends "in City, Region". `ll` is the city center from the bundled place list with a map height
-  covering the radius (population-based metro radius for a whole city): no geocoder call.
-- **Paging**: 20 listings per page, up to `SERPAPI_MAX_PAGES` (3) pages per query; stops early on a
-  short page, when no page brings a new listing, or when the monthly budget runs out (what was
+## Google Maps via Serper (the active source)
+- **Request**: `POST https://google.serper.dev/maps` with header `X-API-KEY` and body
+  `{ q, ll: "@lat,lon,{z}z", gl, hl, page }`. `q` is one query per chosen sub-type (`googleQuery` in
+  the industry playbooks), the industry's query when no sub-type is chosen, or the free text for
+  "Other business type"; a whole-city search appends "in City, Region". `ll` is the city center from
+  the bundled place list with a zoom level covering the radius (population-based metro radius for a
+  whole city): no geocoder call.
+- **Paging**: 20 listings per page (measured), up to `SERPER_MAX_PAGES` (3) pages per query; stops early
+  on a short page, when no page brings a new listing, or when the credit budget runs out (what was
   collected is kept and the search says so).
-- **Budget**: each page fetched counts one SerpApi search in `provider_usage` (UTC month); the
-  provider refuses to fetch past `SERPAPI_MONTHLY_SEARCH_BUDGET` (250 = free plan). Google's "no
-  results" still costs a search; HTTP errors do not. Every page is cached in `provider_cache` for
-  `SERPAPI_CACHE_DAYS` (30), so re-running or repeating a search is free.
+- **Budget**: each page fetched costs 3 Serper credits (the response reports the charge, which is
+  what gets recorded in `provider_usage`); the provider refuses to fetch past `SERPER_CREDIT_BUDGET`
+  (2,500 = the sign-up credits, which do not renew: about 830 pages). An empty answer still costs
+  credits; HTTP errors do not. Every page is cached in `provider_cache`
+  for `SERPER_CACHE_DAYS` (30), so re-running or repeating a search is free.
 - **Record**: name, Google category, address (street and postal code split out), phone, website,
-  coordinates, rating, review count, hours, open/closed state ("permanently closed" → closed) and
-  the place id; the candidate's source URL is the Google Maps place link; the raw listing is kept.
-  Listings farther than the radius (+15 %) are dropped and counted.
-- **Licensing**: Google's data served by SerpApi; SerpApi's "legal shield" covers paid plans only.
-  Internal prospecting use; do not republish the listings.
+  coordinates, rating, review count, opening hours, Google's "book online" links and the place id
+  (cid as fallback); the candidate's source URL is the Google Maps place link; the raw listing is kept. Serper's maps results carry no open/closed
+  state, so `operatingStatus` is "unknown" unless the description says closed. Listings farther than
+  the radius (+15 %) are dropped and counted.
+- **Licensing**: Google's data served by Serper; internal prospecting use; do not republish the
+  listings.
 
 ## Overture Maps (disabled since D25)
 - **Release**: `OVERTURE_RELEASE=auto` reads `latest` from the STAC catalog

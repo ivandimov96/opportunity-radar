@@ -161,4 +161,39 @@ describe("engine run", () => {
     expect(all.created + all.merged).toBe(2);
     expect(await db.select().from(businesses).all()).toHaveLength(2);
   });
+
+  it("leaves a business the operator removed out of later searches, however it is found again, until it is allowed again", async () => {
+    const { allowAgain, listRemoved, removeBusiness } = await import("@/lib/pipeline/removed");
+    const { outreachDrafts } = await import("@/db/schema");
+    const s = await mkSearch();
+    const found = () => ({ providers: { overture: fakeProvider("overture", () => result("overture", [ov({ providerId: "a", name: "Colvin Automotive", website: "https://colvinautomotive.com", phone: "5124443333", city: "Austin" }), ov({ providerId: "b", name: "Keeper Auto", website: "https://keeper.example", city: "Austin" })])), osm: fakeProvider("osm", () => result("osm", [])) } });
+    await runDiscovery(db, s, found());
+    const colvin = (await db.select().from(businesses).all()).find((b) => b.name === "Colvin Automotive")!;
+
+    expect(await removeBusiness(colvin.id)).toEqual({ ok: true, name: "Colvin Automotive" });
+    expect((await db.select().from(businesses).all()).map((b) => b.name)).toEqual(["Keeper Auto"]);
+    expect(await db.select().from(businessSources).where(eq(businessSources.businessId, colvin.id)).all()).toHaveLength(0); // its records went with it
+    expect((await listRemoved()).map((r) => [r.name, r.websiteDomain])).toEqual([["Colvin Automotive", "colvinautomotive.com"]]);
+
+    // Found again by the same listing: left out and counted.
+    const again = await runDiscovery(db, s, found());
+    expect(again.stats.skippedRemoved).toBe(1);
+    expect((await db.select().from(businesses).all()).map((b) => b.name)).toEqual(["Keeper Auto"]);
+    // Found under another listing id and a slightly different name, same website: still left out.
+    const other = await runDiscovery(db, s, { providers: { overture: fakeProvider("overture", () => result("overture", [ov({ providerId: "zzz", name: "Colvin Auto Repair", website: "https://www.colvinautomotive.com/contact", city: "Austin" })])), osm: fakeProvider("osm", () => result("osm", [])) } });
+    expect(other.stats.skippedRemoved).toBe(1);
+    expect(await db.select().from(businesses).all()).toHaveLength(1);
+
+    // A business that was already emailed keeps its record.
+    const keeper = (await db.select().from(businesses).all())[0];
+    await db.insert(outreachDrafts).values({ id: newId(), businessId: keeper.id, step: 0, style: "personal", toEmail: "a@keeper.example", subject: "S", body: "B", claims: [], warnings: [], status: "sent", sentAt: new Date().toISOString() }).run();
+    expect(await removeBusiness(keeper.id)).toMatchObject({ ok: false, error: expect.stringMatching(/already emailed/) });
+    expect(await db.select().from(businesses).all()).toHaveLength(1);
+
+    // Allowed again: the next search adds it back as new.
+    await allowAgain((await listRemoved())[0].id);
+    const back = await runDiscovery(db, s, found());
+    expect(back.stats.skippedRemoved ?? 0).toBe(0);
+    expect((await db.select().from(businesses).all()).map((b) => b.name).sort()).toEqual(["Colvin Automotive", "Keeper Auto"]);
+  });
 });

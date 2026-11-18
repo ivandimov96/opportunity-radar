@@ -6,7 +6,8 @@
  */
 import type { z } from "zod";
 import { getConfig } from "@/lib/config";
-import { recordUsage, totalSpendUsd } from "./usage";
+import { recordUsage, monthSpendUsd } from "./usage";
+import { monthlyAiBudgetUsd } from "@/lib/settings";
 import { anthropicProvider } from "./providers/anthropic";
 import { openaiProvider } from "./providers/openai";
 import type { Effort, ModelProvider, ProviderKey } from "./providers/types";
@@ -44,16 +45,19 @@ export function activeProvider(): ModelProvider | null {
   return (Object.values(PROVIDERS) as ModelProvider[]).find((p) => p.isConfigured()) ?? null;
 }
 
-/** Model for a stage: explicit env override, else the provider's default. */
-export function modelFor(stage: "investigate" | "outreach", provider = activeProvider()): string {
+/** investigate = research one business; outreach = write an email; check = verify an email against its evidence; reply = classify an incoming reply. */
+export type AiStage = "investigate" | "outreach" | "check" | "reply";
+
+/** Model for a stage: explicit env override, else the provider's default. Everything except research uses the outreach model. */
+export function modelFor(stage: AiStage, provider = activeProvider()): string {
   const cfg = getConfig();
   const override = stage === "investigate" ? cfg.AI_INVESTIGATE_MODEL : cfg.AI_OUTREACH_MODEL;
   if (override) return override;
-  return provider?.defaults[stage] ?? "unconfigured";
+  return provider?.defaults[stage === "investigate" ? "investigate" : "outreach"] ?? "unconfigured";
 }
 
 export interface StructuredCall<S extends z.ZodType> {
-  stage: "investigate" | "outreach";
+  stage: AiStage;
   model?: string;
   effort: Effort;
   system: string;
@@ -70,11 +74,12 @@ export interface StructuredResult<T> {
   usage: { input: number; output: number; cacheRead: number; cacheWrite: number; costUsd: number };
 }
 
+/** The limit is per calendar month (UTC): Settings → Limits, or AI_SPEND_LIMIT_USD when that is not set. */
 export async function assertSpendWithinLimit() {
-  const cfg = getConfig();
-  const spent = await totalSpendUsd();
-  if (spent >= cfg.AI_SPEND_LIMIT_USD) {
-    throw new AiSpendLimitError(`AI spend guard: estimated spend $${spent.toFixed(2)} has reached the limit of $${cfg.AI_SPEND_LIMIT_USD}. Raise AI_SPEND_LIMIT_USD to continue.`);
+  const limit = await monthlyAiBudgetUsd();
+  const spent = await monthSpendUsd();
+  if (spent >= limit) {
+    throw new AiSpendLimitError(`AI spend guard: estimated spend this month $${spent.toFixed(2)} has reached the monthly limit of $${limit}. Raise it in Settings to continue.`);
   }
 }
 

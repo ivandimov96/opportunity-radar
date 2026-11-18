@@ -21,6 +21,7 @@ import { filtersOf } from "@/lib/search-input";
 import { resolveSearchArea } from "./area";
 import { haversineKm } from "./cells";
 import { upsertCandidate } from "./dedupe";
+import { findRemoved } from "@/lib/pipeline/removed";
 import { PROVIDERS } from "./index";
 import { normalizeCity, normalizeName, normalizePhone, normalizeWebsite, websiteDomain } from "./normalize";
 import { ProviderError, type BusinessCandidate, type DiscoveryProvider, type DiscoveryProviderKey, type DiscoveryQuery, type ResolvedArea } from "./types";
@@ -55,7 +56,7 @@ export interface MergedCandidate {
   primary: BusinessCandidate;
 }
 
-const PROVIDER_TRUST: Record<string, number> = { google_maps: 0, overture: 1, osm: 2, csv: 3, demo: 4 };
+const PROVIDER_TRUST: Record<string, number> = { google_maps: 0, overture: 1, osm: 2, csv: 3 };
 
 function tokens(nameNormalized: string): Set<string> {
   return new Set(nameNormalized.split(" ").filter((t) => t.length > 2));
@@ -215,6 +216,20 @@ export function mergeCandidates(input: BusinessCandidate[]): MergedCandidate[] {
     }
   }
   return out;
+}
+
+/** Review count and rating from the listing records behind a merged candidate (the record with the most reviews wins). */
+export function listingSignals(m: { sources: { raw?: Record<string, unknown> }[] }): { reviewCount: number | null; rating: number | null } {
+  let reviewCount: number | null = null;
+  let rating: number | null = null;
+  for (const s of m.sources) {
+    const n = s.raw?.ratingCount;
+    if (typeof n === "number" && (reviewCount == null || n > reviewCount)) {
+      reviewCount = n;
+      rating = typeof s.raw?.rating === "number" ? (s.raw.rating as number) : rating;
+    }
+  }
+  return { reviewCount, rating };
 }
 
 /** 0–100: name, coordinates, street, city, phone, website, email. */
@@ -378,10 +393,15 @@ export async function runDiscovery(db: Db, search: SearchRow, opts: RunOptions =
       stats.skippedNoPhone!++;
       continue;
     }
-    const hints: LeadHints = { openingHours: m.openingHours, brand: m.brand };
+    const hints: LeadHints = { brand: m.brand, ...listingSignals(m) };
     const lead = leadScore({ name: m.name, industry: search.industry, website: m.website, phone: m.phone, email: m.email, street: m.street, city: m.city, category: m.category }, hints);
     if (filters.excludeChains && lead.kind === "chain") {
       stats.skippedChains!++;
+      continue;
+    }
+    // Removed by the operator earlier: never listed or saved again, whatever the filters say.
+    if (await findRemoved(db, m)) {
+      stats.skippedRemoved = (stats.skippedRemoved ?? 0) + 1;
       continue;
     }
     const existing = await findExistingBusiness(db, m);
@@ -393,7 +413,7 @@ export async function runDiscovery(db: Db, search: SearchRow, opts: RunOptions =
   }
   ranked.sort((a, b) => b.lead.score - a.lead.score || (PROVIDER_RANK[a.m.primary.provider] ?? 9) - (PROVIDER_RANK[b.m.primary.provider] ?? 9));
   stats.ranked = ranked.length;
-  note(`Ranking: ${merged.length} unique business(es); ${stats.skippedClosed} closed, ${stats.skippedNoWebsite} without website, ${stats.skippedNoPhone} without phone, ${stats.skippedChains} chain(s), ${stats.skippedKnown} already known skipped; ${ranked.length} ranked by lead score; cap ${search.maxResults}`);
+  note(`Ranking: ${merged.length} unique business(es); ${stats.skippedClosed} closed, ${stats.skippedNoWebsite} without website, ${stats.skippedNoPhone} without phone, ${stats.skippedChains} chain(s), ${stats.skippedKnown} already known skipped, ${stats.skippedRemoved ?? 0} removed by you earlier; ${ranked.length} ranked by lead score; cap ${search.maxResults}`);
 
   // ---- 5. Store candidates (every source kept), replacing the previous run's.
   const listed = ranked.slice(0, search.maxResults);
@@ -506,15 +526,15 @@ export async function saveCandidates(db: Db, search: SearchRow, ids?: string[], 
     // Merged values (filled from every source) win over the primary record's own gaps.
     const full: BusinessCandidate = { ...candidate, website: r.website ?? candidate.website, phone: r.phone ?? candidate.phone, email: r.email ?? candidate.email, street: r.street ?? candidate.street, city: r.city ?? candidate.city, region: r.region ?? candidate.region, postalCode: r.postalCode ?? candidate.postalCode, country: r.country ?? candidate.country, lat: r.lat ?? candidate.lat, lng: r.lon ?? candidate.lng, category: r.category ?? candidate.category, brand: r.brand ?? candidate.brand, operatingStatus: r.operatingStatus ?? candidate.operatingStatus };
     const extraSources = sources.slice(1).map((s) => ({ provider: s.provider as DiscoveryProviderKey, providerId: s.providerId, sourceUrl: s.sourceUrl, attribution: s.attribution, raw: m?.sources.find((x) => x.provider === s.provider && x.providerId === s.providerId)?.raw ?? null }));
-    const outcome = await upsertCandidate(db, full, { industry: search.industry, searchId: search.id, isDemo: first.provider === "demo", leadReasons: r.leadReasons ?? undefined, extraSources });
+    const outcome = await upsertCandidate(db, full, { industry: search.industry, searchId: search.id, leadReasons: r.leadReasons ?? undefined, extraSources });
     if (outcome.wasNew) out.created++;
     else out.merged++;
     await db.insert(searchResults).values({ searchId: search.id, businessId: outcome.businessId, rank: r.rank, wasNew: outcome.wasNew }).onConflictDoNothing().run();
     await ensureProspect(outcome.businessId);
     await db.update(searchCandidates).set({ businessId: outcome.businessId, savedVia: outcome.wasNew ? "new" : (outcome.matchedBy ?? "existing") }).where(eq(searchCandidates.id, r.id)).run();
     const biz = await db.select().from(businesses).where(eq(businesses.id, outcome.businessId)).get();
-    if (biz && first.provider !== "demo") {
-      const stored = leadScore(biz, { brand: biz.brand });
+    if (biz) {
+      const stored = leadScore(biz, { brand: biz.brand, reviewCount: biz.reviewCount, rating: biz.rating });
       if (biz.leadScore !== stored.score || biz.kind !== stored.kind) await db.update(businesses).set({ leadScore: stored.score, kind: stored.kind, leadReasons: stored.reasons }).where(eq(businesses.id, biz.id)).run();
       if (search.autoInvestigate && stored.kind !== "chain" && stored.score >= filters.minLeadScore && ["new", "no_website", "failed"].includes(biz.status) && (biz.website || cfg.RESEARCH_FIND_WEBSITE)) out.investigable.push({ id: biz.id, leadScore: stored.score });
     }

@@ -1,46 +1,85 @@
-# Design system and UX principles
+# Interface design
 
-## Principle: guided funnel, evidence first
-Every screen answers three questions without scrolling: **where is this business in the
-funnel**, **what is the single next action**, and **why should I trust what I see**.
+How the screens are organised and why (rewritten 2026-11-18, decision D37). The
+code is the source of truth; this explains the intent behind it.
 
-Implemented as:
-- `src/lib/workflow.ts` derives, for any business, four step states
-  (Found → Investigated → Outreach → In conversation) and one recommended next action
-  with a reason. Investigation is a single action; its result is a verdict. Lists show it as a 5-dot mini stepper + "Next" column; the
-  profile shows the full stepper, a "Next step" banner and a context-dependent primary
-  button. Nothing else in the UI decides what to do next.
-- The overview is an inbox ("Needs your attention": failures, drafts to review, due
-  actions, businesses ready for the next stage) above a 7-stage funnel with counts.
-- Evidence is always one hop away: the profile shows each field verified with its
-  quote and source, or explicitly "not found on the site"; opportunities list the
-  profile facts they are based on; the outreach editor
-  highlights supported (green) and unsupported (amber) claims inline, with a claims →
-  evidence panel. Scores are rings with a "Why these scores" breakdown.
-- Empty states say what the state means and offer the one action that changes it.
-- Demo data is marked in every list row, card and page.
+## Principles
 
-## Tokens
-Defined once in `src/app/globals.css` as CSS variables and mapped into Tailwind via
-`@theme inline`, so dark mode (prefers-color-scheme) is a variable swap:
-surface/surface-2/surface-3, line, ink/ink-muted/ink-faint, accent (+soft/text/fg),
-ok/warn/bad/info/demo (+soft). Radius 12 px cards, 8 px controls. One accent (indigo);
-semantic colors only for meaning (status, evidence support, demo).
+1. **One question per screen.** Dashboard: what should I do now, and where does
+   everything stand. Businesses: what do we know. Outreach: what goes out.
+   Pipeline: where is each conversation. Settings: how it behaves.
+2. **What needs the operator comes first**, as a short list with one button per
+   line. Numbers come second, in one strip, not a wall of tiles.
+3. **Show a thing once.** A count lives in one place (a tab, the funnel strip,
+   the sidebar badge), never as a tile and a tab and a sentence.
+4. **Detail on request.** Rarely used controls sit behind one click: filters,
+   move history, where a business came from, the pages that were read, planning
+   a next action.
+5. **Empty takes no room.** Views with nothing in them are hidden; a section
+   with nothing to say is one line.
+6. **Evidence stays one step away.** Every statement about a business links to
+   the words it was read from. What was not found is listed once, as questions,
+   never among the facts.
 
-## Components (`src/components/ui.tsx`, `icons.tsx`, `nav.tsx`, `outreach-editor.tsx`)
-Badge, StatusPill, Card, Stat, ScoreRing/ScoreBar, Stepper (full and compact),
-EmptyState, Callout, PageHeader (with breadcrumbs), Tabs, KeyValue, Flash, inline SVG
-icon set, responsive AppShell (sidebar on desktop, drawer + top bar on phones),
-OutreachEditor (client: evidence view / edit toggle, word count, copy, claim highlight).
+## Screens
 
-Component classes (`.btn`, `.input`, `.table`, `.chip`, …) live in `@layer components`
-and base element styles in `@layer base`, so Tailwind utilities always win.
+- **Shell** (`src/components/nav.tsx`, `navStatus` in `src/lib/queries.ts`):
+  five destinations. A badge on Businesses, Outreach and Pipeline counts what is
+  waiting there (businesses to judge, emails to decide on, replies to answer).
+  The foot of the sidebar is one line: everything connected, or what is left to
+  set up, linking to the right Settings tab.
+- **Dashboard** (`src/app/page.tsx`): "Finish setting up" (only while something
+  is missing) → "Waiting for you" (replies, emails to send, emails to review,
+  emails that failed, businesses to judge) → the funnel in one strip (Found,
+  Researched, Qualified, Contacted, Replied, Meetings, Won) → replies and
+  planned actions beside "This month" (emails today, AI spend, research and
+  search credits against their limits).
+- **Businesses** (`src/app/businesses/page.tsx`): search, one row of views
+  (All, Not researched, Qualified, Needs review; others appear only when they
+  hold something), filters collapsed. Columns: business, result, what we know,
+  priority, stage and next step. Searches, import and export are secondary links.
+- **Business** (`src/app/businesses/[id]/page.tsx`): name with result and stage,
+  one "Next step" line, four tabs. *Overview* (default): what they do, the
+  verdict with its reasons, the one idea and what each part rests on, other
+  ideas. *Research*: coverage, verified facts, what was looked for and not
+  found, the pages read. *Emails*: drafts, replies, contact history.
+  *Activity*: notes and the log. Side column: contact, pipeline stage and next
+  action, where it came from (collapsed).
+- **Outreach** (`src/app/outreach/`): the counts are the tabs (Ready, Needs
+  review, Can't contact, Excluded, Sent); one primary button sends the batch.
+- **Pipeline** (`src/app/pipeline/`): a Board and a History view sharing the
+  period dropdown. The board shows what moved in the period in two rows of
+  three columns ("Reaching out", "In conversation") plus Won and Lost, twelve
+  cards a column with a link to the rest; columns stack on a phone. A card
+  shows the full name, what is waiting, when it last moved and an always
+  visible "Move to" menu: nothing appears or shifts on hover. History is the
+  whole process across businesses, by day.
+- **Settings** (`src/app/settings/page.tsx`, `src/lib/settings-nav.ts`): five
+  tabs: You, Mailbox and sending, Automation and budgets, Do not contact,
+  Connections. Links and redirects go through `settingsHref(section)` so the
+  right tab opens.
+
+The Dashboard funnel and the Businesses list share one period dropdown
+(`DateRangePicker`): it applies when picked and defaults to the last 7 days.
+
+## Tokens and components
+
+Defined once in `src/app/globals.css` as CSS variables and mapped into Tailwind
+via `@theme inline`, so dark mode (prefers-color-scheme) is a variable swap:
+surface/surface-2/surface-3, line, ink/ink-muted/ink-faint, accent (+soft, text,
+fg), ok/warn/bad/info (+soft). Radius 12 px for cards, 8 px for controls. One
+accent (indigo); semantic colours only for meaning.
+
+`src/components/ui.tsx`: Badge, StatusPill, Card, Stat, Meter (a budget line),
+ScoreRing, ScoreBar, EmptyState, Callout, PageHeader, Tabs, KeyValue, Flash.
+`table.tsx`: FilterBar, SortHeader, Pagination. Component classes (`.btn`,
+`.input`, `.table`, `.chip`) live in `@layer components`.
 
 ## Layout rules
-- Page width ≤ 1440 px, 32 px gutters on desktop, 16 px on phones, no horizontal scroll
-  (asserted by an e2e test at 390 px).
-- Profile pages: content column + 300 px sticky rail (contact, scores, pipeline,
-  validation signal, sources). The rail stacks under the content on phones.
-- Tables: sticky uppercase headers, hover rows, 13 px text; the business name is the
-  row link; secondary facts sit under it in 12 px faint text.
-- Buttons: one primary per view; secondary bordered; ghost for low-emphasis actions.
+
+- Page width ≤ 1440 px; forms ≤ 768 px wide so lines stay readable.
+- One primary button per view; secondary bordered; ghost for low emphasis.
+- No horizontal scroll at 390 px (asserted by a browser test).
+- Collapsible blocks are native `<details>`; the arrow turns when open.
+- Every confirmation uses the one dialog (`ConfirmButton`): question as title,
+  consequence below, Cancel and a named action; red for deleting or stopping.

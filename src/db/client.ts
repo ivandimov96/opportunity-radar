@@ -31,8 +31,22 @@ function migrationsFolder() {
   return path.join(process.cwd(), "drizzle");
 }
 
+/** Serverless without a hosted database: start every instance from the bundled snapshot, when there is one. */
+function seedFromSnapshot(filePath: string) {
+  const cfg = getConfig();
+  if (!cfg.serverless || cfg.TURSO_DATABASE_URL || fs.existsSync(filePath)) return;
+  const snapshot = path.resolve(/*turbopackIgnore: true*/ process.cwd(), cfg.DATABASE_SNAPSHOT);
+  if (!fs.existsSync(snapshot)) return;
+  fs.copyFileSync(snapshot, filePath);
+  console.log(`[db] started from the bundled snapshot ${cfg.DATABASE_SNAPSHOT}`);
+}
+
 async function open(target: { url: string; authToken?: string; local: boolean }): Promise<Db> {
-  if (target.local && target.url.startsWith("file:")) fs.mkdirSync(path.dirname(target.url.slice(5)), { recursive: true });
+  if (target.local && target.url.startsWith("file:")) {
+    const filePath = target.url.slice(5);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    seedFromSnapshot(filePath);
+  }
   // Local files use ONE connection per process. The driver's busy wait is synchronous (it blocks
   // the event loop), so two pooled connections contending for SQLite's single write lock inside one
   // process can starve each other (observed: a job-claim transaction held open for the whole busy
@@ -51,14 +65,6 @@ async function open(target: { url: string; authToken?: string; local: boolean })
   return db;
 }
 
-/** Ephemeral serverless storage: keep the deployment useful on every cold start. */
-async function needsDemoSeed(client: Client) {
-  const cfg = getConfig();
-  if (!cfg.serverless || cfg.TURSO_DATABASE_URL) return false;
-  const n = (await client.execute("select count(*) as n from businesses")).rows[0]?.n as number;
-  return !n;
-}
-
 /** Returns the migrated database handle (memoized per process). */
 export function getDb(): Promise<Db> {
   const holder = g.__radarDb!;
@@ -68,19 +74,7 @@ export function getDb(): Promise<Db> {
   holder.client?.close();
   holder.key = key;
   holder.db = undefined;
-  const base = open(target);
-  // Seeding runs after `base` resolves and must see a resolved handle itself
-  // (seedDemo and its helpers call getDb), so `ready` is swapped back to `base`
-  // before the seed starts. Callers arriving mid-seed simply get the empty DB.
-  holder.ready = base.then(async (db) => {
-    if (holder.client && (await needsDemoSeed(holder.client))) {
-      holder.ready = base;
-      await import("./seed-demo")
-        .then((m) => m.seedDemo())
-        .catch((err) => console.warn("[db] demo seed failed", err));
-    }
-    return db;
-  });
+  holder.ready = open(target);
   return holder.ready;
 }
 

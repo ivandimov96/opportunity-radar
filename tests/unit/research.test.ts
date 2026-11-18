@@ -76,7 +76,7 @@ describe("detectFacts v3", () => {
     expect(by.website_platform.value).toBe("WordPress");
   });
   it("records measured health, freshness and explicit gaps", () => {
-    expect(by.website_health.value).toBe("HTTPS; mobile viewport; homepage 49 KB in 0.8 s");
+    expect(by.website_health.value).toBe("HTTPS; mobile viewport; homepage 49 KB");
     expect(by.website_updated.value).toBe("2019");
     expect(by.booking_tool.status).toBe("not_found");
     expect(by.maintenance_plans.status).toBe("not_found");
@@ -226,5 +226,64 @@ describe("email stored on the business after an investigation", () => {
     expect(pickEmail("owner@shop.example", "noreply@wixpress.com", site)).toBe("owner@shop.example");
     // No verified email this run: keep what was stored.
     expect(pickEmail("owner@shop.example", null, site)).toBe("owner@shop.example");
+  });
+});
+
+describe("email probe and self-service detection", () => {
+  const page = (body: string) => `<html><head><title>T</title></head><body><nav><a href="/services">Services</a><a href="/contact">Contact us</a><a href="/about">About</a><a href="/financing">Financing</a></nav><main>${body}</main></body></html>`;
+  const site = (pages: Record<string, string>) => {
+    const calls: string[] = [];
+    const scrape: ScrapeFn = async (url) => {
+      calls.push(url);
+      const body = pages[url.replace(/\/$/, "")];
+      const base = { url, finalUrl: url, markdown: null, links: [], title: null, description: null, ms: 1, credits: 1 };
+      return body ? { ...base, statusCode: 200, rawHtml: body, error: null } : { ...base, statusCode: 404, rawHtml: null, error: "HTTP 404" };
+    };
+    return { calls, scrape };
+  };
+  beforeEach(() => {
+    resetEnv({ FIRECRAWL_API_KEY: "test" });
+    _setRobotsFetch(async () => new Response("", { status: 404 }));
+  });
+
+  it("reads the homepage and the contact page first and stops there when neither publishes a business email", async () => {
+    const { crawlStaged } = await import("@/lib/research/crawl");
+    const s = site({ "https://quiet.example": page("<p>Welcome to our long established family plumbing business in town.</p>"), "https://quiet.example/contact": page("<p>Call us. Widget by support@wixpress.com</p>"), "https://quiet.example/services": page("<p>Services list</p>") });
+    const c = await crawlStaged("https://quiet.example", { scrape: s.scrape, needEmail: true });
+    expect(c.stoppedForEmail).toBe(true);
+    expect(s.calls).toEqual(["https://quiet.example", "https://quiet.example/contact"]);
+    expect(c.credits).toBe(2);
+    expect(c.notes.join(" ")).toMatch(/No business email on the homepage or the contact page/);
+  });
+
+  it("continues with the remaining key pages once the contact page shows an email, without fetching anything twice", async () => {
+    const { crawlStaged } = await import("@/lib/research/crawl");
+    const s = site({
+      "https://open.example": page("<p>Welcome to our long established family plumbing business in town.</p>"),
+      "https://open.example/contact": page('<p>Write to <a href="mailto:office@open.example">office@open.example</a></p>'),
+      "https://open.example/services": page("<p>Drain cleaning, water heaters and repiping for homes.</p>"),
+      "https://open.example/about": page("<p>Three generations of plumbers serving the county.</p>"),
+      "https://open.example/financing": page("<p>Financing available on larger jobs for homeowners.</p>"),
+    });
+    const c = await crawlStaged("https://open.example", { scrape: s.scrape, needEmail: true, maxPages: 4 });
+    expect(c.stoppedForEmail).toBe(false);
+    expect(s.calls).toEqual(["https://open.example", "https://open.example/contact", "https://open.example/services", "https://open.example/about"]);
+    expect(c.pages.map((p) => p.kind)).toEqual(["home", "contact", "services", "about"]);
+    expect(c.credits).toBe(4);
+    expect(c.notes.filter((n) => n.startsWith("Firecrawl: "))).toEqual(["Firecrawl: 4 page(s) read, 4 credit(s)"]);
+    // Without the email requirement the crawl is the ordinary one.
+    const s2 = site({ "https://quiet.example": page("<p>Welcome to our long established family plumbing business in town.</p>"), "https://quiet.example/services": page("<p>Services list for all our customers.</p>") });
+    expect((await crawlStaged("https://quiet.example", { scrape: s2.scrape, needEmail: false, maxPages: 2 })).stoppedForEmail).toBe(false);
+  });
+
+  it("detects a customer portal link and online payments, and records explicit gaps otherwise", () => {
+    const html = `<html><head><script src="https://js.stripe.com/v3/"></script></head><body><nav><a href="https://portal.vendorx.example/login">Customer Login</a><a href="/careers">Employee portal</a><a href="/pay">Pay my bill</a></nav><main><p>Plumbing for homes and businesses across the county since 1990.</p></main></body></html>`;
+    const by = Object.fromEntries(detectFacts([{ content: extractPage(html, "https://acme.example/"), url: "https://acme.example/", kind: "home" }]).map((f) => [f.key, f]));
+    expect(by.customer_portal).toMatchObject({ status: "verified", value: "yes" });
+    expect(by.customer_portal.evidenceQuote).toContain("Customer Login");
+    expect(by.online_payments).toMatchObject({ status: "verified", value: "yes (Stripe)" });
+    const plain = Object.fromEntries(detectFacts([{ content: extractPage("<html><body><main><a href='/careers'>Employee portal</a><p>Plumbing for homes and businesses across the county.</p></main></body></html>", "https://acme.example/"), url: "https://acme.example/", kind: "home" }]).map((f) => [f.key, f]));
+    expect(plain.customer_portal.status).toBe("not_found");
+    expect(plain.online_payments.status).toBe("not_found");
   });
 });

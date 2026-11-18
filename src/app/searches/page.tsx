@@ -6,7 +6,6 @@ import { FilterBar, Pagination, SortHeader, TableEmpty } from "@/components/tabl
 import { dateBounds, parseTableParams } from "@/lib/table";
 import { getPlaybook } from "@/lib/industries";
 import { describeFilters } from "@/lib/search-input";
-import { seedDemoAction } from "../actions";
 
 
 export default async function SearchesPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
@@ -41,15 +40,15 @@ export default async function SearchesPage({ searchParams }: { searchParams: Pro
             <TableEmpty
               icon="search"
               title="No searches yet"
-              description="Start with a city and an industry. Overture Maps and OpenStreetMap need no credentials. Or load synthetic demo data to see the whole workflow."
+              description="Start with an industry, a country, a region and a city. Google Maps finds the businesses; a CSV brings your own list."
               action={
                 <>
                   <Link href="/searches/new" className="btn btn-primary">
                     Start a search
                   </Link>
-                  <form action={seedDemoAction}>
-                    <button className="btn">Load demo data</button>
-                  </form>
+                  <Link href="/import" className="btn">
+                    Import a CSV
+                  </Link>
                 </>
               }
             />
@@ -74,8 +73,7 @@ export default async function SearchesPage({ searchParams }: { searchParams: Pro
                     <td>
                       <Link href={`/searches/${r.id}`} className="row-link">
                         {r.name}
-                      </Link>{" "}
-                      {r.isDemo && <Badge tone="demo">demo</Badge>}
+                      </Link>
                     </td>
                     <td className="text-ink-muted">
                       {getPlaybook(r.industry).label}
@@ -94,7 +92,7 @@ export default async function SearchesPage({ searchParams }: { searchParams: Pro
                     <td>
                       <div className="flex gap-1 flex-wrap">
                         {r.providers.map((p) => (
-                          <Badge key={p} tone={p === "demo" ? "demo" : "neutral"}>
+                          <Badge key={p} tone="neutral">
                             {PROVIDER_LABEL[p] ?? p}
                           </Badge>
                         ))}

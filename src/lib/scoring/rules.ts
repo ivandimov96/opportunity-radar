@@ -7,10 +7,13 @@
  * Wording is deliberately hypothetical: a gap on the website is a reason to
  * ask, never proof of how the business operates internally.
  */
-import type { Investigation } from "@/lib/ai/schemas";
-import type { IndustryPlaybook } from "@/lib/industries";
+import type { OpportunityOutput } from "@/lib/ai/schemas";
+import type { IndustryPlaybook, OpportunityCategory } from "@/lib/industries";
 
-export type RuleOpportunity = Investigation["opportunities"][number] & { ruleId: string };
+/** One matched pattern: the same shape as a model opportunity, minus what only consolidation adds. */
+export type RulePattern = Omit<OpportunityOutput, "role" | "why_relevant" | "components" | "scope"> & { ruleId: string; weak: boolean };
+/** @deprecated name kept for older call sites. */
+export type RuleOpportunity = RulePattern;
 
 export interface FactLike {
   key: string;
@@ -23,7 +26,7 @@ interface Rule {
   /** Weak rules rest on gaps alone and apply to most small sites; they are kept only when few strong patterns fired. */
   weak?: boolean;
   when: (f: FactIndex) => boolean;
-  build: (f: FactIndex, playbook: IndustryPlaybook) => Omit<RuleOpportunity, "ruleId">;
+  build: (f: FactIndex, playbook: IndustryPlaybook) => Omit<RulePattern, "ruleId" | "weak">;
 }
 
 /** Weak (gap-only) rules are added only while fewer than this many hypotheses exist. */
@@ -56,7 +59,8 @@ class FactIndex {
   }
 }
 
-const R = (value: number, feasibility: number, evidence: number, readiness: number) => ({ value, feasibility, evidence_strength: evidence, buying_readiness: readiness });
+// The fourth argument was a "buying readiness" guess; it is no longer scored (nothing on a website verifies it).
+const R = (value: number, feasibility: number, evidence: number, _readiness?: number) => ({ value, feasibility, evidence_strength: evidence });
 
 const RULES: Rule[] = [
   {
@@ -268,18 +272,77 @@ const RULES: Rule[] = [
   },
 ];
 
-export function ruleOpportunities(facts: FactLike[], playbook: IndustryPlaybook): RuleOpportunity[] {
+export function ruleOpportunities(facts: FactLike[], playbook: IndustryPlaybook): RulePattern[] {
   const idx = new FactIndex(facts);
   const known = new Set(facts.map((f) => f.key));
-  const out: RuleOpportunity[] = [];
+  const out: RulePattern[] = [];
   const fired = RULES.filter((r) => r.when(idx));
   const strong = fired.filter((r) => !r.weak);
   const weak = fired.filter((r) => r.weak).slice(0, Math.max(0, MAX_WITH_WEAK - strong.length));
   for (const rule of [...strong, ...weak]) {
     const o = rule.build(idx, playbook);
-    out.push({ ...o, supporting_fact_keys: [...new Set(o.supporting_fact_keys.filter((k) => known.has(k)))], ruleId: rule.id });
+    out.push({ ...o, supporting_fact_keys: [...new Set(o.supporting_fact_keys.filter((k) => known.has(k)))], ruleId: rule.id, weak: Boolean(rule.weak) });
   }
   return out;
+}
+
+/** Related categories that one solution can address together. Used only when no model consolidated the patterns. */
+const THEMES: { key: string; title: string; solution: string; categories: OpportunityCategory[] }[] = [
+  { key: "intake", title: "Lead intake, booking and quote follow-up in one flow", solution: "One connected flow from the first request to a confirmed job, instead of separate steps handled by hand", categories: ["website_conversion", "online_booking", "estimate_quote_followup"] },
+  { key: "retention", title: "Customer updates, reminders and reviews on autopilot", solution: "One set of automatic messages around each job: status updates, service reminders and review requests", categories: ["customer_communication", "reminder_automation", "review_reputation"] },
+  { key: "backoffice", title: "Connect and automate the tools behind the counter", solution: "Connect the systems already in use so data is entered once", categories: ["integration_automation", "invoicing_payments", "document_processing", "reporting_analytics", "inventory_parts"] },
+  { key: "accounts", title: "Account portal for commercial customers", solution: "A portal where commercial customers see history, approve work and get statements", categories: ["fleet_b2b", "customer_portal"] },
+];
+const EFFORT_ORDER = ["small", "medium", "large"] as const;
+const uniq = (xs: string[], max: number) => [...new Set(xs)].slice(0, max);
+
+/**
+ * Rules-only consolidation (no model ran): the strongest group of related
+ * patterns becomes ONE primary opportunity whose components are the patterns;
+ * the best pattern of up to two other groups stays as a secondary idea. The
+ * result is always labeled rule-based and never qualifies a business on its own.
+ */
+export function consolidatePatterns(patterns: RulePattern[]): OpportunityOutput[] {
+  if (!patterns.length) return [];
+  const groups = THEMES.map((t) => ({ theme: t, items: patterns.filter((p) => t.categories.includes(p.category as OpportunityCategory)) })).filter((g) => g.items.length);
+  const loose = patterns.filter((p) => !THEMES.some((t) => t.categories.includes(p.category as OpportunityCategory)));
+  for (const p of loose) groups.push({ theme: { key: p.ruleId, title: p.title, solution: p.proposed_solution, categories: [p.category as OpportunityCategory] }, items: [p] });
+  const weight = (items: RulePattern[]) => items.reduce((s, p) => s + (p.weak ? 1 : 3), 0);
+  groups.sort((a, b) => weight(b.items) - weight(a.items));
+  const note = "Matched by fixed rules on the facts above; no model reviewed how this fits the business.";
+  const single = (p: RulePattern, role: "primary" | "secondary"): OpportunityOutput => {
+    const { ruleId: _r, weak: _w, ...rest } = p;
+    return { ...rest, role, scope: "existing", why_relevant: note, components: [] };
+  };
+  const [first, ...others] = groups;
+  let primary: OpportunityOutput;
+  if (first.items.length === 1) primary = single(first.items[0], "primary");
+  else {
+    const items = [...first.items].sort((a, b) => Number(a.weak) - Number(b.weak));
+    const lead = items[0];
+    primary = {
+      role: "primary",
+      category: lead.category,
+      scope: "existing",
+      title: first.theme.title,
+      problem_hypothesis: items.slice(0, 2).map((p) => p.problem_hypothesis).join(" "),
+      proposed_solution: `${first.theme.solution}: ${items.map((p) => p.title.charAt(0).toLowerCase() + p.title.slice(1)).join("; ")}.`,
+      why_relevant: note,
+      components: items.map((p) => ({ name: p.title, description: p.proposed_solution, evidence: p.supporting_fact_keys })),
+      why_not_existing_tool: lead.why_not_existing_tool,
+      expected_value: items.slice(0, 2).map((p) => p.expected_value).join(" "),
+      supporting_fact_keys: uniq(items.flatMap((p) => p.supporting_fact_keys), 20),
+      assumptions: uniq(items.flatMap((p) => p.assumptions), 5),
+      validation_questions: uniq(items.flatMap((p) => p.validation_questions), 5),
+      implementation_effort: EFFORT_ORDER[Math.max(...items.map((p) => EFFORT_ORDER.indexOf(p.implementation_effort)))],
+      reusability: lead.reusability,
+      risks: uniq(items.flatMap((p) => p.risks), 4),
+      sales_angle: lead.sales_angle,
+      ratings: { value: Math.max(...items.map((p) => p.ratings.value)), feasibility: Math.min(...items.map((p) => p.ratings.feasibility)), evidence_strength: Math.round(items.reduce((s, p) => s + p.ratings.evidence_strength, 0) / items.length) },
+    };
+  }
+  const secondary = others.slice(0, 2).map((g) => single([...g.items].sort((a, b) => Number(a.weak) - Number(b.weak))[0], "secondary"));
+  return [primary, ...secondary];
 }
 
 export const RULE_IDS = RULES.map((r) => r.id);

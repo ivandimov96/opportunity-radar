@@ -1,19 +1,25 @@
 /**
- * Three jobs: discover a search, investigate a business, draft outreach.
- * Investigation is one job: fetch → detect facts → (AI) profile + opportunities
- * → score → verdict. A failure for one business never affects another.
+ * Jobs: discover a search, investigate a business, draft outreach.
+ * Investigation is one job: fetch → detect facts → (AI) profile + one
+ * consolidated opportunity → score → qualify. A failure for one business never
+ * affects another.
  */
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { businesses, businessSources, facts, investigations, opportunities, outreachDrafts, pages, searches } from "@/db/schema";
+import { businesses, facts, investigations, observations, opportunities, outreachDrafts, pages, searches } from "@/db/schema";
 import { getConfig } from "@/lib/config";
 import { runDiscovery, type RunOutcome } from "@/lib/discovery/engine";
-import { generateOutreach, investigateWithModel, AiRefusalError, AiSpendLimitError, AiUnavailableError, type OutreachStyle } from "@/lib/ai";
-import { validateOutreach } from "@/lib/ai/outreach";
-import { draftFromTemplate } from "@/lib/outreach/template";
+import { investigateWithModel, AiRefusalError, AiSpendLimitError, AiUnavailableError } from "@/lib/ai";
+import { greetingFor, writeOutreachEmail } from "@/lib/ai/outreach";
+import { buildEvidencePack } from "@/lib/outreach/evidence";
+import { batchPeers } from "@/lib/outreach/drafts";
+import { contactBlockers, OUTBOUND_COMMITTED } from "@/lib/outreach/eligibility";
+import { hasBlock } from "@/lib/outreach/validate";
+import { openCampaign } from "@/lib/outreach/campaigns";
+import { getSettings } from "@/lib/settings";
 import { newId, nowIso } from "@/lib/ids";
 import { createHash } from "node:crypto";
-import { crawlWebsite, type CrawlResult } from "@/lib/research/crawl";
+import { crawlStaged, type CrawlResult, type StagedCrawlResult } from "@/lib/research/crawl";
 import { detectFacts, isVendorEmail, type DetectedFact } from "@/lib/research/detect";
 import { isFirecrawlConfigured, scrapePage } from "@/lib/research/firecrawl";
 import { creditsUsedThisMonth, loadStoredPages } from "@/lib/research/stored";
@@ -22,14 +28,20 @@ import { findWebsite } from "@/lib/discovery/find-website";
 import { normalizeWebsite, websiteDomain } from "@/lib/discovery/normalize";
 import { scoreOpportunity, priorityScore } from "@/lib/scoring/score";
 import { leadScore } from "@/lib/scoring/lead";
-import { ruleOpportunities } from "@/lib/scoring/rules";
+import { consolidatePatterns, ruleOpportunities } from "@/lib/scoring/rules";
+import { contradictionsFor, qualify } from "@/lib/scoring/qualify";
+import { INVESTIGATE_PROMPT_VERSION, OUTREACH_PROMPT_VERSION } from "@/lib/ai/prompts";
+import { checkEmailAddress } from "@/lib/email/address";
+import { verdictLabel } from "@/lib/pipeline/stages";
 import { getPlaybook, type OpportunityCategory } from "@/lib/industries";
 import { filtersOf } from "@/lib/search-input";
-import { advanceStageIfBehind, ensureProspect, logActivity } from "@/lib/pipeline/prospects";
+import { advanceStageIfBehind, ensureProspect, logActivity, markResearching, syncStageWithVerdict } from "@/lib/pipeline/prospects";
 import { enqueueJob, type JobRow } from "./queue";
 
 export type ProgressFn = (p: { message?: string; done?: number; total?: number }) => void;
 export class NonRetryableError extends Error {}
+/** Worth another attempt after a pause (a mail server asked to try later, a connection could not be made). */
+export class RetryableError extends Error {}
 
 // ------------------------------------------------------------------ discover
 /**
@@ -120,19 +132,19 @@ export async function markJobTimedOut(job: JobRow, message: string) {
     await db.update(businesses).set({ status: "failed", statusMessage: message.slice(0, 200), updatedAt: nowIso() }).where(and(eq(businesses.id, businessId), inArray(businesses.status, ["investigating", "queued"]))).run();
   } else if (job.type === "discover_search") {
     await db.update(searches).set({ status: "failed", error: message, updatedAt: nowIso() }).where(and(eq(searches.id, String(job.payload.searchId)), inArray(searches.status, ["running", "queued"]))).run();
+  } else if (job.type === "send_email") {
+    // The outcome is not known: never re-sent on a guess. The operator checks the Sent folder and retries if needed.
+    await db.update(outreachDrafts).set({ status: "failed", lastError: "Sending timed out and the outcome is not known. Check your Sent folder; if the email is not there, use Retry.", updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, String(job.payload.draftId)), eq(outreachDrafts.status, "sending"))).run();
   }
-}
-
-export async function enqueueOutreach(businessId: string, opportunityId: string | null, style: OutreachStyle, senderName?: string | null) {
-  return enqueueJob("generate_outreach", { businessId, opportunityId, style, senderName: senderName ?? null }, { idempotencyKey: `outreach:${businessId}:${opportunityId ?? "best"}:${style}` });
 }
 
 // --------------------------------------------------------------- investigate
 /**
  * One job per business:
- *   locate website (if none) → crawl ‖ off-site footprint → detect facts →
- *   (AI profile + hypotheses, when configured) → rule-based hypotheses →
- *   score & rank → verdict. Every step is bounded; failures are explicit.
+ *   locate website (if none) → email probe (homepage + contact page) → remaining
+ *   key pages ‖ off-site footprint → detect facts → ONE model call (profile,
+ *   observations, one consolidated opportunity) or rules-only consolidation →
+ *   score → qualify. Every step is bounded; failures are explicit.
  */
 export async function handleInvestigateBusiness(job: JobRow, progress: ProgressFn, signal: AbortSignal = new AbortController().signal) {
   const db = await getDb();
@@ -141,12 +153,9 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
   if (!biz) throw new NonRetryableError(`Business ${businessId} not found`);
   await ensureProspect(businessId);
   const setStatus = (status: string, statusMessage: string | null, extra: Partial<typeof businesses.$inferInsert> = {}) => db.update(businesses).set({ status, statusMessage, updatedAt: nowIso(), ...extra }).where(eq(businesses.id, businessId)).run();
-  if (biz.isDemo) {
-    await setStatus("profiled", "Demo record (seeded)");
-    throw new NonRetryableError("Demo businesses are seeded; live investigation is skipped");
-  }
   const cfg = getConfig();
   const notes: string[] = [];
+  const hints = () => ({ brand: biz.brand, reviewCount: biz.reviewCount, rating: biz.rating });
 
   // 0. Locate a website when none is on record (search + verified domain guesses; each candidate check is one credit).
   let creditsUsed = 0;
@@ -169,30 +178,34 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
       throw new NonRetryableError("No website could be located for this business");
     }
     const website = normalizeWebsite(found.website)!;
-    const lead = leadScore({ ...biz, website });
+    const lead = leadScore({ ...biz, website }, hints());
     await db.update(businesses).set({ website, websiteDomain: websiteDomain(website), websiteSource: found.source, leadScore: lead.score, kind: lead.kind, updatedAt: nowIso() }).where(eq(businesses.id, businessId)).run();
     await logActivity(businessId, "system", `Website located by ${found.source === "found_search" ? "web search" : found.source === "found_email" ? "its email domain" : "domain guess"} and verified: ${website} (${found.evidence}).`, { confidence: found.confidence });
     biz = (await db.select().from(businesses).where(eq(businesses.id, businessId)).get())!;
   }
 
   // Stored pages from a recent investigation are reused instead of spending credits: automatically within
-  // RESEARCH_STALE_DAYS, always on "re-analyze", never on "research again".
+  // RESEARCH_STALE_DAYS, always on "re-analyze", never on "research again". Pages kept from an email probe
+  // (homepage + contact page only) are not a full crawl, so they are reused only when re-analysis was asked for.
   const mode = (job.payload.mode as InvestigateMode | undefined) ?? "auto";
-  const stored = mode === "recrawl" ? null : await loadStoredPages(businessId, biz.website!, mode === "reanalyze" ? Number.POSITIVE_INFINITY : cfg.RESEARCH_STALE_DAYS);
+  let stored = mode === "recrawl" ? null : await loadStoredPages(businessId, biz.website!, mode === "reanalyze" ? Number.POSITIVE_INFINITY : cfg.RESEARCH_STALE_DAYS);
+  if (stored?.probeOnly && mode !== "reanalyze") stored = null;
   if (!stored) await requireFirecrawl(setStatus);
 
   await setStatus("investigating", stored ? "Re-analyzing stored pages" : "Fetching website via Firecrawl");
   const invId = newId();
   const started = Date.now();
   await db.insert(investigations).values({ id: invId, businessId, status: "running" }).run();
+  await markResearching(businessId);
 
   try {
-    // 1. Crawl (or reuse stored pages) and off-site footprint in parallel.
+    // 1. Crawl (or reuse stored pages) and off-site footprint in parallel. A new crawl starts with the email probe.
+    const needEmail = cfg.RESEARCH_REQUIRE_EMAIL && !biz.email;
     const runFootprint = (site: string) => (cfg.RESEARCH_FOOTPRINT ? footprintFacts(site, { signal }).catch((err) => ({ facts: [] as DetectedFact[], notes: [`Footprint lookups failed: ${(err as Error).message}`] })) : Promise.resolve({ facts: [] as DetectedFact[], notes: [] as string[] }));
-    const runCrawl = (site: string): Promise<CrawlResult> =>
+    const runCrawl = (site: string): Promise<StagedCrawlResult> =>
       stored
-        ? Promise.resolve({ pages: stored.pages, notes: [`Reused ${stored.pages.length} stored page(s) from ${stored.startedAt.slice(0, 10)} (${stored.ageDays} day(s) old, 0 credits)${mode === "reanalyze" ? " on request" : "; use “Research again” for a fresh crawl"}`], durationMs: 0, home: stored.pages.find((p) => p.kind === "home" && p.content) ?? null, credits: 0, stoppedEarly: null })
-        : crawlWebsite(site, { onProgress: (m) => progress({ message: m }), signal });
+        ? Promise.resolve({ pages: stored.pages, notes: [`Reused ${stored.pages.length} stored page(s) from ${stored.startedAt.slice(0, 10)} (${stored.ageDays} day(s) old, 0 credits)${mode === "reanalyze" ? " on request" : "; use “Research again” for a fresh crawl"}`], durationMs: 0, home: stored.pages.find((p) => p.kind === "home" && p.content) ?? null, credits: 0, stoppedEarly: null, stoppedForEmail: false })
+        : crawlStaged(site, { onProgress: (m) => progress({ message: m }), signal, needEmail });
     let [crawl, footprint] = await Promise.all([runCrawl(biz.website!), runFootprint(biz.website!)]);
     notes.push(...crawl.notes, ...footprint.notes);
     signal.throwIfAborted();
@@ -235,8 +248,30 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
     // 2. Deterministic facts from the site, plus off-site records.
     await setStatus("investigating", cfg.ai.enabled ? "Building profile and analyzing opportunities" : "Detecting profile facts");
     const detected: DetectedFact[] = [...detectFacts(fetched.map((p) => ({ content: p.content!, url: p.url, kind: p.kind })), crawl.home ? { finalUrl: crawl.home.finalUrl, bytes: crawl.home.bytes, ms: crawl.home.ms } : undefined), ...footprint.facts];
+    const detectedEmail = detected.find((f) => f.key === "email" && f.status === "verified") ?? null;
+    const detectedPhone = detected.find((f) => f.key === "phone" && f.status === "verified")?.value ?? null;
 
-    // 3. Model (optional), validated in code.
+    // 2b. The email gate: without a public address there is nobody to write to, so the remaining pages (already
+    // skipped by the probe) and the model call are not spent. Existing research on the business is left as it is.
+    if (cfg.RESEARCH_REQUIRE_EMAIL && !pickEmail(biz.email, detectedEmail?.value ?? null, biz.websiteDomain)) {
+      const reason = `No public email address was found on the ${fetched.length === 1 ? "homepage" : `${fetched.length} page(s) read`}; research paused before the full analysis. Add an email to continue.`;
+      const hasFacts = Boolean(await db.select({ id: facts.id }).from(facts).where(eq(facts.businessId, businessId)).limit(1).get());
+      const writes = [
+        ...(hasFacts ? [] : detected.map((d) => db.insert(facts).values({ id: newId(), businessId, investigationId: invId, key: d.key, status: d.status === "unknown" ? "not_found" : d.status, value: d.value, evidenceQuote: d.evidenceQuote, sourceUrl: d.sourceUrl, method: "detected" }))),
+        db.update(businesses).set({ status: "profiled", statusMessage: "No public email found; research paused", verdict: "no_contact", verdictReasons: [reason], phone: biz.phone ?? detectedPhone, email: pickEmail(biz.email, null, biz.websiteDomain), investigatedAt: nowIso(), updatedAt: nowIso() }).where(eq(businesses.id, businessId)),
+        db.update(investigations).set({ status: "done", finishedAt: nowIso(), durationMs: Date.now() - started, pagesFetched: fetched.length, pagesFailed: failed.length, factsVerified: detected.filter((d) => d.status === "verified").length, creditsUsed, verdict: "no_contact", verdictReason: reason, warnings: [], notes }).where(eq(investigations.id, invId)),
+      ] as const;
+      signal.throwIfAborted();
+      await db.batch(writes as unknown as Parameters<typeof db.batch>[0]);
+      await logActivity(businessId, "system", `Research paused after ${fetched.length} page(s) and ${creditsUsed} Firecrawl credit(s): no public email address found.`, { investigationId: invId });
+      await syncStageWithVerdict(businessId, "no_contact");
+      return;
+    }
+
+    // 3. Model (optional), validated in code. Fixed rule patterns are handed to it as candidates, never kept beside it.
+    const playbook = getPlaybook(biz.industry);
+    const asFacts = (list: DetectedFact[]) => list.map((d) => ({ key: d.key, status: d.status === "unknown" ? ("not_found" as const) : d.status, value: d.value, evidenceQuote: d.evidenceQuote, sourceUrl: d.sourceUrl }));
+    const patterns = ruleOpportunities(asFacts(detected), playbook);
     let outcome: Awaited<ReturnType<typeof investigateWithModel>> | null = null;
     const warnings: string[] = [];
     let model: string | null = null;
@@ -245,11 +280,14 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
     signal.throwIfAborted();
     if (cfg.ai.enabled) {
       try {
-        outcome = await investigateWithModel({ id: biz.id, name: biz.name, industry: biz.industry, city: biz.city, region: biz.region, category: biz.category }, fetched.map((p) => ({ url: p.url, kind: p.kind, title: p.content!.title, text: p.content!.text })), detected);
+        outcome = await investigateWithModel({ id: biz.id, name: biz.name, industry: biz.industry, city: biz.city, region: biz.region, category: biz.category }, fetched.map((p) => ({ url: p.url, kind: p.kind, title: p.content!.title, text: p.content!.text })), detected, {
+          listing: biz.reviewCount != null ? `${biz.rating ?? "unrated"} rating from ${biz.reviewCount} reviews on Google Maps` : null,
+          patterns: patterns.map((p) => ({ category: p.category, title: p.title, keys: p.supporting_fact_keys })),
+        });
         warnings.push(...outcome.warnings);
         model = outcome.model;
         costUsd = outcome.costUsd;
-        if (outcome.rejected.length) notes.push(`Rejected ${outcome.rejected.length} model fact(s) whose evidence could not be verified verbatim`);
+        if (outcome.rejected.length) notes.push(`Rejected ${outcome.rejected.length} model fact(s)/observation(s) whose evidence could not be verified verbatim`);
       } catch (err) {
         if (err instanceof AiSpendLimitError || err instanceof AiRefusalError || err instanceof AiUnavailableError) {
           aiSkipped = err.message;
@@ -257,122 +295,130 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
         } else throw err;
       }
     }
-    const finalFacts = outcome ? outcome.facts : detected.map((d) => ({ key: d.key, status: d.status === "unknown" ? ("not_found" as const) : d.status, value: d.value, evidenceQuote: d.evidenceQuote, sourceUrl: d.sourceUrl }));
+    const finalFacts = outcome ? outcome.facts : asFacts(detected);
+    const finalObservations = outcome?.observations ?? [];
     const summaryFact = finalFacts.find((f) => f.key === "summary" && f.status === "verified");
 
-    // 4. Rule-based hypotheses complement the model (categories it did not cover) or stand alone.
-    const playbook = getPlaybook(biz.industry);
-    const aiOpps = (outcome?.opportunities ?? []).map((o) => ({ ...o, source: "ai" as const }));
-    const covered = new Set(aiOpps.map((o) => o.category));
-    const ruleOpps = ruleOpportunities(finalFacts, playbook)
-      .filter((o) => !covered.has(o.category))
-      .map((o) => ({ ...o, source: "rules" as const }));
-    const candidates = [...aiOpps, ...ruleOpps];
+    // 4. One consolidated opportunity: the model's when it ran (its "no" is final), otherwise the rule patterns grouped in code.
+    const candidates = outcome ? outcome.opportunities.map((o) => ({ ...o, source: "ai" as const })) : consolidatePatterns(patterns).map((o) => ({ ...o, source: "rules" as const }));
 
-    // 5. Score, rank, keep the best few.
-    const verifiedKeys = new Set(finalFacts.filter((f) => f.status === "verified").map((f) => f.key));
-    const gapKeys = new Set(finalFacts.filter((f) => f.status === "not_found").map((f) => f.key));
-    const hasEmail = verifiedKeys.has("email") || Boolean(biz.email);
-    const hasPhone = verifiedKeys.has("phone") || Boolean(biz.phone);
-    const hasForm = verifiedKeys.has("contact_form");
-    const scoredAll = candidates
-      .map((o) => {
-        const score = scoreOpportunity({
-          category: o.category as OpportunityCategory,
-          aiRatings: { value: o.ratings.value, feasibility: o.ratings.feasibility, evidenceStrength: o.ratings.evidence_strength, buyingReadiness: o.ratings.buying_readiness },
-          implementationEffort: o.implementation_effort,
-          reusability: o.reusability,
-          supportingVerifiedCount: o.supporting_fact_keys.filter((k) => verifiedKeys.has(k as never)).length,
-          supportingGapCount: o.supporting_fact_keys.filter((k) => gapKeys.has(k as never)).length,
-          totalVerifiedFacts: verifiedKeys.size,
-          pagesResearched: fetched.length,
-          assumptionCount: o.assumptions.length,
-          contact: { email: hasEmail, phone: hasPhone, contactForm: hasForm },
-        });
-        return { o, score, priority: priorityScore(score.attractiveness, score.confidence) };
-      })
-      .sort((a, b) => b.priority - a.priority);
-    // Model hypotheses are always kept (they read the full pages); rule-based ones fill the remaining slots.
-    const keptAi = scoredAll.filter((s) => s.o.source === "ai");
-    const keptRules = scoredAll.filter((s) => s.o.source === "rules").slice(0, Math.max(0, MAX_OPPORTUNITIES - keptAi.length));
-    const scored = [...keptAi, ...keptRules].sort((a, b) => b.priority - a.priority);
+    // 5. Score. Observations are verified evidence (their quotes were checked); gaps are not.
+    const verifiedKeys = new Set(finalFacts.filter((f) => f.status === "verified").map((f) => f.key as string));
+    const gapKeys = new Set(finalFacts.filter((f) => f.status === "not_found").map((f) => f.key as string));
+    const observationRefs = new Set(finalObservations.map((o) => o.ref));
+    const scoredAll = candidates.map((o) => {
+      const verifiedEvidence = o.supporting_fact_keys.filter((k) => verifiedKeys.has(k) || observationRefs.has(k)).length;
+      const gapEvidence = o.supporting_fact_keys.filter((k) => gapKeys.has(k)).length;
+      const score = scoreOpportunity({
+        category: o.category as OpportunityCategory,
+        aiRatings: { value: o.ratings.value, feasibility: o.ratings.feasibility, evidenceStrength: o.ratings.evidence_strength },
+        implementationEffort: o.implementation_effort,
+        reusability: o.reusability,
+        supportingVerifiedCount: verifiedEvidence,
+        supportingGapCount: gapEvidence,
+        totalVerifiedFacts: verifiedKeys.size + observationRefs.size,
+        pagesResearched: fetched.length,
+        assumptionCount: o.assumptions.length,
+      });
+      return { o, score, priority: priorityScore(score.attractiveness, score.confidence), verifiedEvidence, gapEvidence };
+    });
+    const primary = scoredAll.find((s) => s.o.role === "primary") ?? null;
+    const scored = [...(primary ? [primary] : []), ...scoredAll.filter((s) => s !== primary).sort((a, b) => b.priority - a.priority)].slice(0, MAX_OPPORTUNITIES);
 
-    // Too little was seen to recommend anything: say so instead of ranking hypotheses built on gaps.
-    // Measured keys (health, dates, hosting) exist for nearly every reachable site, so only content facts count here.
-    const contentVerified = [...verifiedKeys].filter((k) => !MEASURED_KEYS.has(k)).length;
+    // 6. Qualify. Measured keys (health, dates, hosting) exist for nearly every reachable site, so only content counts as "seen enough".
+    const contentVerified = [...verifiedKeys].filter((k) => !MEASURED_KEYS.has(k)).length + observationRefs.size;
     const thin = contentVerified < MIN_VERIFIED_FOR_VERDICT || (fetched.length <= 1 && contentVerified < MIN_VERIFIED_SINGLE_PAGE);
-    let verdict: "opportunity" | "no_opportunity" | "needs_ai" | "insufficient_evidence";
-    let verdictReason: string;
-    if (thin && !aiOpps.length) {
-      verdict = "insufficient_evidence";
-      verdictReason = `Only ${fetched.length} page(s) could be read and ${contentVerified} fact(s) about the business verified; the site does not show enough to assess. ${scored.length ? `${scored.length} rule-based pattern(s) kept as weak hypotheses.` : ""}`.trim();
-    } else if (scored.length) {
-      verdict = "opportunity";
-      const n = { ai: aiOpps.length, rules: scored.filter((s) => s.o.source === "rules").length };
-      verdictReason = outcome ? (outcome.verdict === "opportunity" ? outcome.verdictReason : `Model found no compelling opportunity (${outcome.verdictReason}); ${n.rules} rule-based pattern(s) kept as hypotheses to validate.`) : `${n.rules} rule-based pattern(s) matched the verified facts and gaps; AI analysis not run (${aiSkipped}).`;
-    } else if (outcome) {
-      verdict = "no_opportunity";
-      verdictReason = outcome.verdictReason;
-    } else {
-      verdict = "needs_ai";
-      verdictReason = `No rule-based pattern matched; AI analysis not run (${aiSkipped}).`;
-    }
+    const q = qualify({
+      kind: biz.kind,
+      thin,
+      thinReason: `Only ${fetched.length} page(s) could be read and ${contentVerified} fact(s) about the business verified; the site does not show enough to assess.`,
+      modelRan: Boolean(outcome),
+      modelVerdict: outcome?.verdict ?? null,
+      modelReason: outcome?.verdictReason ?? null,
+      aiSkipped,
+      primary: primary ? { source: primary.o.source, title: primary.o.title, verifiedEvidence: primary.verifiedEvidence, gapEvidence: primary.gapEvidence, confidence: primary.score.confidence, attractiveness: primary.score.attractiveness, contradictions: contradictionsFor(primary.o.category, finalFacts) } : null,
+    });
+    const verdict = q.verdict;
+    const verdictReason = q.reasons.join(" ");
 
-    // 6. Persist atomically: replace facts and opportunities for this business (one batch; see src/db/client.ts).
-    const best = scored[0];
-    const emailFact = finalFacts.find((f) => f.key === "email" && f.status === "verified")?.value ?? null;
+    // 7. Contact: the address the site publishes, where it was found, and whether its domain accepts mail.
+    const verifiedEmail = finalFacts.find((f) => f.key === "email" && f.status === "verified") ?? null;
+    const email = pickEmail(biz.email, verifiedEmail?.value ?? null, biz.websiteDomain);
+    const fromSite = Boolean(email && verifiedEmail?.value === email);
+    const emailCheck = email ? await checkEmailAddress(email, { mx: cfg.RESEARCH_FOOTPRINT }) : null;
     const phoneFact = finalFacts.find((f) => f.key === "phone" && f.status === "verified")?.value ?? null;
+    const contactFact = finalFacts.find((f) => f.key === "contact_person" && f.status === "verified")?.value ?? null;
+
+    // 8. Persist atomically: replace facts, observations and opportunities for this business (one batch; see src/db/client.ts).
+    const statusMessage =
+      verdict === "qualified" ? `Qualified: ${primary!.o.title}` : verdict === "needs_review" ? (primary ? `Needs review: ${primary.o.title}` : "Needs review") : verdict === "not_a_fit" ? "Not a fit: no convincing opportunity" : `Insufficient evidence: ${fetched.length} page(s), ${contentVerified} verified fact(s)`;
     const writes = [
       db.delete(facts).where(eq(facts.businessId, businessId)),
       ...finalFacts.map((f) => {
         const method = detected.some((d) => d.key === f.key && d.status === f.status && d.value === f.value) ? "detected" : "ai";
         return db.insert(facts).values({ id: newId(), businessId, investigationId: invId, key: f.key, status: f.status, value: f.value, evidenceQuote: f.evidenceQuote, sourceUrl: f.sourceUrl, method });
       }),
+      db.delete(observations).where(eq(observations.businessId, businessId)),
+      ...finalObservations.map((o) => db.insert(observations).values({ id: newId(), businessId, investigationId: invId, ref: o.ref, kind: o.kind, statement: o.statement, evidenceQuote: o.evidenceQuote, sourceUrl: o.sourceUrl })),
       db.delete(opportunities).where(eq(opportunities.businessId, businessId)),
       ...scored.map(({ o, score }, i) =>
         db
           .insert(opportunities)
-          .values({ id: newId(), investigationId: invId, businessId, category: o.category, title: o.title, problemHypothesis: o.problem_hypothesis, proposedSolution: o.proposed_solution, whyNotExistingTool: o.why_not_existing_tool, expectedValue: o.expected_value, supportingFactKeys: o.supporting_fact_keys, assumptions: o.assumptions, validationQuestions: o.validation_questions, implementationEffort: o.implementation_effort, reusability: o.reusability, risks: o.risks, salesAngle: o.sales_angle, aiRatings: { value: o.ratings.value, feasibility: o.ratings.feasibility, evidenceStrength: o.ratings.evidence_strength, buyingReadiness: o.ratings.buying_readiness }, attractivenessScore: score.attractiveness, confidenceScore: score.confidence, scoreBreakdown: score.breakdown, rank: i + 1, source: o.source }),
+          .values({ id: newId(), investigationId: invId, businessId, category: o.category, title: o.title, problemHypothesis: o.problem_hypothesis, proposedSolution: o.proposed_solution, whyNotExistingTool: o.why_not_existing_tool, expectedValue: o.expected_value, supportingFactKeys: o.supporting_fact_keys, assumptions: o.assumptions, validationQuestions: o.validation_questions, implementationEffort: o.implementation_effort, reusability: o.reusability, risks: o.risks, salesAngle: o.sales_angle, aiRatings: { value: o.ratings.value, feasibility: o.ratings.feasibility, evidenceStrength: o.ratings.evidence_strength }, attractivenessScore: score.attractiveness, confidenceScore: score.confidence, scoreBreakdown: score.breakdown, rank: i + 1, source: o.source, role: o.role, components: o.components, whyRelevant: o.why_relevant, scope: o.scope, promptVersion: o.source === "ai" ? INVESTIGATE_PROMPT_VERSION : "rules" }),
       ),
       db
         .update(businesses)
         .set({
           status: "profiled",
-          statusMessage: verdict === "opportunity" ? `${scored.length} opportunity hypothes${scored.length === 1 ? "is" : "es"}${scored.every((s) => s.o.source === "rules") ? " (rule-based)" : ""}` : verdict === "no_opportunity" ? "No compelling opportunity" : verdict === "insufficient_evidence" ? `Insufficient evidence: ${fetched.length} page(s), ${verifiedKeys.size} verified fact(s)` : "Profile detected; no pattern matched; AI analysis pending",
+          statusMessage,
           verdict,
+          verdictReasons: q.reasons,
           summary: summaryFact?.value ?? null,
           // The email verified by this run wins unless the stored one is on the business's own domain (the one case
           // where an older value is at least as trustworthy); vendor/widget addresses are never kept.
-          email: pickEmail(biz.email, emailFact, biz.websiteDomain),
+          email,
+          emailSource: email ? (fromSite ? "site" : (biz.emailSource ?? "listing")) : null,
+          emailSourceUrl: email ? (fromSite ? verifiedEmail!.sourceUrl : biz.emailSourceUrl) : null,
+          emailStatus: emailCheck?.status ?? null,
+          contactName: contactFact ? contactFact.slice(0, 80) : null,
           phone: biz.phone ?? phoneFact,
-          bestAttractiveness: best?.score.attractiveness ?? null,
-          bestConfidence: best?.score.confidence ?? null,
-          priority: best ? best.priority : null,
+          bestAttractiveness: primary?.score.attractiveness ?? null,
+          bestConfidence: primary?.score.confidence ?? null,
+          priority: primary ? primary.priority : null,
           investigatedAt: nowIso(),
           updatedAt: nowIso(),
         })
         .where(eq(businesses.id, businessId)),
       db
         .update(investigations)
-        .set({ status: "done", finishedAt: nowIso(), durationMs: Date.now() - started, pagesFetched: fetched.length, pagesFailed: failed.length, factsVerified: verifiedKeys.size, factsRejected: outcome?.rejected.length ?? 0, model, costUsd, creditsUsed, workflows: outcome?.workflows ?? [], verdict, verdictReason, warnings, notes })
+        .set({ status: "done", finishedAt: nowIso(), durationMs: Date.now() - started, pagesFetched: fetched.length, pagesFailed: failed.length, factsVerified: verifiedKeys.size + observationRefs.size, factsRejected: outcome?.rejected.length ?? 0, model, costUsd, creditsUsed, workflows: [], verdict, verdictReason, warnings, notes, promptVersion: outcome ? INVESTIGATE_PROMPT_VERSION : "rules" })
         .where(eq(investigations.id, invId)),
     ] as const;
     signal.throwIfAborted();
     await db.batch(writes as unknown as Parameters<typeof db.batch>[0]);
-    await logActivity(businessId, "system", `Investigated in ${((Date.now() - started) / 1000).toFixed(1)}s: ${fetched.length} page(s), ${verifiedKeys.size} verified facts, ${footprint.facts.length} off-site record(s), ${creditsUsed} Firecrawl credit(s). ${verdict === "opportunity" ? `${scored.length} opportunity hypothesis(es) (${scored.filter((s) => s.o.source === "ai").length} AI, ${scored.filter((s) => s.o.source === "rules").length} rule-based).` : verdict === "no_opportunity" ? `No compelling opportunity: ${verdictReason}` : "No pattern matched; AI analysis not run."}`, { investigationId: invId });
-    if (verdict === "opportunity") await advanceStageIfBehind(businessId, "qualified", "investigation found an opportunity");
+    await logActivity(
+      businessId,
+      "system",
+      `Investigated in ${((Date.now() - started) / 1000).toFixed(1)}s: ${fetched.length} page(s), ${verifiedKeys.size} verified facts, ${observationRefs.size} observation(s), ${creditsUsed} Firecrawl credit(s). ${verdictLabel(verdict)}${primary && verdict !== "not_a_fit" ? `: “${primary.o.title}” (${primary.o.source === "ai" ? "AI" : "rule-based"}, ${primary.o.components.length} part(s))` : ""}. ${verdictReason}`,
+      { investigationId: invId, verdict },
+    );
+    await syncStageWithVerdict(businessId, verdict);
+    // An unsent email for a business the research now sets aside rests on an idea that no longer stands: withdraw it.
+    if (verdict === "not_a_fit") await db.update(outreachDrafts).set({ status: "archived", updatedAt: nowIso() }).where(and(eq(outreachDrafts.businessId, businessId), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "excluded"]))).run();
+    // A qualified business with a usable address gets its email written right away (Settings → Automation).
+    if (verdict === "qualified") await maybeAutoDraft(businessId).catch((err) => console.warn(`[outreach] could not queue the email for ${businessId}:`, err));
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     await db.update(investigations).set({ status: "failed", finishedAt: nowIso(), durationMs: Date.now() - started, error: msg, notes, creditsUsed }).where(eq(investigations.id, invId)).run();
     await setStatus("failed", msg.slice(0, 200));
+    await syncStageWithVerdict(businessId, "failed").catch(() => {});
     throw err;
   }
 }
 
-/** Below this many verified content facts the verdict is "insufficient evidence"; a single-page site needs a few more to count as seen. */
+/** Below this many verified content facts the outcome is "insufficient evidence"; a single-page site needs a few more to count as seen. */
 export const MIN_VERIFIED_FOR_VERDICT = 5;
 export const MIN_VERIFIED_SINGLE_PAGE = 7;
-/** Measured for nearly every reachable site; they say nothing about how the business operates, so they do not count toward the verdict threshold. */
 /** Which email to store after an investigation: see the call site. Exported for tests. */
 export function pickEmail(stored: string | null, verified: string | null, websiteDomain: string | null): string | null {
   const own = (e: string | null) => Boolean(e && websiteDomain && (e.endsWith(`@${websiteDomain}`) || e.endsWith(`.${websiteDomain}`)));
@@ -383,57 +429,105 @@ export function pickEmail(stored: string | null, verified: string | null, websit
   return stored && isVendorEmail(stored) ? null : stored;
 }
 
+/** Measured for nearly every reachable site; they say nothing about how the business operates, so they do not count toward "seen enough". */
 export const MEASURED_KEYS = new Set<string>(["website_health", "website_updated", "domain_registered", "site_first_seen", "email_provider"]);
 
-/** Opportunities kept per business after ranking: all model hypotheses (≤3) plus rule-based patterns up to this total. */
-export const MAX_OPPORTUNITIES = 5;
+/** One primary opportunity plus at most two independent secondary ideas. */
+export const MAX_OPPORTUNITIES = 3;
 
 // ------------------------------------------------------------------ outreach
+/** Queue the email for a business: step 0 = first email, 1 = the follow-up. One job per business and step at a time. */
+export async function enqueueOutreach(businessId: string, opts: { step?: 0 | 1; feedback?: string | null } = {}) {
+  const step = opts.step ?? 0;
+  return enqueueJob("generate_outreach", { businessId, step, feedback: opts.feedback ?? null }, { idempotencyKey: `outreach:${businessId}:${step}` });
+}
+
+/**
+ * After research: a qualified business with a usable address gets its email
+ * written without anyone asking, unless the operator already touched one
+ * (edited or approved it) or switched this off.
+ */
+export async function maybeAutoDraft(businessId: string): Promise<boolean> {
+  const cfg = getConfig();
+  if (!cfg.ai.enabled) return false;
+  const settings = await getSettings();
+  if (!settings.autoDraft) return false;
+  const db = await getDb();
+  const biz = await db.select().from(businesses).where(eq(businesses.id, businessId)).get();
+  if (!biz || biz.verdict !== "qualified") return false;
+  if ((await contactBlockers(biz, settings)).length) return false;
+  const existing = await db.select().from(outreachDrafts).where(and(eq(outreachDrafts.businessId, businessId), eq(outreachDrafts.step, 0), ne(outreachDrafts.status, "archived"))).all();
+  // Already written and touched by the operator, or already on its way: leave it alone.
+  if (existing.some((d) => !["needs_review", "ready"].includes(d.status) || d.editedByUser)) return false;
+  await enqueueOutreach(businessId);
+  return true;
+}
+
+/**
+ * Writes one email: evidence pack → writer → fixed checks → independent claim
+ * check (→ one rewrite when something fails). The result replaces any earlier
+ * unsent email for the same business and step and lands in the open batch as
+ * "ready" (all checks passed, recipient usable) or "needs review".
+ */
 export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, signal: AbortSignal = new AbortController().signal) {
   const db = await getDb();
+  const cfg = getConfig();
   const businessId = String(job.payload.businessId);
-  const opportunityId = job.payload.opportunityId ? String(job.payload.opportunityId) : null;
-  const style = (job.payload.style as OutreachStyle) ?? "concise";
-  const senderName = (job.payload.senderName as string | null) ?? null;
+  const step = Number(job.payload.step ?? 0) === 1 ? 1 : 0;
+  const feedback = (job.payload.feedback as string | null) ?? null;
   const biz = await db.select().from(businesses).where(eq(businesses.id, businessId)).get();
   if (!biz) throw new NonRetryableError(`Business ${businessId} not found`);
-  const opp = opportunityId
-    ? await db.select().from(opportunities).where(eq(opportunities.id, opportunityId)).get()
-    : await db.select().from(opportunities).where(eq(opportunities.businessId, businessId)).orderBy(opportunities.rank).limit(1).get();
-  if (!opp) throw new NonRetryableError("No opportunity available to write about; investigate the business first");
-  const factRows = await db.select().from(facts).where(eq(facts.businessId, businessId)).all();
-  progress({ message: `Drafting ${style} outreach` });
-  const oppInput = { title: opp.title, category: opp.category, problemHypothesis: opp.problemHypothesis, proposedSolution: opp.proposedSolution, expectedValue: opp.expectedValue, salesAngle: opp.salesAngle, supportingFactKeys: opp.supportingFactKeys, validationQuestions: opp.validationQuestions };
-  const factInput = factRows.map((f) => ({ key: f.key, status: f.status, value: f.value }));
+  if (!cfg.ai.enabled) throw new NonRetryableError("Writing emails needs a model key (ANTHROPIC_API_KEY). Research and review work without it.");
+  const opp = (await db.select().from(opportunities).where(and(eq(opportunities.businessId, businessId), eq(opportunities.role, "primary"))).limit(1).get()) ?? (await db.select().from(opportunities).where(eq(opportunities.businessId, businessId)).orderBy(opportunities.rank).limit(1).get());
+  if (!opp) throw new NonRetryableError("No opportunity to write about; research the business first");
+  const committed = await db.select().from(outreachDrafts).where(and(eq(outreachDrafts.businessId, businessId), inArray(outreachDrafts.status, OUTBOUND_COMMITTED))).orderBy(desc(outreachDrafts.createdAt)).all();
+  const first = committed.find((d) => d.step === 0 && d.status === "sent") ?? null;
+  if (step === 0 && committed.some((d) => d.step === 0)) throw new NonRetryableError("This business was already emailed; a second first email is never written");
+  if (step === 1 && !first) throw new NonRetryableError("A follow-up needs a first email that was sent");
+  if (step === 1 && committed.some((d) => d.step === 1)) throw new NonRetryableError("A follow-up was already sent to this business");
+
+  // One alternative from the research, preferably of a different kind than the main idea, to mention in a single line.
+  const alternatives = await db.select().from(opportunities).where(and(eq(opportunities.businessId, businessId), eq(opportunities.role, "secondary"), eq(opportunities.source, "ai"))).orderBy(desc(opportunities.attractivenessScore)).all();
+  const alternative = alternatives.find((a) => a.id !== opp.id && a.scope && a.scope !== opp.scope) ?? alternatives.find((a) => a.id !== opp.id && a.category !== opp.category) ?? null;
+  const settings = await getSettings();
+  const campaign = await openCampaign();
+  const [factRows, obsRows] = await Promise.all([db.select().from(facts).where(eq(facts.businessId, businessId)).all(), db.select().from(observations).where(eq(observations.businessId, businessId)).all()]);
+  const pack = buildEvidencePack(factRows, obsRows, opp);
+  const others = await batchPeers(campaign.id, businessId, step);
+  progress({ message: step === 1 ? "Writing the follow-up" : "Writing the email" });
+  let out: Awaited<ReturnType<typeof writeOutreachEmail>>;
   try {
-    let out: Awaited<ReturnType<typeof generateOutreach>>;
-    let templateReason: string | null = getConfig().ai.enabled ? null : "AI is not configured";
-    if (!templateReason) {
-      try {
-        out = await generateOutreach({ id: biz.id, name: biz.name, city: biz.city, region: biz.region }, oppInput, factInput, style, senderName);
-      } catch (err) {
-        if (err instanceof AiSpendLimitError || err instanceof AiUnavailableError) templateReason = err.message;
-        else throw err;
-        out = undefined as never;
-      }
-    }
-    if (templateReason) {
-      const draft = draftFromTemplate({ name: biz.name, city: biz.city }, oppInput, factInput, style, senderName);
-      const validated = validateOutreach(draft, factInput);
-      out = { draft: validated.draft, warnings: [`Template draft (${templateReason}): built only from verified facts and gaps; review the wording before sending.`, ...validated.warnings], model: "template", costUsd: 0 };
-    }
-    const warnings = [...out!.warnings];
-    if (!biz.email) warnings.push("No verified email address for this business; recipient must be found manually.");
-    signal.throwIfAborted();
-    await db
-      .insert(outreachDrafts)
-      .values({ id: newId(), businessId, opportunityId: opp.id, style, channel: "email", toEmail: biz.email ?? null, subject: out!.draft.subject, body: out!.draft.body, claims: out!.draft.claims, warnings, status: "draft", model: out!.model })
-      .run();
-    await logActivity(businessId, "system", `Outreach draft generated (${style}) for "${opp.title}".`, { warnings });
+    out = await writeOutreachEmail({
+      business: { id: biz.id, name: biz.name, city: biz.city, region: biz.region, category: biz.category },
+      greeting: greetingFor(biz.name),
+      sender: { name: settings.senderName, company: settings.senderCompany, offer: settings.offer, bookingLink: settings.bookingLink, voiceSamples: settings.voiceSamples },
+      // The plain-words pitch is only trusted from the model: the fixed rule patterns phrase theirs around what was not found.
+      opportunity: { title: opp.title, problemHypothesis: opp.problemHypothesis, proposedSolution: opp.proposedSolution, whyRelevant: opp.whyRelevant, pitch: opp.source === "ai" ? opp.salesAngle : null, expectedValue: opp.expectedValue, scope: opp.scope, components: (opp.components ?? []).map((c) => ({ name: c.name, description: c.description })), validationQuestions: opp.validationQuestions },
+      also: alternative ? { inPlainWords: `${alternative.title}. ${alternative.salesAngle ?? ""}`.trim(), scope: alternative.scope } : null,
+      pack,
+      step,
+      firstEmail: first ? { subject: first.subject ?? "", body: first.body } : null,
+      others,
+      feedback,
+    });
   } catch (err) {
     if (err instanceof AiSpendLimitError || err instanceof AiRefusalError || err instanceof AiUnavailableError) throw new NonRetryableError(err.message);
     throw err;
   }
+  signal.throwIfAborted();
+
+  const blockers = await contactBlockers(biz, settings);
+  const issues = [...out.validation.issues, ...blockers.map((message) => ({ severity: "block" as const, code: "recipient", message }))];
+  const validation = { ...out.validation, issues, passed: !hasBlock(issues) };
+  const status = validation.passed ? "ready" : "needs_review";
+  const id = newId();
+  await db.batch([
+    // The new email replaces earlier unsent ones for the same step; they stay in the history as archived.
+    db.update(outreachDrafts).set({ status: "archived", updatedAt: nowIso() }).where(and(eq(outreachDrafts.businessId, businessId), eq(outreachDrafts.step, step), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "excluded", "failed"]))),
+    db.insert(outreachDrafts).values({ id, businessId, opportunityId: opp.id, campaignId: campaign.id, step, style: "personal", channel: "email", toEmail: biz.email ?? null, subject: out.email.subject, body: out.email.body, claims: out.email.claims, warnings: issues.map((i) => i.message), validation, status, model: out.model, costUsd: out.costUsd, promptVersion: OUTREACH_PROMPT_VERSION, inReplyTo: step === 1 ? (first?.messageId ?? null) : null }),
+  ]);
+  await logActivity(businessId, "system", `${step === 1 ? "Follow-up" : "Outreach email"} written for “${opp.title}” (${out.attempts} attempt(s), $${out.costUsd.toFixed(3)}): ${validation.passed ? "all checks passed, ready for review" : `needs review: ${issues.filter((i) => i.severity === "block").map((i) => i.message).join(" ")}`}`, { draftId: id, status });
+  if (step === 0 && validation.passed) await advanceStageIfBehind(businessId, "ready_to_contact", "email written and checked");
 }
 
 /** Latest investigation for a business (helper for pages). */

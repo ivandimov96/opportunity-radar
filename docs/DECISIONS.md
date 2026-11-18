@@ -265,3 +265,238 @@ third party (SerpApi's legal shield applies to paid plans only); 250 searches �
 month; Google's relevance ranking decides what the first pages contain. Rejected: keeping Overture
 and OpenStreetMap as fallbacks (founder: one source only), the official Places API (card required).
 
+
+## D26 — No demo data in the product (2026-10-29)
+Demo data was removed entirely at the founder's request: no demo provider, no seed, no
+"Load demo data", no automatic seeding on serverless hosts, no `is_demo` columns, badges
+or filters. The product only ever shows businesses the operator found or imported.
+Synthetic records live only in the test fixture (`tests/fixtures/seed.ts`) and never
+reach a product database. Consequence: a Vercel deployment without Turso starts empty.
+
+## D27 — Google Maps through Serper instead of SerpApi (2026-10-29)
+The founder chose Serper (serper.dev) as the transport for Google Maps listings: 2,500 free
+credits on sign-up without a card (SerpApi: 250 searches a month), 3 credits per page of 20 (measured live), the same
+listing fields (name, category, address, phone, website, coordinates, rating, reviews, place id).
+The provider key stays `google_maps`; only the transport, the env keys (`SERPER_*`) and the budget
+model changed: the budget is a total (`SERPER_CREDIT_BUDGET`, default 2,500) because the free
+credits do not renew, tracked across all periods in `provider_usage`. Lost: Serper's maps results
+carry no open/closed state. Not yet exercised live: the founder adds `SERPER_API_KEY` to `.env`.
+
+---
+
+# 2026-11-12: from research tool to business development platform
+
+The founder asked for an automated platform: discover, research deeply, consolidate into one
+opportunity, write a personal email, review a campaign, send with one button, track replies, keep
+a simple pipeline. D28 to D36 are the decisions of that rebuild. Where they contradict earlier
+entries (D4, D5, D9, D13, D14, D16, D19), these win.
+
+## D28 — One consolidated opportunity per business, produced inside the research call
+Alternatives: a separate consolidation job or model call; a table of opportunity groups; keeping
+several hypotheses and letting the operator pick. Choice: the single research call returns one
+primary opportunity made of components that each cite evidence, plus at most two independent
+secondary ideas; code drops components and ideas that cite nothing established; rows keep a
+`role`. Why: the model already has the full context, a second call adds cost and a second way to
+fail, and the measured data showed the old output splitting one idea into three (70 hypotheses for
+18 businesses). Trade-off: existing research has to be re-analyzed to get the new shape.
+
+## D29 — The model's "no" is final; rule patterns are inputs, not parallel results
+Measured: 4 of 17 businesses marked "opportunity" were ones the model had rejected (a company with
+20,000 reviews on ServiceTitan, a pay-per-call lead page) because any matching rule pattern
+overrode it. Choice: matched patterns are passed to the model as candidates; when the model runs,
+nothing rule-based is stored beside its answer; without a model the patterns are grouped into one
+idea in code and the business can only reach "needs review".
+
+## D30 — Qualification in code, with five outcomes in one field
+`businesses.verdict` is now qualified | needs_review | not_a_fit | insufficient_evidence |
+no_contact, with reasons in plain sentences. Qualified needs a model opportunity backed by at
+least two verified observations, confidence of 60 or more, and no contradiction with a verified
+fact. Things not found on a website never count as evidence. Contact quality left the
+attractiveness score (it is a gate before outreach, not a property of the idea) and the "buying
+readiness" guess was removed (nothing on a website verifies it). Lead scores now use the listing's
+review count, because every listing with a website and a phone had the same score.
+
+## D31 — Research stops after two pages when there is no public email
+Six of 19 businesses had no public email. Choice: read the homepage and contact page first; without
+a business email on either, stop (outcome `no_contact`, 2 credits, no model call). The operator can
+add an address and research continues. Switch: `RESEARCH_REQUIRE_EMAIL`. Trade-off: an address
+published only on a third page is missed.
+
+## D32 — Free-form observations beside the fixed profile fields
+The 35 profile fields were shaped by auto repair and home services and had no place for portals,
+payments or quote processes. Choice: keep the fields (they drive rules, lists and comparison) and
+add up to ten model-written observations per business (offering, process, capability, limitation),
+each rejected unless its quote is verbatim on the cited page. A limitation must be something a page
+states; an absence is a gap, never an observation. New detected fields: customer portal, online
+payments, service area, team size, contact person.
+
+## D33 — Emails: evidence pack, fixed checks, an independent claim check, signature in code
+The old validator trusted the writer's own list of claims and only warned. A stored draft stated a
+"27.7 second" load time that was really the crawler's fetch time. Choice: the writer sees only an
+evidence pack (verified content with the business's words; no measurements); fixed checks read the
+text; a second call that did not write the email marks every statement about the business as
+supported, a question, or unsupported; any failure forces one rewrite, then "needs review". The
+signature, postal address and opt-out line come from Settings and are appended by code. Template
+emails and the three styles were removed: one voice, set once. Fetch time is no longer recorded as
+a fact.
+
+## D34 — Mailbox over SMTP and IMAP with an app password
+Alternatives: Gmail API, Microsoft Graph, a transactional email service. The service was ruled out
+first: their terms generally prohibit unsolicited outreach, mail would not come from the
+operator's mailbox, and delivery events need a public webhook this local app does not have. Between
+the mailbox options, the founder's provider was not known, so the choice is the one that works with
+almost any mailbox and needs three lines of configuration: SMTP to send, IMAP to read replies and
+to check the Sent folder. Behind a small `MailProvider` interface with an in-memory implementation
+for tests. Limits: no delivery receipts beyond "accepted" and bounces; Microsoft 365 tenants often
+disable app passwords (a Graph adapter would fit the same interface); no open tracking, by choice.
+
+## D35 — One button, paced sending, at most once
+"Send approved emails" queues one job per email at planned times (pause between sends, sending
+hours, daily cap) instead of sending a burst. Each email has its Message-ID before the first
+attempt; queued → sending is one atomic statement; an attempt without a known outcome is looked up
+in the Sent folder and otherwise handed to the operator. Never re-sent on a guess: at-most-once by
+construction, with a human decision for the rare unknown. Recipient checks (valid, allowed country,
+not suppressed, never emailed before, no duplicate) run when written, approved, summarized and sent.
+
+## D36 — Simpler product surface
+Five navigation items (Dashboard, Businesses, Outreach, Pipeline, Settings). Ten pipeline stages in
+one field; the board shows Qualified onward and counts the two machine stages. Batches ("campaigns")
+are not managed: one is open, sending closes it. Replies are answered from the operator's own mail
+program; the app suggests an answer and keeps the conversation. Removed: the Patterns page and
+validation signals (no signal had ever been recorded), the Overture and OpenStreetMap providers and
+the DuckDB dependency (disabled since D25), template drafts, outreach styles. Operator settings
+moved to a `settings` table; secrets stay in `.env`. The AI limit became monthly. A scheduler in the
+worker does inbox sync, follow-up drafts, auto-drafting and auto-research; it never sends and never
+starts a search.
+
+## D37 — One screen per question, counts shown once (2026-11-18)
+The founder asked for the simplest, most visible and best organised interface, with everything in
+one place. Before changing anything every page was screenshotted and compared against published
+guidance on CRM dashboards, dashboards in general and settings pages. That guidance is mostly
+practitioner writing, not controlled research, but it agrees on four points that were applied:
+start from "what should I do now", keep the top level to a handful of numbers, reveal detail on
+request, and group settings by subject. What changed: the dashboard leads with what is waiting and
+shows the funnel as one strip plus this month's use; the sidebar carries a count per section and
+one line of setup status; Businesses has one row of views and five columns; the business page opens
+on an Overview (what they do, the verdict, the one idea) and no longer lists what was not found
+among the facts; Outreach lost its tiles because the tabs already count; the pipeline board is
+shorter and its history is collapsed; Settings is five tabs. Nothing was removed from what the
+operator can do. Details in docs/DESIGN.md.
+
+## D38 — Research that fits any business, proposals an owner recognises, shorter and warmer emails (2026-11-18)
+The founder asked for a review of the whole chain from crawl to email, aiming at attractive, very
+friendly, not too detailed emails that propose a solution. Four weaknesses were found in the code
+and fixed. (1) Page selection was tuned to car repair: a quote page, a "how it works" page, forms,
+job ads, "products" or "practice areas" were classed as "other" and never read. The page kinds are
+now industry-neutral, and the budget is 6 pages instead of 5 (about one more Firecrawl credit per
+researched business). (2) The model read pages in crawl order, so the contact page, fetched first
+for the email probe, could push the services page out of the text budget; pages are now ordered by
+how much they explain the business and the contact page is capped. (3) The research prompt
+(research-3) now states what makes a proposal worth sending (a problem the owner would recognise,
+who uses it, a small first version, working with what they have, never a category) and asks for the
+idea in plain words. (4) The email prompt (outreach-3) asks for 70 to 120 words instead of 100 to
+160, a genuine specific opening, one line on who is writing, the idea in everyday words with at
+most one example and no list of parts, and an invitation that can be answered with a reply. The
+fixed length check moved with it (soft range 65 to 125 words). The evidence rules did not change:
+nothing unobserved may be stated, and absences may only be asked about.
+
+Verified live the same day on three metal fabrication firms near Birmingham (UK), researched first
+with the old logic and then with the new one on a fresh crawl. Old: titles such as "Structured
+bespoke-fabrication quote intake and job tracker", emails of 130 to 150 words that listed every
+part of the solution. New: titles such as "Quote requests that arrive with everything needed to
+price them", solutions described as a first version plus what it could grow into, emails of 90 to
+110 words with one idea, one question and "a 15-minute call, or just reply here". All statements in
+the six emails were marked supported or phrased as questions by the independent check; one was
+verified by hand against the stored page text. One weakness showed: all three new emails used the
+same sentence to introduce the sender. The writer is now told to word it afresh and is shown how
+the other emails in the batch did it, and a fixed check remarks on any sentence repeated word for
+word within a batch (outreach-4; this last tweak has not been run live). Measured cost with the new
+logic: research $0.15 and 5 Firecrawl credits per business, an email $0.05 including its check.
+
+The founder chose Europe over the US. The UK was added to the allowed countries because its
+regulator (ICO) states that the email marketing rule does not apply to corporate subscribers
+(companies, LLPs), provided the sender is identified and an opt-out is offered; sole traders and
+ordinary partnerships are treated as individuals and need consent. The app does not yet check the
+legal form of a business, so that is the operator's check before approving a UK email. Germany and
+other countries that require consent between businesses were not added.
+
+Later the same day the founder asked that an email never call the recipient a small firm or a local
+business, because it can read as a slight, and that the voice be as warm and approachable as
+possible. The writer is now told so (outreach-5), the research pitch may not remark on size
+(research-4), a fixed check blocks "small/local business, firm, shop ..." unless those are the
+business's own words, and the default description of the sender no longer names who they work for.
+The four waiting emails were rewritten live under these rules: none mentions size, each introduces
+the sender differently, and each closes by wishing the business well.
+
+## D39 — A wider range of solutions, and the operator chooses which idea to raise (2026-11-18)
+In the live test all four ideas were the same one: a better quote request form with follow-up. The
+founder asked to offer different software solutions, things a company needs, and not only
+improvements to features it already has; and to define this properly before spending anything.
+Cause: the research was told to tie an idea to something on the pages, and what a website shows
+best is its own enquiry form. Definition, in code (`src/lib/industries/index.ts`):
+- A catalogue of sixteen families of solution (`OPPORTUNITY_CATEGORIES`, `SOLUTION_GUIDE`), each
+  with what it does in plain words and the signals that make it worth considering. Three were
+  added: job and production tracking, planning people, visits and deliveries, and AI help with
+  routine questions and documents. Labels are no longer tied to car repair.
+- Three kinds of idea (`SOLUTION_SCOPES`, stored as `opportunities.scope`): it improves something
+  they already offer; it is something new for their customers; it is a tool for the team.
+- The research prompt (research-5) shows the whole catalogue, tells the model to choose the main
+  idea by what it would be worth to the business and not by how easy it is to quote, not to default
+  to the enquiry form, and to add up to two alternatives of a different family and, where the
+  evidence allows, a different kind.
+- Evidence rules are unchanged and one was added: every idea cites verified facts about the
+  business; an alternative with fewer than two verified facts is dropped in code; a website cannot
+  show how a company runs inside, so ideas of the second and third kind are put to the owner as a
+  question (the writer is told which kind it has, outreach-6).
+- On the business page the operator can press "Raise this idea instead" on an alternative: it
+  becomes the idea outreach is built on, the unsent email about the previous one is withdrawn and a
+  new one is written. Once a first email is out the choice is locked.
+Not run against the live model: this was defined and tested offline only, at the founder's request.
+
+Run live the same day on the four businesses from stored pages ($0.81 of AI, no credits). The main
+idea stayed the quote request in all four (the model rates it highest), but each business gained
+one or two real alternatives of another kind: a job board from cutting to installation, test
+certificates matched to orders, an offcuts list customers can browse, tracking of work sent to
+partners. The founder then decided three things, built without further spend (outreach-7, not yet
+run live): (1) the email keeps one main idea and may mention one alternative in a single short
+line; (2) subjects must earn the open: two to five words, about the company's own thing or a short
+honest question, sentence or lower case, no advert words, never a fake reply; a fixed check blocks
+advert words and fake "Re:" and remarks on long subjects; (3) every email greets the company
+("Hi Acme Steel team,"), never a person named on a website, and no person is named anywhere in the
+email. The four waiting emails had their subject and greeting corrected by hand.
+
+## D40 — Removing a business for good, and one period control (2026-11-18)
+The founder asked to remove businesses that are not a fit while making sure a later search does not
+bring them back, and for a date filter on the Dashboard and the Businesses list, friendly, with the
+last 7 days as the default.
+- Removal (`src/lib/pipeline/removed.ts`): the business and everything researched about it is
+  deleted and a small record stays in `removed_businesses` (name, city, website domain, phone,
+  listing ids). Discovery and CSV import check that record first and leave a match out, counted on
+  the search page. A business that was already emailed is not removable (the record of the email,
+  replies and opt-outs must stay): it goes to Lost instead. Removed businesses are listed under
+  Settings → Do not contact, where one can be allowed again. A hidden flag on the business row was
+  rejected: every list, count and job would have had to remember to skip it.
+- Period (`src/lib/date-range.ts`, `src/components/date-range.tsx`): one dropdown (Today,
+  Yesterday, Last 7 days, Last 30 days, This month, Last month, This year, All time, Custom dates)
+  that applies as soon as it is picked; with nothing chosen it is the last 7 days. On the
+  Dashboard it scopes the funnel, each step counted by the date it happened; "Waiting for you" and
+  "This month" always show the present. On the Businesses list it scopes the list and the view
+  counts by the date found (or researched, or updated). Links that point at specific work
+  ("businesses to judge", the pipeline counters) open the list on All time so nothing is hidden.
+
+## D41 — Pipeline with a period and a full history; one dialog; other subjects on request (2026-11-18)
+- Pipeline (`src/app/pipeline/page.tsx`): two views that share the period dropdown. *Board*: the
+  cards that moved in the period (the last 7 days by default), at most twelve per column with a link
+  to the rest, each card showing when it last moved and whether a reply is waiting; a line says how
+  many businesses are on the board from before the period, with "Show all time". *History*
+  (`pipelineHistory`): every recorded event of the process across all businesses, by day, with a
+  filter by kind (stage moves; emails, calls and notes; research and system) and a search. It
+  replaces the collapsed "move history", which only listed stage changes.
+- Removing is also possible from each row of the Businesses table.
+- Confirmations (`src/components/confirm-button.tsx`): the browser's own pop-up is replaced by one
+  dialog used everywhere: the question as the title, what will happen below it, Cancel and a
+  clearly named action, red when the action deletes or stops something.
+- "A different subject" on the email review page: on request, one small model call suggests other
+  subjects for the email as written (`suggestSubjects`); only suggestions that pass the fixed
+  subject checks and were not tried before are offered, and choosing one changes the subject only.
+

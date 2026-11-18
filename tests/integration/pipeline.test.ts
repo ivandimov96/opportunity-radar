@@ -3,8 +3,9 @@
  * outreach -> pipeline, driven through the real job queue and handlers. HTTP
  * and the model are mocked at module boundaries; everything else runs for real.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
+import { _setSerperFetch } from "@/lib/discovery/google-maps";
 
 const SITE: Record<string, string> = {
   "https://bartonauto.example": `<html><head><title>Barton Auto Care</title><script src="https://static.parastorage.com/a.js"></script></head><body>
@@ -51,36 +52,70 @@ vi.mock("@/lib/ai/client", async (importOriginal) => {
 });
 
 import { useTempDb, resetEnv } from "../helpers";
-import { businesses, facts, investigations, jobs, opportunities, outreachDrafts, pages, prospects, searchResults, searches } from "@/db/schema";
+import { businesses, facts, investigations, jobs, observations, opportunities, outreachDrafts, pages, prospects, searchResults, searches } from "@/db/schema";
 import { newId } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { drainQueue } from "@/lib/jobs/worker";
-import { enqueueInvestigation, enqueueOutreach } from "@/lib/jobs/handlers";
+import { enqueueInvestigation } from "@/lib/jobs/handlers";
 import { clearRobotsCache } from "@/lib/research/robots";
 
 const fake = (data: unknown) => ({ data, model: "mock-model", usage: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, costUsd: 0.001 } });
-const OPP = { category: "estimate_quote_followup", title: "Estimate follow-up", problem_hypothesis: "Free estimates may go unfollowed", proposed_solution: "Follow-up workflow", why_not_existing_tool: "No suite detected", expected_value: "Recover estimates", supporting_fact_keys: ["estimate_policy", "booking_method", "shop_management_tool", "bogus"], assumptions: ["No follow-up tooling"], validation_questions: ["How are estimates approved?"], implementation_effort: "small", reusability: "high", risks: [], sales_angle: "You offer free estimates", ratings: { value: 4, feasibility: 4, evidence_strength: 4, buying_readiness: 3 } };
+const OPP = {
+  role: "primary",
+  scope: "internal",
+  category: "estimate_quote_followup",
+  title: "Estimate-to-booking flow",
+  problem_hypothesis: "Free estimates may go unfollowed",
+  proposed_solution: "One flow from request to approved estimate",
+  why_relevant: "They advertise free estimates and take bookings by phone and form.",
+  components: [
+    { name: "Online requests", description: "Requests land in the schedule.", evidence: ["booking_method", "contact_form"] },
+    { name: "Estimate follow-up", description: "Nudges with an approve link.", evidence: ["estimate_policy", "o1"] },
+    { name: "Loyalty app", description: "Points.", evidence: ["bogus"] },
+  ],
+  why_not_existing_tool: "No suite detected",
+  expected_value: "Recover estimates",
+  supporting_fact_keys: ["estimate_policy", "booking_method", "shop_management_tool", "bogus"],
+  assumptions: ["No follow-up tooling"],
+  validation_questions: ["How are estimates approved?"],
+  implementation_effort: "small",
+  reusability: "high",
+  risks: [],
+  sales_angle: "You offer free estimates",
+  ratings: { value: 4, feasibility: 4, evidence_strength: 4 },
+};
+
+/** Four Google Maps listings (served through the injected transport): two complete, one without a street, one without a website. */
+const LISTINGS = [
+  { position: 1, title: "Barton Creek Auto Care", placeId: "ChIJ1", cid: "1", latitude: 30.27, longitude: -97.74, rating: 4.7, ratingCount: 120, type: "Auto repair shop", types: ["Auto repair shop"], address: "4100 Sample Lane, Austin, TX 78704", phoneNumber: "(512) 555-0101", website: "https://barton-creek-auto-care.example" },
+  { position: 2, title: "Northside Transmission & Brake", placeId: "ChIJ2", cid: "2", latitude: 30.28, longitude: -97.74, rating: 4.5, ratingCount: 80, type: "Auto repair shop", types: ["Auto repair shop"], address: "9020 Sample Blvd, Austin, TX 78758", phoneNumber: "(512) 555-0102", website: "https://northside-transmission.example" },
+  { position: 3, title: "Lone Star Euro Specialists", placeId: "ChIJ3", cid: "3", latitude: 30.26, longitude: -97.75, rating: 4.6, ratingCount: 40, type: "Auto repair shop", types: ["Auto repair shop"], address: "Austin, TX", phoneNumber: "(512) 555-0103", website: "https://lonestar-euro.example" },
+  { position: 4, title: "Quick Lube Corner", placeId: "ChIJ4", cid: "4", latitude: 30.29, longitude: -97.73, rating: 4.1, ratingCount: 15, type: "Oil change service", types: ["Oil change service"], address: "Austin, TX", phoneNumber: "(512) 555-0104" },
+];
+const CANDIDATES = LISTINGS.map((l) => ({ phone: l.phoneNumber, website: "website" in l ? l.website : null }));
 
 describe("integrated pipeline", () => {
   let db: Awaited<ReturnType<typeof useTempDb>>;
   beforeEach(async () => {
-    resetEnv({ ANTHROPIC_API_KEY: "test-key", FIRECRAWL_API_KEY: "test" });
+    resetEnv({ ANTHROPIC_API_KEY: "test-key", FIRECRAWL_API_KEY: "test", SERPER_API_KEY: "k-test", SERPER_MAX_PAGES: "1" });
+    _setSerperFetch((async () => new Response(JSON.stringify({ ll: "@30.26720,-97.74310,13z", places: LISTINGS }), { status: 200, headers: { "content-type": "application/json" } })) as typeof fetch);
     db = await useTempDb();
     clearRobotsCache();
     callStructured.mockReset();
     scrapeCalls.length = 0;
   });
+  afterEach(() => _setSerperFetch(null));
 
-  it("runs discovery (demo provider) and records search stats without investigating demo records", async () => {
+  it("runs discovery (Google Maps through the injected transport) and records search stats", async () => {
     const id = newId();
-    await db.insert(searches).values({ id, name: "Demo", industry: "auto_repair", country: "US", city: "Austin", maxResults: 10, providers: ["demo"], requireWebsite: false, autoInvestigate: true }).run();
+    await db.insert(searches).values({ id, name: "Austin", industry: "auto_repair", country: "US", region: "TX", city: "Austin", maxResults: 10, providers: ["google_maps"], requireWebsite: false, autoInvestigate: false }).run();
     await enqueueJob("discover_search", { searchId: id });
     expect(await drainQueue()).toBe(1);
     const s = (await db.select().from(searches).where(eq(searches.id, id)).get())!;
     expect(s.status).toBe("done");
     expect(s.stats?.created).toBe(4);
     // Everything the run learned is kept: per-source counts/timings and an ordered log.
-    expect(s.stats?.providerResults.demo?.durationMs).toBeGreaterThanOrEqual(0);
+    expect(s.stats?.providerResults.google_maps?.durationMs).toBeGreaterThanOrEqual(0);
     expect(s.stats?.candidates).toBe(4);
     expect(s.stats?.durationMs).toBeGreaterThanOrEqual(0);
     expect(s.stats?.notes?.some((n) => /Ranking: 4 unique business/.test(n))).toBe(true);
@@ -89,14 +124,13 @@ describe("integrated pipeline", () => {
     const csv = (await exportSearchCsv(id))!.csv.split("\n");
     expect(csv[0]).toContain("lead_score");
     expect(csv).toHaveLength(5);
-    expect((await db.select().from(businesses).all()).every((b) => b.isDemo)).toBe(true);
     expect(await db.select().from(prospects).all()).toHaveLength(4);
     expect(await db.select().from(jobs).where(eq(jobs.type, "investigate_business")).all()).toHaveLength(0);
   });
 
-  it("investigates a website: detected + grounded AI facts, scored opportunities, verdict, drafts, pipeline", async () => {
+  it("investigates a website: grounded facts and observations, ONE consolidated opportunity, qualification, pipeline", async () => {
     const bizId = newId();
-    await db.insert(businesses).values({ id: bizId, name: "Barton Auto Care", nameNormalized: "barton auto care", industry: "auto_repair", website: "https://bartonauto.example", websiteDomain: "bartonauto.example", city: "Austin", region: "TX", firstProvider: "csv" }).run();
+    await db.insert(businesses).values({ id: bizId, name: "Barton Auto Care", nameNormalized: "barton auto care", industry: "auto_repair", website: "https://bartonauto.example", websiteDomain: "bartonauto.example", city: "Austin", region: "TX", country: "US", firstProvider: "csv", reviewCount: 120, rating: 4.7 }).run();
     callStructured.mockImplementationOnce(async () =>
       fake({
         facts: [
@@ -106,86 +140,127 @@ describe("integrated pipeline", () => {
           { key: "shop_management_tool", status: "verified", value: "Tekmetric", evidence_quote: "Powered by Tekmetric", source_url: "https://bartonauto.example" }, // ungrounded -> rejected; detected not_found stays
           { key: "maintenance_plans", status: "not_found", value: "", evidence_quote: "", source_url: "" },
         ],
-        workflows: [{ name: "Phone scheduling", fact_keys: ["booking_method"] }],
-        opportunities: [OPP, { ...OPP, category: "fleet_b2b", title: "Fleet portal", supporting_fact_keys: [], ratings: { value: 4, feasibility: 3, evidence_strength: 4, buying_readiness: 2 } }],
+        observations: [
+          { ref: "o1", kind: "offering", statement: "They welcome fleet accounts from local businesses.", evidence_quote: "Fleet accounts welcome for local businesses", source_url: "https://bartonauto.example" },
+          { ref: "o2", kind: "limitation", statement: "Quotes are faxed.", evidence_quote: "We fax every quote", source_url: "https://bartonauto.example" }, // not on the page -> rejected
+        ],
+        opportunities: [
+          OPP,
+          { ...OPP, role: "secondary", category: "fleet_b2b", title: "Fleet portal", components: [], supporting_fact_keys: [] }, // nothing supports it -> dropped
+          { ...OPP, role: "secondary", category: "reminder_automation", title: "Service reminders", components: [], supporting_fact_keys: ["maintenance_plans"] }, // a gap only -> not an alternative worth offering
+          { ...OPP, role: "secondary", scope: "new_for_customers", category: "fleet_b2b", title: "Fleet accounts online", components: [], supporting_fact_keys: ["o1", "warranty", "maintenance_plans"] }, // two verified facts of its own -> kept
+        ],
         verdict: "opportunity",
         verdict_reason: "Phone-only booking and free estimates.",
       }),
     );
     await enqueueInvestigation(bizId);
     expect(await drainQueue(["investigate_business"])).toBe(1);
+    // The model was told what the listing says and which rule patterns matched, as candidates.
+    const userMessage = (callStructured.mock.calls[0][0] as { user: string }).user;
+    expect(userMessage).toContain("4.7 rating from 120 reviews");
+    expect(userMessage).toMatch(/Patterns a fixed rule set matched[\s\S]*\[estimate_quote_followup\]/);
 
     const biz = (await db.select().from(businesses).where(eq(businesses.id, bizId)).get())!;
     expect(biz.status).toBe("profiled");
-    expect(biz.verdict).toBe("opportunity");
+    expect(biz.verdict).toBe("qualified");
+    expect(biz.verdictReasons?.[0]).toContain("Estimate-to-booking flow");
+    expect(biz.statusMessage).toBe("Qualified: Estimate-to-booking flow");
     expect(biz.summary).toBe("Family-owned auto repair shop");
-    expect(biz.email).toBe("service@bartonauto.example");
+    expect(biz).toMatchObject({ email: "service@bartonauto.example", emailSource: "site", emailSourceUrl: "https://bartonauto.example", emailStatus: "unchecked" });
     expect(biz.priority).toBeGreaterThan(0);
     const f = Object.fromEntries((await db.select().from(facts).where(eq(facts.businessId, bizId)).all()).map((x) => [x.key, x]));
     expect(f.booking_method).toMatchObject({ status: "verified", value: "mixed", method: "detected" });
     expect(f.website_platform).toMatchObject({ status: "verified", value: "Wix" });
-    expect(f.estimate_policy).toMatchObject({ status: "verified", value: "free_estimates", method: "detected" }); // text cue now detects it before the model
+    expect(f.estimate_policy).toMatchObject({ status: "verified", value: "free_estimates", method: "detected" }); // text cue detects it before the model
     expect(f.fleet_program).toMatchObject({ status: "verified", method: "detected" });
     expect(f.shop_management_tool.status).toBe("not_found");
     expect(f.maintenance_plans.status).toBe("not_found");
     expect(f.contact_form.status).toBe("verified");
+    expect(f.customer_portal.status).toBe("not_found");
+    const obs = await db.select().from(observations).where(eq(observations.businessId, bizId)).all();
+    expect(obs.map((o) => [o.ref, o.kind])).toEqual([["o1", "offering"]]);
     const all = (await db.select().from(opportunities).where(eq(opportunities.businessId, bizId)).all()).sort((a, b) => a.rank - b.rank);
-    // Model hypotheses are kept; rule-based patterns fill categories the model did not cover; ranked by priority, capped.
-    const opps = all.filter((o) => o.source === "ai");
-    expect(opps).toHaveLength(2);
-    expect(all.length).toBeLessThanOrEqual(5);
-    expect(all.some((o) => o.source === "rules")).toBe(true);
-    expect(new Set(all.map((o) => o.category)).size).toBe(all.length);
-    expect(opps[0].supportingFactKeys).toEqual(["estimate_policy", "booking_method", "shop_management_tool"]);
-    expect(opps[1].supportingFactKeys).toEqual([]);
-    expect(opps[1].confidenceScore).toBeLessThanOrEqual(35);
-    expect(opps[0].confidenceScore).toBeGreaterThan(opps[1].confidenceScore);
-    for (let i = 1; i < all.length; i++) expect(all[i - 1].attractivenessScore * 0.6 + all[i - 1].confidenceScore * 0.4).toBeGreaterThanOrEqual(all[i].attractivenessScore * 0.6 + all[i].confidenceScore * 0.4 - 1);
+    // One primary with its supported components; the unsupported idea is gone; no rule pattern is kept beside the model's result.
+    expect(all.map((o) => [o.role, o.source, o.title])).toEqual([["primary", "ai", "Estimate-to-booking flow"], ["secondary", "ai", "Fleet accounts online"]]);
+    expect(all[0].components?.map((c) => c.name)).toEqual(["Online requests", "Estimate follow-up"]);
+    expect(all[0].supportingFactKeys).toEqual(["estimate_policy", "booking_method", "shop_management_tool", "contact_form", "o1"]);
+    expect(all[0].whyRelevant).toContain("free estimates");
+    expect(all[0].promptVersion).toBe("research-5");
+    expect(all.map((o) => o.scope)).toEqual(["internal", "new_for_customers"]); // the kind of idea is stored with it
+    expect(all[1].confidenceScore).toBeGreaterThanOrEqual(50); // an alternative stands on verified facts of its own
+    expect(biz.bestConfidence).toBe(all[0].confidenceScore);
     expect((await db.select().from(prospects).where(eq(prospects.businessId, bizId)).get())!.stage).toBe("qualified");
-
-    callStructured.mockImplementationOnce(async () =>
-      fake({ subject: "A quick idea", body: "Hi Barton Auto Care team, I noticed you offer free estimates and ask customers to call to schedule. Would a 15-minute call be useful? Shops see 20% more bookings.", claims: [{ text: "offer free estimates", fact_keys: ["estimate_policy"] }, { text: "Shops see 20% more bookings", fact_keys: [] }] }),
-    );
-    await enqueueOutreach(bizId, opps[0].id, "concise");
-    expect(await drainQueue(["generate_outreach"])).toBe(1);
-    const drafts = await db.select().from(outreachDrafts).where(eq(outreachDrafts.businessId, bizId)).all();
-    expect(drafts).toHaveLength(1);
-    expect(drafts[0].toEmail).toBe("service@bartonauto.example");
-    expect(drafts[0].claims[0].factKeys).toEqual(["estimate_policy"]);
-    expect(drafts[0].warnings.some((w) => w.startsWith("Unsupported claim"))).toBe(true);
-    expect(drafts[0].warnings.some((w) => w.includes("percentage"))).toBe(true);
+    const inv = (await db.select().from(investigations).where(eq(investigations.businessId, bizId)).get())!;
+    expect(inv).toMatchObject({ verdict: "qualified", promptVersion: "research-5", factsRejected: 2, creditsUsed: 4 });
+    // Qualified with a usable address: the email is queued without anyone asking (and not written twice).
+    const queued = await db.select().from(jobs).where(eq(jobs.type, "generate_outreach")).all();
+    expect(queued.map((j) => [j.status, j.payload.businessId, j.payload.step])).toEqual([["queued", bizId, 0]]);
+    expect(await db.select().from(outreachDrafts).all()).toHaveLength(0);
   });
 
-  it("keeps rule-based patterns as hypotheses when the model finds nothing, and records no_opportunity when neither does", async () => {
+  it("the model's no is final: rule patterns never override it; weak support needs review; a later no moves the business back", async () => {
     const bizId = newId();
-    await db.insert(businesses).values({ id: bizId, name: "Quiet Shop", nameNormalized: "quiet shop", industry: "auto_repair", website: "https://bartonauto.example", firstProvider: "csv" }).run();
-    callStructured.mockImplementationOnce(async () => fake({ facts: [], workflows: [], opportunities: [], verdict: "no_opportunity", verdict_reason: "Nothing compelling." }));
+    await db.insert(businesses).values({ id: bizId, name: "Quiet Shop", nameNormalized: "quiet shop", industry: "auto_repair", website: "https://bartonauto.example", websiteDomain: "bartonauto.example", firstProvider: "csv" }).run();
+    // 1. Supported only by something not found on the site: a hypothesis to review, not a qualified lead.
+    callStructured.mockImplementationOnce(async () => fake({ facts: [], observations: [], opportunities: [{ ...OPP, components: [], supporting_fact_keys: ["booking_tool"] }], verdict: "opportunity", verdict_reason: "Maybe." }));
     await enqueueInvestigation(bizId);
     await drainQueue();
-    const biz = (await db.select().from(businesses).where(eq(businesses.id, bizId)).get())!;
-    expect(biz.status).toBe("profiled");
-    expect(biz.verdict).toBe("opportunity");
-    expect(biz.statusMessage).toContain("rule-based");
-    const opps = await db.select().from(opportunities).where(eq(opportunities.businessId, bizId)).all();
-    expect(opps.length).toBeGreaterThan(0);
-    expect(opps.every((o) => o.source === "rules")).toBe(true);
-    const inv = (await db.select().from(investigations).where(eq(investigations.businessId, bizId)).get())!;
-    expect(inv.verdictReason).toContain("Nothing compelling");
-    expect(inv.verdictReason).toContain("rule-based");
+    let biz = (await db.select().from(businesses).where(eq(businesses.id, bizId)).get())!;
+    expect(biz.verdict).toBe("needs_review");
+    expect(biz.verdictReasons?.join(" ")).toMatch(/rests on 0 verified observation\(s\) and 1 thing\(s\) not found/);
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, bizId)).get())!.stage).toBe("discovered");
 
-    // A site with a modern stack and nothing for the rules to flag.
-    const quietId = newId();
-    await db.insert(businesses).values({ id: quietId, name: "Modern Shop", nameNormalized: "modern shop", industry: "auto_repair", website: "https://modern.example", firstProvider: "csv" }).run();
-    callStructured.mockImplementationOnce(async () => fake({ facts: [], workflows: [], opportunities: [], verdict: "no_opportunity", verdict_reason: "Nothing compelling." }));
-    await enqueueInvestigation(quietId);
+    // 2. Well supported: qualified and moved forward.
+    callStructured.mockImplementationOnce(async () => fake({ facts: [], observations: [], opportunities: [OPP], verdict: "opportunity", verdict_reason: "Yes." }));
+    await enqueueInvestigation(bizId, "reanalyze");
     await drainQueue();
-    const quiet = (await db.select().from(businesses).where(eq(businesses.id, quietId)).get())!;
-    expect(quiet.verdict).toBe("no_opportunity");
-    expect(await db.select().from(opportunities).where(eq(opportunities.businessId, quietId)).all()).toHaveLength(0);
-    expect((await db.select().from(prospects).where(eq(prospects.businessId, quietId)).get())!.stage).toBe("lead");
+    expect((await db.select().from(businesses).where(eq(businesses.id, bizId)).get())!.verdict).toBe("qualified");
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, bizId)).get())!.stage).toBe("qualified");
+
+    // 3. The model says no while several rule patterns match the same facts: not a fit, nothing kept, back out of "qualified".
+    callStructured.mockImplementationOnce(async () => fake({ facts: [], observations: [], opportunities: [], verdict: "no_opportunity", verdict_reason: "Nothing compelling: a mature shop with its own stack." }));
+    await enqueueInvestigation(bizId, "reanalyze");
+    await drainQueue();
+    biz = (await db.select().from(businesses).where(eq(businesses.id, bizId)).get())!;
+    expect(biz.status).toBe("profiled");
+    expect(biz.verdict).toBe("not_a_fit");
+    expect(biz.verdictReasons).toEqual(["Nothing compelling: a mature shop with its own stack."]);
+    expect(biz.priority).toBeNull();
+    expect(await db.select().from(opportunities).where(eq(opportunities.businessId, bizId)).all()).toHaveLength(0);
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, bizId)).get())!.stage).toBe("discovered");
   });
 
-  it("without an API key the investigation still profiles detected facts and gives a rule-based verdict", async () => {
+  it("stops after the homepage and contact page when no public email exists: no further credits, no model call, earlier research kept", async () => {
+    const id = newId();
+    await db.insert(businesses).values({ id, name: "Modern Shop", nameNormalized: "modern shop", industry: "auto_repair", website: "https://modern.example", websiteDomain: "modern.example", firstProvider: "csv" }).run();
+    await enqueueInvestigation(id);
+    await drainQueue();
+    let b = (await db.select().from(businesses).where(eq(businesses.id, id)).get())!;
+    expect(b).toMatchObject({ status: "profiled", verdict: "no_contact", email: null });
+    expect(b.verdictReasons?.[0]).toMatch(/No public email address was found/);
+    expect(scrapeCalls).toEqual(["https://modern.example"]);
+    expect(callStructured).not.toHaveBeenCalled();
+    expect((await db.select().from(facts).where(eq(facts.businessId, id)).all()).some((f) => f.key === "booking_tool" && f.status === "verified")).toBe(true); // detected facts are still recorded
+    expect((await db.select().from(investigations).where(eq(investigations.businessId, id)).get())!).toMatchObject({ verdict: "no_contact", creditsUsed: 1 });
+    // The operator adds an address: the two probe pages are not mistaken for a full crawl, and the model now runs.
+    await db.update(businesses).set({ email: "owner@modern.example", emailSource: "manual" }).where(eq(businesses.id, id)).run();
+    callStructured.mockImplementationOnce(async () => fake({ facts: [], observations: [], opportunities: [], verdict: "no_opportunity", verdict_reason: "Modern stack already in place." }));
+    await enqueueInvestigation(id);
+    await drainQueue();
+    b = (await db.select().from(businesses).where(eq(businesses.id, id)).get())!;
+    expect(b).toMatchObject({ verdict: "not_a_fit", email: "owner@modern.example", emailSource: "manual" });
+    expect(scrapeCalls).toHaveLength(2);
+    expect(callStructured).toHaveBeenCalledTimes(1);
+    // With the gate switched off the business is researched even without an address.
+    resetEnv({ FIRECRAWL_API_KEY: "test", RESEARCH_REQUIRE_EMAIL: "false" });
+    await db.update(businesses).set({ email: null }).where(eq(businesses.id, id)).run();
+    await enqueueInvestigation(id, "recrawl");
+    await drainQueue();
+    expect((await db.select().from(businesses).where(eq(businesses.id, id)).get())!.verdict).not.toBe("no_contact");
+  });
+
+  it("without an API key the investigation still profiles detected facts and groups the rule patterns into one idea that needs review", async () => {
     resetEnv({ FIRECRAWL_API_KEY: "test" });
     const good = newId();
     const bad = newId();
@@ -196,25 +271,20 @@ describe("integrated pipeline", () => {
     await drainQueue(["investigate_business"]);
     const g = (await db.select().from(businesses).where(eq(businesses.id, good)).get())!;
     expect(g.status).toBe("profiled");
-    expect(g.verdict).toBe("opportunity");
-    expect(g.statusMessage).toMatch(/rule-based/);
+    expect(g.verdict).toBe("needs_review");
+    expect(g.verdictReasons?.join(" ")).toMatch(/Only fixed rule patterns produced this idea/);
     expect(g.summary).toBeNull(); // no meta description on the test site; no model → no summary is invented
     const gf = await db.select().from(facts).where(eq(facts.businessId, good)).all();
     expect(gf.some((f) => f.key === "booking_method" && f.status === "verified")).toBe(true);
     expect(gf.every((f) => f.method === "detected")).toBe(true);
-    const gopps = await db.select().from(opportunities).where(eq(opportunities.businessId, good)).all();
+    const gopps = (await db.select().from(opportunities).where(eq(opportunities.businessId, good)).all()).sort((a, b) => a.rank - b.rank);
     expect(gopps.every((o) => o.source === "rules")).toBe(true);
-    expect(gopps.map((o) => o.category)).toContain("estimate_quote_followup");
-    // Outreach without a key: a template draft grounded in the facts, claims mapped, no model call.
-    await enqueueOutreach(good, null, "concise");
-    expect(await drainQueue(["generate_outreach"])).toBe(1);
-    const tdraft = (await db.select().from(outreachDrafts).where(eq(outreachDrafts.businessId, good)).get())!;
-    expect(tdraft.model).toBe("template");
-    expect(tdraft.body).toContain("Good team");
-    expect(tdraft.claims.length).toBeGreaterThan(0);
-    expect(tdraft.claims.every((c) => c.factKeys.length > 0)).toBe(true);
-    expect(tdraft.warnings[0]).toMatch(/Template draft/);
-    expect(callStructured).not.toHaveBeenCalled();
+    expect(gopps.map((o) => o.role)).toEqual(["primary", "secondary"]);
+    expect(gopps[0].title).toBe("Lead intake, booking and quote follow-up in one flow");
+    expect(gopps[0].components?.length).toBe(2);
+    expect(gopps[0].category).toBe("estimate_quote_followup");
+    expect(gopps[1].category).toBe("fleet_b2b");
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, good)).get())!.stage).toBe("discovered");
     const b = (await db.select().from(businesses).where(eq(businesses.id, bad)).get())!;
     expect(b.status).toBe("failed");
     expect(b.statusMessage).toMatch(/could not be fetched/);
@@ -253,13 +323,12 @@ describe("integrated pipeline", () => {
   });
 
   it("applies discovery filters (phone required, skip known, auto-investigate limit by lead score) and reports what was skipped", async () => {
-    const { demoProvider } = await import("@/lib/discovery/demo");
-    const all = (await demoProvider.discover({ industry: "auto_repair", country: "US", city: "Austin", maxResults: 10, requireWebsite: false })).candidates;
+    const all = CANDIDATES;
     const withoutPhone = all.filter((c) => !c.phone).length;
     const withoutSite = all.filter((c) => c.phone && !c.website).length;
     expect(withoutSite).toBeGreaterThan(0);
     const first = newId();
-    await db.insert(searches).values({ id: first, name: "First", industry: "auto_repair", country: "US", city: "Austin", maxResults: 10, providers: ["demo"], requireWebsite: true, autoInvestigate: false, filters: { segments: [], areaMode: "area", radiusKm: 15, requirePhone: true, excludeChains: true, skipKnown: false, minLeadScore: 0, autoInvestigateLimit: null } }).run();
+    await db.insert(searches).values({ id: first, name: "First", industry: "auto_repair", country: "US", region: "TX", city: "Austin", maxResults: 10, providers: ["google_maps"], requireWebsite: true, autoInvestigate: false, filters: { segments: [], areaMode: "area", radiusKm: 15, requirePhone: true, excludeChains: true, skipKnown: false, minLeadScore: 0, autoInvestigateLimit: null } }).run();
     await enqueueJob("discover_search", { searchId: first });
     await drainQueue();
     const s1 = (await db.select().from(searches).where(eq(searches.id, first)).get())!;
@@ -268,30 +337,30 @@ describe("integrated pipeline", () => {
     expect(s1.stats?.total).toBe(all.length - withoutPhone - withoutSite);
 
     const second = newId();
-    await db.insert(searches).values({ id: second, name: "Second", industry: "auto_repair", country: "US", city: "Austin", maxResults: 10, providers: ["demo"], requireWebsite: false, autoInvestigate: true, filters: { segments: [], areaMode: "area", radiusKm: 15, requirePhone: false, excludeChains: true, skipKnown: true, minLeadScore: 0, autoInvestigateLimit: 1 } }).run();
+    await db.insert(searches).values({ id: second, name: "Second", industry: "auto_repair", country: "US", region: "TX", city: "Austin", maxResults: 10, providers: ["google_maps"], requireWebsite: false, autoInvestigate: true, filters: { segments: [], areaMode: "area", radiusKm: 15, requirePhone: false, excludeChains: true, skipKnown: true, minLeadScore: 0, autoInvestigateLimit: 1 } }).run();
     await enqueueJob("discover_search", { searchId: second });
     await drainQueue(["discover_search"]);
     const s2 = (await db.select().from(searches).where(eq(searches.id, second)).get())!;
     expect(s2.stats?.skippedKnown).toBe(all.length - withoutPhone - withoutSite);
     expect(s2.stats?.total).toBe(withoutPhone + withoutSite); // only the previously unseen records are listed
-    expect(s2.stats?.queuedForInvestigation).toBe(0); // demo records are never auto-investigated
+    expect(s2.stats?.queuedForInvestigation).toBe(1); // auto-investigate limit 1: the best unseen lead is queued
   });
 
   it("ranks candidates by lead score before applying the result cap", async () => {
     const id = newId();
-    await db.insert(searches).values({ id, name: "Top 2", industry: "auto_repair", country: "US", city: "Austin", maxResults: 2, providers: ["demo"], requireWebsite: false, autoInvestigate: false }).run();
+    await db.insert(searches).values({ id, name: "Top 2", industry: "auto_repair", country: "US", region: "TX", city: "Austin", maxResults: 2, providers: ["google_maps"], requireWebsite: false, autoInvestigate: false }).run();
     await enqueueJob("discover_search", { searchId: id });
     await drainQueue(["discover_search"]);
     const s = (await db.select().from(searches).where(eq(searches.id, id)).get())!;
     expect(s.stats?.total).toBe(2);
     const listed = await db.select({ name: businesses.name, leadScore: businesses.leadScore }).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, id)).all();
-    // The two demo shops with website + phone + street address outrank the one without a street and the one without a website.
-    expect(listed.map((b) => b.name).sort()).toEqual(["Barton Creek Auto Care (Demo)", "Northside Transmission & Brake (Demo)"]);
+    // The two shops with website + phone + street address outrank the one without a street and the one without a website.
+    expect(listed.map((b) => b.name).sort()).toEqual(["Barton Creek Auto Care", "Northside Transmission & Brake"]);
   });
 
   it("lists businesses with server-side paging, sorting and date ranges", async () => {
     const { listBusinesses, listSearches } = await import("@/lib/queries");
-    const mk = (name: string, createdAt: string, priority: number | null) => db.insert(businesses).values({ id: newId(), name, nameNormalized: name.toLowerCase(), industry: "auto_repair", firstProvider: "csv", createdAt, updatedAt: createdAt, priority, status: priority != null ? "profiled" : "new", verdict: priority != null ? "opportunity" : null, investigatedAt: priority != null ? createdAt : null }).run();
+    const mk = (name: string, createdAt: string, priority: number | null) => db.insert(businesses).values({ id: newId(), name, nameNormalized: name.toLowerCase(), industry: "auto_repair", firstProvider: "csv", createdAt, updatedAt: createdAt, priority, status: priority != null ? "profiled" : "new", verdict: priority != null ? "qualified" : null, investigatedAt: priority != null ? createdAt : null }).run();
     await mk("Alpha", "2026-10-01T10:00:00.000Z", 80);
     await mk("Bravo", "2026-10-15T10:00:00.000Z", null);
     await mk("Charlie", "2026-10-20T10:00:00.000Z", 60);

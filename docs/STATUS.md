@@ -1,4 +1,76 @@
-# Implementation status — 2026-10-27 (end of first build session)
+# Implementation status
+
+## 2026-11-18: interface reorganised (decision D37), mailbox connected, data reset
+
+- Interface: dashboard leads with what is waiting, funnel in one strip, this month's use; sidebar
+  counts per section; simpler Businesses list; business page opens on an Overview; Settings in five
+  tabs. See docs/DESIGN.md. Type check clean, 191 unit and integration tests, 5 browser tests pass.
+- Next.js 16.4.3 to 16.4.6 (security advisory GHSA-mfr8-8qww-v76h).
+- A mailbox is connected through an app password in `.env`. The first real emails went out
+  through it the same day; reading replies from the real inbox has not been seen working yet
+  (no reply has arrived).
+- On the founder's request all earlier business data was deleted (businesses, searches, research,
+  emails, jobs) and no copy was kept; usage records remain so budgets stay accurate.
+- Research and email logic reviewed (decision D38): industry-neutral page selection, 6 pages, pages
+  ordered for the model, a bar for proposals, shorter and warmer emails. Verified live on a
+  handful of UK businesses.
+- Wider range of solutions (decision D39): catalogue of sixteen families, three kinds of idea,
+  different alternatives, the operator can choose which idea to raise. Run live once.
+- Removing a business for good and one period dropdown (D40); pipeline with a period and a full
+  history, one confirmation dialog, other subjects on request (D41).
+- 209 unit and integration tests and 5 browser tests pass.
+
+## 2026-11-12: business development platform (decisions D28 to D36)
+
+Built in one session on the founder's brief, in phases; nothing committed, nothing deployed.
+
+**What exists now**
+- Research: email probe (2 pages, stop without a public email), observations with verbatim quotes,
+  one consolidated opportunity with components, qualification with five outcomes and reasons,
+  listing-based lead scores, portal and payment detection.
+- Outreach: evidence pack, writer, fixed checks, independent claim check, one rewrite, ready or
+  needs review; review screen with the evidence behind every statement; edit, approve, exclude,
+  rewrite with a note; batches; do-not-contact list; sender settings and signature in code.
+- Sending: SMTP + IMAP mailbox adapter, in-memory test mailbox, pre-send summary, paced queue,
+  daily cap, at-most-once send job, stop and retry, bounce handling.
+- Replies: inbox sync limited to answers to sent emails, bounce and automatic-reply recognition,
+  opt-out by fixed rule, model classification with a suggested answer, correction by the operator.
+- Automation: scheduler for inbox sync, one follow-up draft, auto-drafting, auto-research; monthly
+  AI budget; five-item navigation; dashboard; ten-stage pipeline with the board from Qualified on.
+- Removed: Patterns and validation signals, Overture and OpenStreetMap providers with DuckDB,
+  template drafts and outreach styles.
+- Migrations `0010_intelligence` and `0011_outreach` (data kept; old verdicts and stages mapped).
+
+**What was run**
+- `pnpm typecheck`: clean. `pnpm test`: 191 tests in 29 files pass (in-memory database, model and
+  mailbox mocked at their boundaries). `pnpm test:e2e`: 5 browser tests pass on a production build,
+  including review → edit → failed check → approve → send through the in-memory mailbox → pipeline.
+
+**What was NOT run**
+- No call to the live model with the new prompts (`research-2`, `outreach-2`, the claim check, the
+  reply reader). The request and response shapes are the ones the earlier live runs used and the
+  output schemas were checked to convert for the API, but the prompts are uncalibrated: expect to
+  read the first real batch closely and tune. `scripts/reanalyze.ts` does this on stored pages.
+- No real mailbox. The SMTP + IMAP adapter is written against the installed libraries' own type
+  definitions and has never connected to a server; only the in-memory mailbox was exercised. First
+  real use should be Settings → Check the connection, then a test email to yourself.
+- The 19 Houston businesses in `data/dev.db` still carry research from the old prompt; the
+  migration marked them "needs review" (4 as "not a fit" where the model had said no).
+
+**Known limits**
+- Automation and queued sends run only while the app runs.
+- Replies the operator sends from their mail program are not synced back.
+- A bounce or reply is matched by thread first, then by sender address (flagged as probable).
+- Microsoft 365 mailboxes with app passwords disabled need a different adapter.
+- No authentication; keep this local.
+
+---
+
+# History: 2026-10-27 (end of first build session) and later passes
+
+The sections below describe earlier states of the product and are kept as a record. Where they
+mention demo data, the Patterns page, validation signals, Overture, OpenStreetMap, template drafts
+or "no outreach sending", the section above supersedes them.
 
 ## What was decided
 See docs/DECISIONS.md (D1–D10) and docs/STRATEGY.md. Headlines: Next.js 16 + SQLite +
@@ -47,7 +119,16 @@ Repository pushed to https://github.com/ivandimov96/opportunity-radar; Vercel pr
 deployment proved that file-based SQLite cannot persist on serverless, so the data layer
 was migrated to libSQL (Turso-compatible, async). Persistence on Vercel needs
 `TURSO_DATABASE_URL` + `TURSO_AUTH_TOKEN` (founder action; free tier). Until then the
-deployment is a labeled read-only demo.
+deployment is a labeled read-only demo. Measured on 2026-10-29: dragging a pipeline card
+on the deployment made other cards jump, because each serverless instance answers from
+its own `/tmp` copy; the board now refuses moves in that mode with a notice, and the
+pipeline page lists every stage change (manual and automatic) as a move history. The
+board was rebuilt on dnd-kit (mouse, touch and keyboard sensors, drag overlay, drop
+placeholder): cards move between columns and can be reordered inside one; the order is
+stored in `prospects.position` (migration 0008) and the whole target column is saved on
+each drop. Verified with Playwright in Chromium and WebKit: quick consecutive drops,
+reorder, closed rows, the "Move to" control, keyboard moves, click-to-open and touch
+scrolling all behave and persist across reloads.
 
 ## Flow v2 (same day, fourth pass) — see D13
 Rebuilt the core flow after founder feedback: one "Investigate" action per business,
@@ -226,3 +307,48 @@ journeys.
    opportunity-level filters, note editing, draft version history.
 4. Add authentication + HTTPS before any shared deployment.
 5. Revisit Overpass hosting and Google Places based on data quality observed.
+
+## Demo data removed (2026-10-29)
+The founder asked for all demo data to go. Removed: the demo discovery provider, the
+seed (`src/db/seed-demo.ts`, `pnpm db:seed-demo`), "Load demo data" on the overview and
+searches pages, the automatic seeding of serverless deployments, the `is_demo` columns
+(migration 0009 deletes any remaining demo rows, then drops the columns), the demo badges,
+filters, callouts, tone and the Settings entry. Tests keep a synthetic fixture under
+`tests/fixtures/seed.ts` (four auto repair shops on `.example` domains, provider `csv`);
+the browser journey seeds it before the server starts, and the integration tests run
+discovery through the Google Maps provider with an injected transport.
+
+## Review pass (2026-10-29, evening)
+A full code review of the day's uncommitted changes found nine issues, all fixed: a board
+drag that returned a card to its server position while a save was in flight was never
+saved (now compared against the pre-drag snapshot); a cross-column drop onto a card was
+re-ordered twice (reorder now only when the card never left its column); column positions
+were written one UPDATE at a time (now one batch) and a filtered board overwrote hidden
+cards' positions (the visible order is merged into the full column); archived drafts
+other than the first were unreachable; "Mark as sent" logged its stage move as manual
+(now the forward-only helper, logged automatic); the businesses view counts ran nine
+queries (now one); stage tone and day grouping were copied three times (now shared from
+the activity timeline); the next-action form was duplicated; the mailto link encoded the
+address itself. New unit test for the board order merge. Suites: 166 unit, 5 browser.
+Not deployed: the founder asked for the review only.
+
+## Serper replaces SerpApi (2026-10-29, D27)
+`src/lib/discovery/google-maps.ts` now calls `POST google.serper.dev/maps`; env `SERPER_API_KEY`,
+`SERPER_CREDIT_BUDGET` (2,500, total), `SERPER_MAX_PAGES`, `SERPER_CACHE_DAYS`. Tests rewritten
+against the Serper response shape. First live search on 2026-10-29: Austin auto repair, 5 km,
+2 pages → 28 listings (20 per page confirmed, `page` works, 3 credits per page, 12 outside the
+radius dropped), 23 saved (5 chains set aside); listings carry `openingHours` and `bookingLinks`.
+
+## Showcase deployment with a data snapshot (2026-10-29, evening)
+The founder tried the whole flow by hand with all keys set locally: one Houston home-services
+search (19 businesses), 18 investigations with Claude Opus 5.5 (20 model calls, $2.42), 67
+opportunity hypotheses, 2 drafts. Then asked to block crawling and AI and publish with this data.
+Done without a hosted database: `data/snapshot/radar.db` (2.1 MB; page HTML, jobs and provider
+cache stripped) is bundled and copied to `/tmp` on every serverless cold start (`DATABASE_SNAPSHOT`,
+`seedFromSnapshot` in `src/db/client.ts`, traced via `next.config.ts`). No keys on Vercel, so
+research, AI and discovery all show "needs credentials" there; the pipeline board stays read-only.
+Verified locally in a serverless simulation before deploying.
+Incident the same evening: the first two deploys uploaded the local `.env` (the CLI ignores
+`.gitignore`), so Serper, Firecrawl and Claude were live on the public URL for about an hour.
+Fixed with `.vercelignore` and a redeploy; the founder was told to check the provider dashboards
+for unexpected use.

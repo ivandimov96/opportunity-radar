@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { describeFilters, parseSearchForm, DEFAULT_FILTERS } from "@/lib/search-input";
-import { buildOverpassQuery } from "@/lib/discovery/osm";
 import { getPlaybook, selectorsFor } from "@/lib/industries";
 
 const form = (entries: Record<string, string | string[]>) => {
@@ -30,11 +29,11 @@ describe("search input", () => {
     expect(r.errors.segments).toMatch(/Unknown segment/);
     expect(r.raw.maxResults).toBe("0");
   });
-  it("requires a category for the generic industry and refuses demo, disabled or removed sources on the form", () => {
+  it("requires a category for the generic industry and refuses unknown, disabled or removed sources on the form", () => {
     const bad = parseSearchForm(form({ industry: "generic", city: "Austin", region: "TX", providers: "google_maps" }));
     expect(bad.ok).toBe(false);
     if (!bad.ok) expect(bad.errors.customCategory).toMatch(/Enter the business category/);
-    // Demo data is internal (seeded, tests), Overture and OpenStreetMap are disabled, the Texas registry is gone.
+    // Overture and OpenStreetMap are disabled; the demo provider and the Texas registry are gone.
     for (const p of ["demo", "overture", "osm", "tx_permits"]) expect(parseSearchForm(form({ industry: "auto_repair", city: "Austin", region: "TX", providers: p })).ok).toBe(false);
     expect(parseSearchForm(form({ industry: "auto_repair", providers: [] })).ok).toBe(false);
   });
@@ -51,14 +50,5 @@ describe("segments → selectors → Overpass", () => {
     expect(selectorsFor(pb, []).osmSelectors.length).toBeGreaterThan(3);
     expect(selectorsFor(getPlaybook("generic"), []).osmSelectors).toEqual([]);
     expect(selectorsFor(pb, ["hvac", "tires"]).googleQueries).toEqual(["tire shop"]);
-  });
-  it("adds a name-pattern net for mis-tagged map entries", () => {
-    const q = buildOverpassQuery(['["shop"="car_repair"]'], { south: 1, west: 2, north: 3, east: 4 }, null, "auto repair|mechanic");
-    expect(q).toContain('nwr["name"~"auto repair|mechanic",i]["shop"]["shop"!~"^(car|car_parts|fuel)$"](1,2,3,4);');
-    expect(q).toContain('nwr["name"~"auto repair|mechanic",i]["craft"](1,2,3,4);');
-  });
-  it("builds bbox and radius queries", () => {
-    expect(buildOverpassQuery(['["shop"="tyres"]'], { south: 1, west: 2, north: 3, east: 4 })).toContain('nwr["shop"="tyres"]["name"](1,2,3,4);');
-    expect(buildOverpassQuery(['["shop"="tyres"]'], { aroundLat: 30.27, aroundLon: -97.74, radiusM: 15000 }, "lube")).toContain('nwr["shop"="tyres"]["name"]["name"~"lube",i](around:15000,30.27,-97.74);');
   });
 });

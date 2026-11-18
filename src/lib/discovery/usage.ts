@@ -16,6 +16,13 @@ export async function usageThisMonth(provider: string): Promise<{ used: number; 
   return { used: row?.used ?? 0, period };
 }
 
+/** Credits used across all periods: for providers whose allowance does not renew (Serper's free credits). */
+export async function usageTotal(provider: string): Promise<number> {
+  const db = await getDb();
+  const rows = await db.select({ used: providerUsage.used }).from(providerUsage).where(eq(providerUsage.provider, provider)).all();
+  return rows.reduce((a, r) => a + r.used, 0);
+}
+
 export async function recordUsage(provider: string, n = 1): Promise<number> {
   const db = await getDb();
   const period = currentPeriod();

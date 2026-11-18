@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { classifyLink, extractPage } from "@/lib/research/html";
 import { detectFacts } from "@/lib/research/detect";
 import { parseCsv, csvToCandidates } from "@/lib/discovery/csv";
-import { buildOverpassQuery, elementToCandidate } from "@/lib/discovery/osm";
 
 const html = `<html><head><title>Barton Auto</title><meta name="description" content="Austin auto repair"><script src="https://embed.tawk.to/abc/def.js"></script><link rel="stylesheet" href="https://static.parastorage.com/x.css"></head>
 <body><nav><a href="/services">Services</a><a href="/book-appointment">Book Now</a><a href="https://facebook.com/x">FB</a></nav>
@@ -81,6 +80,19 @@ describe("classifyLink", () => {
     expect(classifyLink("/about-us", "")).toBe("about");
     expect(classifyLink("/blog/post", "Read")).toBe("other");
   });
+  it("recognises the pages that show how a business works, whatever the industry", () => {
+    expect(classifyLink("/request-a-quote", "Get a free quote")).toBe("booking");
+    expect(classifyLink("/how-it-works", "")).toBe("process");
+    expect(classifyLink("/patients", "New patient forms")).toBe("forms");
+    expect(classifyLink("/practice-areas", "")).toBe("services");
+    expect(classifyLink("/products", "Our products")).toBe("services");
+    expect(classifyLink("/careers", "Join our team")).toBe("careers");
+    expect(classifyLink("/team", "Meet the team")).toBe("about");
+  });
+  it("keeps the contact page a contact page even when its link asks for a request (the email probe needs it)", () => {
+    expect(classifyLink("/contact", "Request a quote")).toBe("contact");
+    expect(classifyLink("/contact-us", "Book now")).toBe("contact");
+  });
 });
 
 describe("csv", () => {
@@ -95,15 +107,5 @@ describe("csv", () => {
   });
   it("requires a name column", () => {
     expect(csvToCandidates("foo,bar\n1,2", { country: "US" }).errors[0]).toMatch(/name/);
-  });
-});
-
-describe("osm", () => {
-  it("builds a bounded Overpass query and maps elements", () => {
-    const q = buildOverpassQuery(['["shop"="car_repair"]'], { south: 1, west: 2, north: 3, east: 4 }, 'Joe"s');
-    expect(q).toContain('nwr["shop"="car_repair"]["name"]["name"~"Joes",i](1,2,3,4);');
-    const c = elementToCandidate({ type: "node", id: 5, lat: 30, lon: -97, tags: { name: "X", shop: "car_repair", "contact:website": "x.com", "addr:city": "Austin" } }, "US");
-    expect(c).toMatchObject({ provider: "osm", providerId: "node/5", website: "x.com", city: "Austin", category: "car_repair", lat: 30 });
-    expect(elementToCandidate({ type: "node", id: 6, tags: {} }, "US")).toBeNull();
   });
 });

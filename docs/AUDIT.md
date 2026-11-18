@@ -1,5 +1,7 @@
 # Audit and target architecture — 2026-10-28
 
+> **Historical document.** The product was rebuilt on 2026-11-12 (docs/DECISIONS.md D28 to D36). For how it works now, read docs/ARCHITECTURE.md. Parts of this file describe things that no longer exist (several hypotheses per business, the Patterns page, validation signals, Overture and OpenStreetMap, template drafts, "no sending").
+
 Scope: the whole application as it stands in the working tree (flow v2 + research engine v3 +
 search start + free sources + location picker + ranked discovery, all uncommitted). This document
 records what was found, what was decided, and the order of work. Decisions are logged in

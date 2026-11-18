@@ -1,0 +1,13 @@
+# Never upload local secrets or local databases to a deployment.
+# (The Vercel CLI uploads the working tree; this file is its only exclusion list.)
+.env
+.env.*
+.env.local
+data/*.db
+data/*.db-*
+node_modules
+.next
+coverage
+test-results
+playwright-report
+*.log

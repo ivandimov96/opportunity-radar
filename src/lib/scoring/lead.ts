@@ -33,7 +33,13 @@ export interface LeadHints {
   outletCount?: number;
   /** Brand the source attaches to the place (Overture): a branded place is a chain outlet. */
   brand?: string | null;
+  /** Review count and rating on the listing (Google Maps): a verifiable signal of activity and size. */
+  reviewCount?: number | null;
+  rating?: number | null;
 }
+
+/** Above this many listing reviews a business is almost always a large operator with its own tooling. */
+export const LARGE_OPERATOR_REVIEWS = 5000;
 
 const CAR_BRANDS = "toyota|honda|ford|chevrolet|chevy|nissan|hyundai|kia|subaru|mazda|volkswagen|vw|bmw|mercedes(-| )?benz|mercedes|audi|lexus|acura|infiniti|jeep|dodge|ram|chrysler|gmc|buick|cadillac|volvo|tesla|porsche|land ?rover|jaguar|mini|genesis|mitsubishi|lincoln|maserati|ferrari|lamborghini|bentley|rolls(-| )?royce|alfa ?romeo|fiat";
 /** A bare brand as the business name, or a dealer-style domain (mercedesbenzofaustin.com, austintoyota.com). */
@@ -115,6 +121,25 @@ export function leadScore(input: LeadInput, hints: LeadHints = {}): LeadScore {
     } else {
       score += 3;
       reasons.push(`${Math.floor(hints.yearsActive)} years trading`);
+    }
+  }
+  if (hints.reviewCount != null) {
+    const n = hints.reviewCount;
+    if (n >= LARGE_OPERATOR_REVIEWS) {
+      score -= 15;
+      reasons.push(`very large operator (${n.toLocaleString("en-US")} reviews)`);
+    } else if (n >= 1500) {
+      score -= 6;
+      reasons.push(`large operator (${n.toLocaleString("en-US")} reviews)`);
+    } else if (n >= 20) {
+      score += 8;
+      reasons.push(`established (${n} reviews${hints.rating ? `, ${hints.rating}★` : ""})`);
+    } else if (n >= 5) {
+      score += 3;
+      reasons.push(`${n} reviews`);
+    } else {
+      score -= 4;
+      reasons.push("almost no reviews yet");
     }
   }
   if (hints.outletCount === 2) {

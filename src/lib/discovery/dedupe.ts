@@ -19,7 +19,7 @@ export type UpsertOutcome = { businessId: string; wasNew: boolean; matchedBy?: "
 export async function upsertCandidate(
   db: Db,
   c: BusinessCandidate,
-  ctx: { industry: string; searchId?: string | null; isDemo?: boolean; fixedId?: string; leadReasons?: string[]; extraSources?: { provider: BusinessCandidate["provider"]; providerId: string; sourceUrl: string | null; attribution: string; raw: Record<string, unknown> | null }[] },
+  ctx: { industry: string; searchId?: string | null; fixedId?: string; leadReasons?: string[]; extraSources?: { provider: BusinessCandidate["provider"]; providerId: string; sourceUrl: string | null; attribution: string; raw: Record<string, unknown> | null }[] },
 ): Promise<UpsertOutcome> {
   const website = normalizeWebsite(c.website);
   const domain = websiteDomain(website);
@@ -68,6 +68,11 @@ export async function upsertCandidate(
     }
   }
 
+  // Listing rating and review count (Google Maps): verifiable signals kept on the business.
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const rating = num(c.raw?.rating);
+  const reviewCount = num(c.raw?.ratingCount);
+
   const ts = nowIso();
   if (existingId) {
     const cur = (await db.select().from(businesses).where(eq(businesses.id, existingId)).get())!;
@@ -88,6 +93,8 @@ export async function upsertCandidate(
         category: cur.category ?? c.category ?? null,
         operatingStatus: c.operatingStatus && c.operatingStatus !== "unknown" ? c.operatingStatus : cur.operatingStatus,
         brand: cur.brand ?? c.brand ?? null,
+        rating: reviewCount != null && reviewCount >= (cur.reviewCount ?? 0) ? (rating ?? cur.rating) : cur.rating,
+        reviewCount: Math.max(reviewCount ?? 0, cur.reviewCount ?? 0) || null,
         leadReasons: ctx.leadReasons ?? cur.leadReasons,
         updatedAt: ts,
       })
@@ -113,7 +120,7 @@ export async function upsertCandidate(
   }
 
   const id = ctx.fixedId ?? newId();
-  const lead = leadScore({ name: c.name, industry: ctx.industry, website, phone, email, street: c.street, city, category: c.category });
+  const lead = leadScore({ name: c.name, industry: ctx.industry, website, phone, email, street: c.street, city, category: c.category }, { brand: c.brand, reviewCount, rating });
   await db.insert(businesses)
     .values({
       id,
@@ -123,6 +130,10 @@ export async function upsertCandidate(
       leadReasons: ctx.leadReasons ?? lead.reasons,
       operatingStatus: c.operatingStatus ?? null,
       brand: c.brand ?? null,
+      rating,
+      reviewCount,
+      emailSource: email ? (c.provider === "csv" ? "manual" : "listing") : null,
+      emailStatus: email ? "unchecked" : null,
       name: c.name.trim(),
       nameNormalized,
       industry: ctx.industry,
@@ -141,7 +152,6 @@ export async function upsertCandidate(
       firstProvider: c.provider,
       status: website ? "new" : "no_website",
       statusMessage: website ? null : "No website on record",
-      isDemo: Boolean(ctx.isDemo),
       createdAt: ts,
       updatedAt: ts,
     })

@@ -266,14 +266,25 @@ export function extractPage(html: string, baseUrl: string): PageContent {
   return { title, metaDescription, text, links, emails: [...emails], phones: [...phones], resourceHosts: [...resourceHosts], forms, hasChatWidget, jsonLd, generator, hasViewport, latestYear: latestYearIn(fullText, html), rawHtmlSample: html.slice(0, 4000) };
 }
 
-export type PageKind = "home" | "about" | "services" | "contact" | "pricing" | "booking" | "faq" | "fleet" | "financing" | "reviews" | "other";
+export type PageKind = "home" | "about" | "services" | "contact" | "pricing" | "booking" | "process" | "forms" | "careers" | "faq" | "fleet" | "financing" | "reviews" | "other";
 
+/**
+ * What a link is likely to lead to, from its path and its text. First match
+ * wins, so the order matters: the contact page is recognised before anything
+ * that merely mentions a request (the email probe depends on finding it), and
+ * job pages before "team". The kinds are not tied to one industry: a dentist's
+ * "New patients", a law firm's "Practice areas" and a contractor's "Request a
+ * quote" all land somewhere useful.
+ */
 const KIND_PATTERNS: [PageKind, RegExp][] = [
-  ["booking", /book|schedule|appointment|request-service|request-an-appointment|reserve/i],
-  ["services", /service|repair|what-we-do|maintenance|specialt/i],
-  ["pricing", /pric|rates|cost|coupon|special|offer|promotion/i],
-  ["contact", /contact|location|hours|directions|find-us/i],
-  ["about", /about|our-story|team|staff|why-us|history/i],
+  ["contact", /contact|locations?\b|directions|find-us|get-in-touch/i],
+  ["careers", /career|join-(our|the)-team|join our team|employment|hiring|work-(with|for)-us|\bjobs\b/i],
+  ["forms", /\bforms?\b|paperwork|new[- ](patient|client|customer)s?|downloads?\b/i],
+  ["booking", /book|schedul|appointment|request|quote|estimate|reserve|get-started|order-online/i],
+  ["process", /how-it-works|how it works|how-we-work|how we work|our-process|\bprocess\b|what-to-expect|what to expect|our-approach/i],
+  ["services", /service|solution|product|what-we-do|what we do|capabilit|specialt|treatment|practice-area|practice area|repair|maintenance|industr/i],
+  ["pricing", /pric|rates|cost|coupon|special|offer|promotion|plans?\b/i],
+  ["about", /about|our-story|team|staff|why-us|history|who-we-are/i],
   ["faq", /faq|question/i],
   ["fleet", /fleet|commercial|business-account/i],
   ["financing", /financ|payment-plan|credit/i],
@@ -291,12 +302,24 @@ export const KIND_PRIORITY: Record<PageKind, number> = {
   home: 0,
   services: 1,
   booking: 2,
-  about: 3,
-  contact: 4,
-  pricing: 5,
-  fleet: 6,
-  financing: 7,
-  faq: 8,
-  reviews: 9,
-  other: 10,
+  process: 3,
+  forms: 4,
+  about: 5,
+  contact: 6,
+  pricing: 7,
+  careers: 8,
+  faq: 9,
+  fleet: 10,
+  financing: 11,
+  reviews: 12,
+  other: 13,
 };
+
+/**
+ * How much of each kind of page the model reads, and in which order: pages that
+ * show what the business does and how customers deal with it come first and in
+ * full; the contact page (already mined for the address) and testimonials come
+ * last and short, so they never crowd out a services or quote page.
+ */
+export const MODEL_READ_ORDER: PageKind[] = ["home", "services", "booking", "process", "forms", "about", "pricing", "careers", "faq", "fleet", "financing", "other", "reviews", "contact"];
+export const MODEL_CHARS_BY_KIND: Partial<Record<PageKind, number>> = { contact: 2_500, reviews: 2_500, careers: 4_000, faq: 5_000 };
