@@ -10,7 +10,6 @@
 import Link from "next/link";
 import { ActivityTimeline } from "@/components/activity-timeline";
 import { DateRangePicker } from "@/components/date-range";
-import { FilterBar } from "@/components/table";
 import { Card, EmptyState, Icon, PageHeader, Tabs } from "@/components/ui";
 import { getConfig } from "@/lib/config";
 import { describeRange, rangeBounds, rangeParams, resolveRange } from "@/lib/date-range";
@@ -74,7 +73,7 @@ export default async function PipelinePage({ searchParams }: { searchParams: Pro
 
   return (
     <>
-      <PageHeader title="Pipeline" subtitle="Where each conversation stands. Cards move on their own until a company replies; after that, drag them." actions={<DateRangePicker basePath="/pipeline" params={keep} value={period.key} from={period.from} to={period.to} />} />
+      <PageHeader title="Pipeline" subtitle="Where each conversation stands. Cards move on their own until a company replies; after that, drag them." />
 
       <Tabs
         items={[
@@ -83,20 +82,40 @@ export default async function PipelinePage({ searchParams }: { searchParams: Pro
         ]}
       />
 
+      {/* One bar for both views, right above what it filters: the period first, then the search. */}
+      <div className="surface p-3 mb-4 flex flex-wrap items-center gap-x-4 gap-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-sm font-semibold text-ink-muted">Period</span>
+          <DateRangePicker basePath="/pipeline" params={keep} value={period.key} from={period.from} to={period.to} />
+        </div>
+        <span className="hidden md:block w-px self-stretch bg-line" aria-hidden />
+        <form className="flex flex-1 flex-wrap items-center gap-2 min-w-[16rem]" action="/pipeline" method="get">
+          {["view", "kind", "range", "from", "to"].map((k) => (sp[k] ? <input key={k} type="hidden" name={k} value={sp[k]} /> : null))}
+          <div className="relative flex-1 min-w-[12rem]">
+            <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
+            <input className="input pl-9" name="q" placeholder={view === "board" ? "Search the board by name, city or domain" : "Search the history by business"} defaultValue={t.q} aria-label="Search" />
+          </div>
+          {view === "board" && (
+            <select className="select w-auto" name="industry" defaultValue={sp.industry ?? ""} aria-label="Industry">
+              <option value="">Any industry</option>
+              {listPlaybooks().map((p) => (
+                <option key={p.key} value={p.key}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          )}
+          <button className="btn">Apply</button>
+          {(t.q || sp.industry) && (
+            <Link href={href({ q: null, industry: null, page: null })} className="btn btn-ghost">
+              Clear
+            </Link>
+          )}
+        </form>
+      </div>
+
       {view === "board" && (
         <>
-          {(all.length > 12 || t.q || sp.industry) && (
-            <FilterBar basePath="/pipeline" sp={sp} params={t} placeholder="Search the board by name, city or domain" hidden={["range", "from", "to"]}>
-              <select className="select w-auto" name="industry" defaultValue={sp.industry ?? ""}>
-                <option value="">Any industry</option>
-                {listPlaybooks().map((p) => (
-                  <option key={p.key} value={p.key}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-            </FilterBar>
-          )}
           {readOnly && (
             <p className="mb-3 text-xs text-warn bg-warn/10 border border-warn/30 rounded-[var(--radius)] px-3 py-2" role="status">
               This preview has no persistent database, so moving cards is disabled. Connect a Turso database to the Vercel project to enable it.

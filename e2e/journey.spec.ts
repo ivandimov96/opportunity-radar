@@ -119,17 +119,19 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await expect(page.getByText("No email is approved yet.")).toBeVisible(); // nothing is left to send twice
 
   // Pipeline: sending moved the business to "Contacted"; machine stages are counters, not columns.
-  await page.setViewportSize({ width: 1280, height: 1100 }); // every stage of the board in view for the drags below
+  await page.setViewportSize({ width: 1500, height: 1100 }); // wide enough for five columns of the board side by side
   await page.goto("/pipeline");
-  // A strip names every stage with its count; below it each stage is a column.
-  await expect(page.getByRole("navigation", { name: "Stages" })).toBeVisible();
-  for (const stage of ["qualified", "contacted", "replied", "won", "lost"]) await expect(page.locator(`section[data-stage="${stage}"]`)).toBeVisible();
+  // Every stage is a column, all in one row that scrolls sideways.
+  await expect(page.getByRole("group", { name: "Stages" })).toBeVisible();
+  for (const stage of ["qualified", "ready_to_contact", "contacted", "replied", "meeting_scheduled", "proposal_sent", "won", "lost"]) await expect(page.locator(`section[data-stage="${stage}"]`)).toHaveCount(1);
   await expect(page.locator('section[data-stage="discovered"]')).toHaveCount(0);
   const card = page.locator("article[data-business]", { hasText: "Barton Creek Auto Care" });
   const inStage = (stage: string) => page.locator(`section[data-stage="${stage}"]`).locator(card);
   const settled = () => page.waitForFunction(() => !document.querySelector("[data-saving]"));
   // The board uses pointer sensors with an activation distance: drag in small steps, like a hand would.
-  const drag = async (from: Locator, to: Locator, yOffset = 40) => {
+  const drag = async (from: Locator, to: Locator, yOffset = 120) => {
+    await to.evaluate((el) => el.scrollIntoView({ inline: "center", block: "nearest" }));
+    await page.waitForTimeout(100);
     const a = (await from.boundingBox())!;
     const b = (await to.boundingBox())!;
     const [sx, sy, tx, ty] = [a.x + a.width / 2, a.y + 12, b.x + b.width / 2, b.y + yOffset];
@@ -139,16 +141,16 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
     await page.mouse.up();
   };
   await expect(inStage("contacted")).toBeVisible();
-  await drag(card, page.locator('section[data-stage="meeting_scheduled"] [data-column]'));
+  await drag(card, page.locator('section[data-stage="meeting_scheduled"]'));
   await expect(inStage("meeting_scheduled")).toBeVisible();
   await settled();
   await page.reload();
   await expect(inStage("meeting_scheduled")).toBeVisible();
   // Two quick drags in a row (the second starts while the first is still saving): the last one wins and persists.
-  await drag(card, page.locator('section[data-stage="proposal_sent"] [data-column]'));
+  await drag(card, page.locator('section[data-stage="proposal_sent"]'));
   await expect(inStage("proposal_sent")).toBeVisible(); // landed (its save may still be running)
   await page.waitForTimeout(200); // the drop animation
-  await drag(card, page.locator('section[data-stage="lost"] [data-column]'), 20);
+  await drag(card, page.locator('section[data-stage="lost"]'));
   await expect(inStage("lost")).toBeVisible();
   await settled();
   await page.reload();
@@ -156,7 +158,41 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   // On a laptop a card carries no stage menu and nothing appears on hover: it is moved by dragging.
   await card.hover();
   await expect(card.getByLabel(/Move Barton Creek Auto Care/)).toBeHidden();
-  await drag(card, page.locator('section[data-stage="replied"] [data-column]'));
+  await drag(card, page.locator('section[data-stage="proposal_sent"]'));
+  await expect(inStage("proposal_sent")).toBeVisible();
+  await settled();
+  // An exact place: with two other businesses in "Replied", the card is dropped between them and stays there.
+  for (const name of ["Lone Star Euro Specialists", "Quick Lube Corner"]) {
+    await page.goto("/businesses?range=all");
+    await page.getByRole("link", { name }).first().click();
+    await page.getByRole("link", { name: /^Activity/ }).click();
+    await page.getByLabel("Move to stage").selectOption("replied");
+    await page.getByRole("button", { name: "Move", exact: true }).click();
+    await expect(page.getByLabel("Move to stage")).toHaveValue("replied");
+  }
+  await page.goto("/pipeline?range=all");
+  const repliedNames = () => page.locator('section[data-stage="replied"] article[data-business]').evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")?.split(",")[0]));
+  expect(await repliedNames()).toHaveLength(2);
+  const [firstReplied, secondReplied] = (await repliedNames()) as string[];
+  // Carried over the cards of "Replied" and dropped among them: it lands where the gap showed, not at the end, and that place is saved.
+  await drag(card, page.locator('section[data-stage="replied"] article[data-business]').nth(0), 10);
+  await expect(inStage("replied")).toBeVisible();
+  await settled();
+  const placed = (await repliedNames()) as string[];
+  expect(placed).toHaveLength(3);
+  expect(placed.indexOf("Barton Creek Auto Care")).toBeLessThan(2); // among the cards, not after the last one
+  expect(placed.filter((n) => n !== "Barton Creek Auto Care")).toEqual([firstReplied, secondReplied]); // the others kept their order
+  await page.reload();
+  expect(await repliedNames()).toEqual(placed);
+  // Let go outside every stage: nothing moves.
+  const box = (await card.boundingBox())!;
+  await page.mouse.move(box.x + box.width / 2, box.y + 12);
+  await page.mouse.down();
+  for (let i = 1; i <= 8; i++) await page.mouse.move(box.x + box.width / 2, box.y + 12 - i * 3);
+  await page.mouse.move(box.x + box.width / 2, 5);
+  await page.mouse.up();
+  expect(await repliedNames()).toEqual(placed);
+  await page.goto("/pipeline"); // back to the default period for what follows
   await expect(inStage("replied")).toBeVisible();
   await settled();
   await page.reload();
@@ -308,7 +344,7 @@ test("mobile layout exposes navigation and the primary action", async ({ page })
   // On a phone the board shows one stage at a time and never scrolls sideways; a card can be moved without dragging.
   await page.goto("/pipeline?range=all");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await expect(page.getByRole("navigation", { name: "Stages" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "Stages" })).toBeVisible();
   // On a phone each card has a "Move to" menu, since dragging is awkward on a touch screen.
   const phoneCard = page.locator("article[data-business]", { hasText: "Barton Creek Auto Care" });
   await phoneCard.getByLabel(/Move Barton Creek Auto Care/).selectOption("meeting_scheduled");

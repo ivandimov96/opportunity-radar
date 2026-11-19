@@ -580,3 +580,31 @@ Asked for page by page by the founder, each checked on screen at laptop and phon
 - Settings: every tab uses the full width; the signature is its own card; removed businesses are
   a table with a search and pages of twenty.
 - Every table (`.table`) becomes a list of cards below 768px.
+
+## D47 — Pipeline board: stage tiles on top, only stages with work below (2026-11-19)
+Investigated on the founder's request for a board that shows what is going on. Found: most stages
+are empty most of the time, so a column per stage wasted the screen; a long stage scrolled inside
+a box; dropping on a far stage meant scrolling while dragging; and an emailed business could be
+dragged back to "Qualified". The board is now (`src/app/pipeline/board.tsx`):
+- A row of eight stage tiles with counts that stays in view while the page scrolls. A card is
+  dropped on a tile to move it; clicking a tile shows only that stage.
+- Below, one section per stage that holds businesses, cards in a grid across the full width; every
+  card is on the page. Each card says in plain words what is going on and for how long ("Waiting
+  for a reply · 22h").
+- A card changes place only when it is dropped, never while carried. A business that was emailed
+  cannot go back to a stage before the email; the board says so.
+This replaces the columns of D46.
+
+## D48 — Pipeline board as columns, the way Jira and Azure Boards do it (2026-11-19)
+The founder kept the drag-and-drop logic of D47 and asked for the layout of the boards people know.
+Every stage is a column, all eight side by side in one row in the order a conversation moves, the
+outcomes last; a column has a header with the name and the count and holds its cards one under
+another; all columns have the same width and height, so an empty one is a clear place to drop. The
+row scrolls sideways when the window is narrower than the board, and by itself while a card is
+carried to its edge; on a phone the columns are swiped one at a time. A card gives the whole width
+to the company name, then the city, what is going on and for how long, and the score. A card
+carried over another column steps in at the spot under the pointer; dropped there it keeps that
+place, dropped on the empty part of a column it goes to the end. The stage tiles and sections of
+D47 are gone; its rules stay (nothing moves until dropped on a stage, an emailed business cannot
+go back before the email, a drop outside every stage changes nothing).
+
