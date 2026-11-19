@@ -40,11 +40,11 @@ export function ConfirmButton({ message, heading: givenHeading, confirmLabel, da
             <Icon name={destructive ? "alert" : "info"} className="w-5 h-5" />
           </span>
           <div className="min-w-0">
-            <h2 id={`${id}-title`} className="text-[0.95rem] font-semibold leading-snug text-ink">
+            <h2 id={`${id}-title`} className="text-[1.05rem] font-semibold leading-snug text-ink">
               {heading}
             </h2>
             {detail && (
-              <p id={`${id}-detail`} className="text-[0.8125rem] text-ink-muted mt-1.5 leading-relaxed whitespace-normal">
+              <p id={`${id}-detail`} className="text-sm text-ink-muted mt-1.5 leading-relaxed whitespace-normal">
                 {detail}
               </p>
             )}

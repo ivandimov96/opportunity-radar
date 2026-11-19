@@ -3,6 +3,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db/client";
+import { requireOwner } from "@/lib/auth";
 import { getConfig } from "@/lib/config";
 import { businesses, jobs, outreachDrafts, prospects, searches, searchResults } from "@/db/schema";
 import { csvToCandidates, upsertCandidate, type DiscoveryProviderKey } from "@/lib/discovery";
@@ -40,6 +41,7 @@ export type CreateSearchState = { errors: SearchFieldErrors; values: RawSearchVa
 
 /** Validates the search form; returns field errors (re-rendering the form with the submitted values) or starts discovery and redirects. */
 export async function createSearch(_prev: CreateSearchState, fd: FormData): Promise<CreateSearchState> {
+  await requireOwner();
   const parsed = parseSearchForm(fd);
   if (!parsed.ok) return { errors: parsed.errors, values: parsed.raw };
   const { values: v, filters, name } = parsed;
@@ -55,6 +57,7 @@ export async function createSearch(_prev: CreateSearchState, fd: FormData): Prom
 }
 
 export async function rerunSearch(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "searchId");
   const db = await getDb();
   await db.update(searches).set({ status: "queued", error: null, updatedAt: nowIso() }).where(eq(searches.id, id)).run();
@@ -64,6 +67,7 @@ export async function rerunSearch(fd: FormData) {
 }
 
 export async function investigateAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "businessId");
   const mode = fd.get("mode");
   await enqueueInvestigation(id, mode === "recrawl" || mode === "reanalyze" ? mode : "auto");
@@ -73,6 +77,7 @@ export async function investigateAction(fd: FormData) {
 
 /** Investigate every un-investigated business with a website in a search (or in a list of ids). */
 export async function investigateManyAction(fd: FormData) {
+  await requireOwner();
   const db = await getDb();
   const searchId = str(fd, "searchId");
   const ids = fd.getAll("businessId").map(String).filter(Boolean);
@@ -102,6 +107,7 @@ export async function investigateManyAction(fd: FormData) {
 
 /** Write (or rewrite) the email for a business; an optional note tells the writer what to change. */
 export async function generateDraftAction(fd: FormData) {
+  await requireOwner();
   const businessId = str(fd, "businessId");
   await enqueueOutreach(businessId, { step: str(fd, "step") === "1" ? 1 : 0, feedback: str(fd, "feedback") || null });
   kickWorker();
@@ -111,6 +117,7 @@ export async function generateDraftAction(fd: FormData) {
 
 /** Board drag: `orderedIds` is the target column top to bottom after the drop (including the moved card). */
 export async function moveOnBoardAction(businessId: string, stage: PipelineStage, orderedIds: string[]): Promise<{ ok: true } | { ok: false; error: string }> {
+  await requireOwner();
   if (!PIPELINE_STAGE_KEYS.includes(stage)) return { ok: false, error: "unknown stage" };
   if (!Array.isArray(orderedIds) || orderedIds.some((id) => typeof id !== "string") || orderedIds.length > 1000) return { ok: false, error: "invalid order" };
   const cfg = getConfig();
@@ -128,6 +135,7 @@ export async function moveOnBoardAction(businessId: string, stage: PipelineStage
 }
 
 export async function updateStageAction(fd: FormData) {
+  await requireOwner();
   const businessId = str(fd, "businessId");
   const stage = str(fd, "stage") as PipelineStage;
   if (!PIPELINE_STAGE_KEYS.includes(stage)) return;
@@ -137,6 +145,7 @@ export async function updateStageAction(fd: FormData) {
 }
 
 export async function addNoteAction(fd: FormData) {
+  await requireOwner();
   const businessId = str(fd, "businessId");
   const content = str(fd, "content");
   const type = ["note", "call", "email", "meeting"].includes(str(fd, "type")) ? str(fd, "type") : "note";
@@ -152,6 +161,7 @@ export async function addNoteAction(fd: FormData) {
 }
 
 export async function setNextActionAction(fd: FormData) {
+  await requireOwner();
   const businessId = str(fd, "businessId");
   const nextAction = str(fd, "nextAction") || null;
   const at = str(fd, "nextActionAt") || null;
@@ -162,6 +172,7 @@ export async function setNextActionAction(fd: FormData) {
 
 /** The planned next action was carried out: log it and clear it. */
 export async function completeNextActionAction(fd: FormData) {
+  await requireOwner();
   const businessId = str(fd, "businessId");
   const db = await getDb();
   const p = await db.select().from(prospects).where(eq(prospects.businessId, businessId)).get();
@@ -173,6 +184,7 @@ export async function completeNextActionAction(fd: FormData) {
 }
 
 export async function updateWebsiteAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "businessId");
   const website = normalizeWebsite(str(fd, "website"));
   const db = await getDb();
@@ -186,6 +198,7 @@ export async function updateWebsiteAction(fd: FormData) {
 }
 
 export async function importCsvAction(fd: FormData) {
+  await requireOwner();
   const file = fd.get("file");
   const industry = str(fd, "industry") || "generic";
   const country = (str(fd, "country") || "US").toUpperCase();
@@ -233,6 +246,7 @@ export async function importCsvAction(fd: FormData) {
 
 /** Remove a business for good and remember it, so later searches leave it out. `returnTo` keeps the list the operator was on. */
 export async function removeBusinessAction(fd: FormData) {
+  await requireOwner();
   const ids = fd.getAll("businessId").map(String).filter(Boolean);
   const back = str(fd, "returnTo") || "/businesses";
   let removed = 0;
@@ -253,6 +267,7 @@ export async function removeBusinessAction(fd: FormData) {
 }
 
 export async function allowBusinessAgainAction(fd: FormData) {
+  await requireOwner();
   await allowAgain(str(fd, "id"));
   revalidatePath("/settings");
   redirect(withMessage(settingsHref("removed"), "ok", "It can be found by a search again."));
@@ -260,6 +275,7 @@ export async function allowBusinessAgainAction(fd: FormData) {
 
 /** Requeue a failed job (attempt counter reset) so it runs again. */
 export async function retryJobAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "jobId");
   const db = await getDb();
   await db.update(jobs).set({ status: "queued", attempts: 0, error: null, lockedBy: null, scheduledAt: nowIso() }).where(and(eq(jobs.id, id), inArray(jobs.status, ["failed", "queued"]))).run();
@@ -269,6 +285,7 @@ export async function retryJobAction(fd: FormData) {
 
 /** Cancel a queued job: it is marked failed with an explicit reason and never picked up. */
 export async function cancelJobAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "jobId");
   const db = await getDb();
   const job = await db.select().from(jobs).where(eq(jobs.id, id)).get();
@@ -289,6 +306,7 @@ export async function cancelJobAction(fd: FormData) {
 
 /** Save candidates of a search as businesses: the selected ids, or every listed candidate. Optionally queue the saved ones for investigation. */
 export async function saveCandidatesAction(fd: FormData) {
+  await requireOwner();
   const searchId = str(fd, "searchId");
   const ids = fd.getAll("candidateId").map(String).filter(Boolean);
   const all = fd.get("all") === "on";
@@ -336,6 +354,7 @@ const withMessage = (path: string, key: "ok" | "error", message: string) => {
  * suggested for.
  */
 export async function suggestSubjectsAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "draftId");
   const here = `/outreach/${id}`;
   if (fd.has("body")) {
@@ -355,6 +374,7 @@ export async function suggestSubjectsAction(fd: FormData) {
 
 /** Save the operator's edit of an email; "then" decides what happens next (stay, approve, approve and open the next one). */
 export async function saveDraftAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "draftId");
   const then = str(fd, "then");
   const here = `/outreach/${id}`;
@@ -371,6 +391,7 @@ export async function saveDraftAction(fd: FormData) {
 }
 
 export async function draftStatusAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "draftId");
   const op = str(fd, "op");
   const back = backTo(fd, "/outreach");
@@ -386,6 +407,7 @@ export async function draftStatusAction(fd: FormData) {
 }
 
 export async function approveAllReadyAction(fd: FormData) {
+  await requireOwner();
   const n = await approveAllReady(str(fd, "campaignId"));
   revalidatePath("/outreach");
   redirect(withMessage("/outreach", "ok", n ? `Approved ${n} email${n === 1 ? "" : "s"}.` : "Nothing was waiting for approval."));
@@ -393,6 +415,7 @@ export async function approveAllReadyAction(fd: FormData) {
 
 /** "Send approved emails": queues every sendable approved email of the batch at its paced time. */
 export async function sendCampaignAction(fd: FormData) {
+  await requireOwner();
   const res = await sendCampaign(str(fd, "campaignId"));
   revalidatePath("/outreach");
   revalidatePath("/pipeline");
@@ -402,12 +425,14 @@ export async function sendCampaignAction(fd: FormData) {
 }
 
 export async function cancelQueuedAction(fd: FormData) {
+  await requireOwner();
   const n = await cancelQueued(str(fd, "campaignId"));
   revalidatePath("/outreach");
   redirect(withMessage("/outreach?tab=ready", "ok", n ? `Stopped. ${n} email${n === 1 ? " is" : "s are"} back under Ready, still approved.` : "Nothing was waiting to be sent."));
 }
 
 export async function retryFailedAction(fd: FormData) {
+  await requireOwner();
   const ok = await retryFailed(str(fd, "draftId"));
   if (ok) kickWorker();
   revalidatePath("/outreach");
@@ -419,6 +444,7 @@ export async function retryFailedAction(fd: FormData) {
  * The app sends nothing here.
  */
 export async function markDraftSentAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "draftId");
   const db = await getDb();
   const cur = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, id)).get();
@@ -435,6 +461,7 @@ export async function markDraftSentAction(fd: FormData) {
 
 /** Read the inbox now instead of waiting for the next scheduled check. */
 export async function syncMailboxAction(fd: FormData) {
+  await requireOwner();
   await enqueueJob("sync_mailbox", {}, { idempotencyKey: "sync_mailbox", maxAttempts: 1 });
   kickWorker();
   redirect(withMessage(backTo(fd, "/outreach?tab=sent"), "ok", "Checking the inbox now."));
@@ -443,6 +470,7 @@ export async function syncMailboxAction(fd: FormData) {
 // ------------------------------------------------------------------ business
 /** Set or correct the email address of a business by hand (source: manual), then continue where research or drafting stopped. */
 export async function setBusinessEmailAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "businessId");
   const back = backTo(fd, `/businesses/${id}`);
   const email = normalizeAddress(str(fd, "email"));
@@ -476,6 +504,7 @@ export async function setBusinessEmailAction(fd: FormData) {
 /** The operator's own judgement on a business the research left open: qualify it, or set it aside. */
 /** The operator prefers one of the alternative ideas: make it the one outreach is built on and have its email written. */
 export async function chooseIdeaAction(fd: FormData) {
+  await requireOwner();
   const businessId = str(fd, "businessId");
   const res = await chooseIdea(businessId, str(fd, "opportunityId"));
   const back = `/businesses/${businessId}?tab=opportunities`;
@@ -488,6 +517,7 @@ export async function chooseIdeaAction(fd: FormData) {
 }
 
 export async function setVerdictAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "businessId");
   const verdict = str(fd, "verdict");
   if (!["qualified", "not_a_fit"].includes(verdict)) return;
@@ -506,6 +536,7 @@ export async function setVerdictAction(fd: FormData) {
 // -------------------------------------------------------------------- replies
 /** Correct how a reply was classified. An opt-out set here is honoured exactly like one the system recognised. */
 export async function reclassifyReplyAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "inboundId");
   const category = str(fd, "category") as ReplyCategory;
   if (!REPLY_CATEGORIES.includes(category)) return;
@@ -515,6 +546,7 @@ export async function reclassifyReplyAction(fd: FormData) {
 
 /** The reply was dealt with (answered from the mailbox, or nothing to do): it leaves the "to answer" list. */
 export async function markReplyHandledAction(fd: FormData) {
+  await requireOwner();
   const id = str(fd, "inboundId");
   const db = await getDb();
   const row = await db.select().from(inboundEmails).where(eq(inboundEmails.id, id)).get();
@@ -527,6 +559,7 @@ export async function markReplyHandledAction(fd: FormData) {
 
 // ------------------------------------------------------------------- settings
 export async function saveSettingsAction(fd: FormData) {
+  await requireOwner();
   const section = str(fd, "section");
   const fields: Record<string, (keyof AppSettings)[]> = {
     sender: ["senderName", "senderTitle", "senderCompany", "senderWebsite", "postalAddress", "offer", "bookingLink", "voiceSamples"],
@@ -541,12 +574,14 @@ export async function saveSettingsAction(fd: FormData) {
 }
 
 export async function addSuppressionAction(fd: FormData) {
+  await requireOwner();
   const res = await addSuppression(str(fd, "value"), "manual", str(fd, "note") || null);
   revalidatePath("/settings");
   redirect(withMessage(settingsHref("do-not-contact"), res.error ? "error" : "ok", res.error ?? (res.added ? "Added to the do-not-contact list." : "Already on the list.")));
 }
 
 export async function removeSuppressionAction(fd: FormData) {
+  await requireOwner();
   await removeSuppression(str(fd, "id"));
   revalidatePath("/settings");
   redirect(settingsHref("do-not-contact"));
@@ -554,6 +589,7 @@ export async function removeSuppressionAction(fd: FormData) {
 
 /** Checks the mailbox connection (sign-in to send and to read) without sending anything. */
 export async function testMailboxAction() {
+  await requireOwner();
   const provider = getMailProvider();
   if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", getConfig().mail.reason ?? "No mailbox is connected."));
   const r = await provider.verify();
@@ -563,6 +599,7 @@ export async function testMailboxAction() {
 
 /** Sends one test email to the operator's own address, with the signature exactly as recipients will see it. */
 export async function sendTestEmailAction() {
+  await requireOwner();
   const provider = getMailProvider();
   if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", getConfig().mail.reason ?? "No mailbox is connected."));
   const settings = await getSettings();

@@ -139,9 +139,9 @@ export function ScoreRing({ value, label, size = 56, tone, sub }: { value: numbe
         </text>
       </svg>
       {label && (
-        <div className="text-[11px] uppercase tracking-wide text-ink-muted font-medium leading-none">
+        <div className="text-xs text-ink-muted font-semibold leading-none">
           {label}
-          {sub && <span className="block normal-case tracking-normal text-ink-faint mt-0.5">{sub}</span>}
+          {sub && <span className="block font-normal text-ink-faint mt-0.5">{sub}</span>}
         </div>
       )}
     </div>
@@ -153,7 +153,7 @@ export function ScoreBar({ value, label, tone }: { value: number; label?: string
   return (
     <div className="min-w-[96px]">
       {label && (
-        <div className="flex justify-between text-[11px] uppercase tracking-wide text-ink-muted font-medium">
+        <div className="flex justify-between text-xs text-ink-muted font-semibold">
           <span>{label}</span>
           <span className="text-ink tabular-nums">{value}</span>
         </div>
@@ -220,11 +220,28 @@ export function EmptyState({ icon = "info", title, description, action, compact 
       <span className="w-10 h-10 rounded-full bg-surface-3 text-ink-muted grid place-items-center mb-3">
         <Icon name={icon} className="w-5 h-5" />
       </span>
-      <div className="text-sm font-semibold">{title}</div>
-      {description && <div className="text-xs text-ink-muted mt-1 max-w-md">{description}</div>}
+      <div className="text-base font-semibold">{title}</div>
+      {description && <div className="text-sm text-ink-muted mt-1 max-w-md">{description}</div>}
       {action && <div className="mt-4 flex gap-2 flex-wrap justify-center">{action}</div>}
     </div>
   );
+}
+
+/** "Nothing here" inside a card that is part of a fuller page: one line, the same everywhere. */
+export function EmptyLine({ children, icon = "info" }: { children: ReactNode; icon?: IconName }) {
+  return (
+    <p className="flex items-center gap-3 px-5 py-4 text-sm text-ink-muted">
+      <span className="w-8 h-8 rounded-full bg-surface-3 text-ink-faint grid place-items-center shrink-0">
+        <Icon name={icon} className="w-4 h-4" />
+      </span>
+      <span className="min-w-0">{children}</span>
+    </p>
+  );
+}
+
+/** A grey block that stands in for content while a page loads. */
+export function Skeleton({ className = "" }: { className?: string }) {
+  return <span className={`skeleton block ${className}`} aria-hidden />;
 }
 
 export function Callout({ tone = "info", title, children, icon, action }: { tone?: Tone; title?: ReactNode; children?: ReactNode; icon?: IconName; action?: ReactNode }) {

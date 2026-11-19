@@ -6,7 +6,7 @@
  * happened stack. Server component.
  */
 import Link from "next/link";
-import { Badge, Icon, fmtDate, type Tone } from "@/components/ui";
+import { Badge, Icon, fmtDate, type Tone, EmptyLine } from "@/components/ui";
 import type { IconName } from "@/components/icons";
 import { OPPORTUNITY_CATEGORIES } from "@/lib/industries";
 import { stageLabel } from "@/lib/pipeline/stages";
@@ -149,7 +149,7 @@ export function ActivityTimeline<K extends string = ActivityKind>({ activities, 
         </nav>
       )}
       {shown.length === 0 ? (
-        <p className="px-5 py-6 text-sm text-ink-faint text-center">Nothing of this kind yet.</p>
+        <EmptyLine>Nothing of this kind yet.</EmptyLine>
       ) : (
         groupByDay(shown).map((g) => (
           <section key={g.day} aria-label={g.day}>

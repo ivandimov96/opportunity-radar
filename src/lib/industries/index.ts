@@ -137,7 +137,7 @@ const PLAYBOOKS: Record<string, IndustryPlaybook> = {
   auto_repair: {
     key: "auto_repair",
     label: "Automotive repair",
-    description: "Independent repair shops, body shops, tire and specialty shops. Owner-operated, clear scheduling/estimate/update workflows.",
+    description: "Independent repair shops, body shops, tire and specialty shops. Owner-operated, clear scheduling, estimate and update workflows.",
     segments: [
       { key: "general_repair", label: "General repair & maintenance", description: "Full-service mechanical repair shops.", osmSelectors: ['["shop"="car_repair"]'], googleQuery: "auto repair shop" },
       { key: "body_collision", label: "Body & collision", description: "Collision, paint and body work.", osmSelectors: ['["shop"="car_repair"]["name"~"body|collision|paint|dent",i]', '["shop"="car_repair"]["service:vehicle:body_repair"="yes"]'], googleQuery: "auto body collision repair shop" },

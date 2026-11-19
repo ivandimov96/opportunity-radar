@@ -727,3 +727,36 @@ export const geocodeCache = sqliteTable("geocode_cache", {
   value: json<Record<string, unknown>>("value").notNull(),
   createdAt: text("created_at").notNull().default(now()),
 });
+
+/**
+ * People who can sign in. The owner works in the workspace; a member has an
+ * account but no workspace yet (each user gets their own in a later stage).
+ * The password is stored only as a salted scrypt hash.
+ */
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    email: text("email").notNull(),
+    name: text("name").notNull().default(""),
+    passwordHash: text("password_hash").notNull(),
+    role: text("role").notNull().default("member"),
+    createdAt: text("created_at").notNull(),
+    lastLoginAt: text("last_login_at"),
+  },
+  (t) => [uniqueIndex("users_email_idx").on(t.email)],
+);
+
+/** One row per signed-in browser. The cookie holds the id, signed; deleting the row signs that browser out. */
+export const sessions = sqliteTable(
+  "sessions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+  },
+  (t) => [index("sessions_user_idx").on(t.userId)],
+);

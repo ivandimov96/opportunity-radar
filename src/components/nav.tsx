@@ -1,13 +1,16 @@
 "use client";
 /**
- * App shell: a fixed sidebar on wide screens (brand, five destinations with a
- * count of what is waiting in each, one line of setup status) and a top bar
+ * App shell: a fixed sidebar on wide screens (the name, five destinations with
+ * a count of what is waiting in each, and one line saying whether everything
+ * is connected) and a top bar
  * with a slide-in drawer on narrow screens.
  */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Icon, type IconName } from "./icons";
+import { Logo } from "./logo";
+import { logoutAction } from "@/app/auth-actions";
 
 export interface NavCounts {
   /** Businesses the research could not decide on. */
@@ -31,7 +34,7 @@ const items: { href: string; label: string; icon: IconName; hint: string; also?:
   { href: "/settings", label: "Settings", icon: "settings", hint: "Sender, mailbox, limits and automation", also: ["/system"] },
 ];
 
-export function AppShell({ counts, setup = [], serverless = false, children }: { counts?: NavCounts; setup?: SetupGap[]; serverless?: boolean; children: React.ReactNode }) {
+export function AppShell({ user, counts, setup = [], serverless = false, children }: { user?: { name: string; email: string }; counts?: NavCounts; setup?: SetupGap[]; serverless?: boolean; children: React.ReactNode }) {
   const path = usePathname();
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [path]);
@@ -39,30 +42,26 @@ export function AppShell({ counts, setup = [], serverless = false, children }: {
 
   const sidebar = (
     <div className="flex flex-col h-full">
-      {/* The airmail edge: this is a desk for letters that travel. */}
-      <div className="airmail shrink-0" aria-hidden />
-      <div className="px-4 pt-4 pb-3 flex items-center gap-2.5">
-        <span className="w-8 h-8 rounded-lg bg-accent text-accent-fg grid place-items-center shrink-0">
-          <Icon name="target" className="w-4.5 h-4.5" />
-        </span>
-        <Link href="/" className="font-serif text-[1.05rem] font-semibold text-ink hover:no-underline leading-tight whitespace-nowrap min-w-0 truncate">
+      {/* Who this is. */}
+      <div className="px-4 pt-5 pb-4 flex items-center gap-2.5">
+        <Logo />
+        <Link href="/" className="font-serif text-[1.02rem] font-semibold text-ink hover:no-underline leading-tight whitespace-nowrap min-w-0 truncate">
           Opportunity Radar
         </Link>
         <button className="ml-auto lg:hidden btn btn-ghost btn-sm" onClick={() => setOpen(false)} aria-label="Close menu">
           <Icon name="x" />
         </button>
       </div>
-      <nav className="flex-1 overflow-y-auto px-3 py-2 space-y-0.5">
+      <nav className="flex-1 overflow-y-auto px-3 pt-3 border-t border-line space-y-1">
         {items.map((it) => {
           const active = isActive(it.href, it.also);
           const n = it.count ? (counts?.[it.count] ?? 0) : 0;
           return (
-            <Link key={it.href} href={it.href} title={it.hint} aria-current={active ? "page" : undefined} className={`relative flex items-center gap-3 rounded-lg px-3 h-10 text-[0.92rem] hover:no-underline transition-colors ${active ? "bg-accent-soft text-accent-text font-semibold" : "text-ink-muted font-medium hover:bg-surface-3 hover:text-ink"}`}>
-              {active && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r bg-accent" aria-hidden />}
-              <Icon name={it.icon} className={`w-[1.1rem] h-[1.1rem] shrink-0 ${active ? "text-accent" : "text-ink-faint"}`} />
+            <Link key={it.href} href={it.href} title={it.hint} aria-current={active ? "page" : undefined} className={`flex items-center gap-3 rounded-lg px-3 h-11 text-[0.95rem] hover:no-underline transition-colors ${active ? "bg-accent text-accent-fg font-semibold" : "text-ink-muted font-medium hover:bg-surface-3 hover:text-ink"}`}>
+              <Icon name={it.icon} className={`w-[1.15rem] h-[1.15rem] shrink-0 ${active ? "" : "text-ink-faint"}`} />
               <span className="truncate">{it.label}</span>
               {n > 0 && (
-                <span className="ml-auto rounded-full bg-accent text-accent-fg text-xs font-semibold leading-none px-1.5 py-1 tabular-nums" title={`${n} ${it.countHint}`} aria-hidden>
+                <span className={`ml-auto rounded-full text-xs font-bold leading-none px-2 py-1 tabular-nums ${active ? "bg-accent-fg/20 text-accent-fg" : "bg-accent text-accent-fg"}`} title={`${n} ${it.countHint}`} aria-hidden>
                   {n}
                 </span>
               )}
@@ -70,18 +69,35 @@ export function AppShell({ counts, setup = [], serverless = false, children }: {
           );
         })}
       </nav>
-      <div className="px-4 py-3 border-t border-line text-xs">
+      {/* Whether everything it needs is connected, and where to fix it when it is not. */}
+      <div className="p-3 border-t border-line space-y-1">
+        {user && (
+          <form action={logoutAction} className="flex items-center gap-2.5 px-3 py-2">
+            <span className="w-8 h-8 rounded-full bg-accent-soft text-accent-text grid place-items-center text-sm font-bold shrink-0" aria-hidden>
+              {(user.name || user.email).trim().charAt(0).toUpperCase()}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-semibold text-ink truncate">{user.name || "Your account"}</span>
+              <span className="block text-xs text-ink-faint truncate">{user.email}</span>
+            </span>
+            <button className="btn btn-ghost btn-sm shrink-0" title="Sign out">
+              Sign out
+            </button>
+          </form>
+        )}
         {setup.length === 0 ? (
-          <span className="flex items-center gap-2 text-ink-muted">
-            <span className="w-1.5 h-1.5 rounded-full bg-ok shrink-0" />
+          <Link href="/settings?tab=system" className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm text-ink-muted hover:bg-surface-3 hover:text-ink hover:no-underline">
+            <span className="w-2 h-2 rounded-full bg-ok shrink-0" />
             Everything is connected
-          </span>
+          </Link>
         ) : (
-          <Link href={setup[0].href} className="flex items-start gap-2 text-ink-muted hover:text-ink hover:no-underline" title={setup.map((g) => g.label).join(", ")}>
-            <span className="w-1.5 h-1.5 rounded-full bg-warn shrink-0 mt-1.5" />
+          <Link href={setup[0].href} className="flex items-start gap-2.5 rounded-lg px-3 py-2.5 text-sm bg-warn-soft hover:no-underline" title={setup.map((g) => g.label).join(", ")}>
+            <span className="w-2 h-2 rounded-full bg-warn shrink-0 mt-1.5" />
             <span className="min-w-0">
-              <span className="block text-warn font-medium">{setup.length} thing{setup.length === 1 ? "" : "s"} to set up</span>
-              <span className="block truncate">{setup.map((g) => g.label).join(", ")}</span>
+              <span className="block text-warn font-semibold">
+                {setup.length} thing{setup.length === 1 ? "" : "s"} to set up
+              </span>
+              <span className="block truncate text-ink-muted">{setup.map((g) => g.label).join(", ")}</span>
             </span>
           </Link>
         )}
@@ -96,11 +112,12 @@ export function AppShell({ counts, setup = [], serverless = false, children }: {
         <button className="btn btn-ghost btn-sm" onClick={() => setOpen(true)} aria-label="Open menu">
           <Icon name="menu" className="w-5 h-5" />
         </button>
-        <Link href="/" className="font-serif text-[1.05rem] font-semibold text-ink hover:no-underline">
+        <Link href="/" className="flex items-center gap-2 font-serif text-[1.05rem] font-semibold text-ink hover:no-underline">
+          <Logo size="w-7 h-7" />
           Opportunity Radar
         </Link>
         <Link href="/searches/new" className="ml-auto btn btn-primary btn-sm">
-          <Icon name="plus" /> Search
+          <Icon name="search" /> Find
         </Link>
       </header>
       {open && (

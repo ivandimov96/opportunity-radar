@@ -7,6 +7,15 @@
  */
 import { expect, test, type Locator } from "@playwright/test";
 
+// Every page of the workspace needs a signed-in owner: each test starts by signing in through the form.
+test.beforeEach(async ({ page }) => {
+  await page.goto("/login");
+  await page.getByLabel("Email").fill("owner@radar.example");
+  await page.locator("#password").fill("Browser-test-1");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await page.waitForURL((url) => url.pathname === "/");
+});
+
 test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => {
   // Navigation is five items; the dashboard says what is waiting.
   await page.goto("/");
@@ -389,4 +398,38 @@ test("list pages share one table model: search, sort, date range, pagination; sy
   await expect(page.getByText(/Recent jobs/)).toBeVisible();
   await expect(page.getByText(/discover search|investigate business|send email|No jobs yet/).first()).toBeVisible();
   await expect(page.getByText(/Source health/)).toBeVisible();
+});
+
+test.describe("accounts", () => {
+  test.use({ storageState: { cookies: [], origins: [] } });
+  test("a visitor sees the landing page, cannot open the workspace, and a new account gets no workspace", async ({ page }) => {
+    // The shared sign-in of this file ran first: sign out to be a visitor.
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(page.getByRole("heading", { name: "Find your next clients. Send the first email with confidence." })).toBeVisible();
+    await page.goto("/businesses");
+    await expect(page).toHaveURL(/\/login\?next=%2Fbusinesses/);
+    // A wrong password says the same thing as an unknown email.
+    await page.getByLabel("Email").fill("owner@radar.example");
+    await page.locator("#password").fill("not-the-password-1");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page.locator('p[role="alert"]')).toContainText("The email or the password is not right.");
+    // Signing up: a weak password is refused, a good one creates a member without a workspace.
+    await page.goto("/signup");
+    await page.getByLabel("Your name").fill("New Person");
+    await page.getByLabel("Email").fill("new.person@radar.example");
+    await page.locator("#password").fill("longenough");
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(page.locator('p[role="alert"]')).toContainText("at least one letter and one number");
+    await page.getByLabel("Your name").fill("New Person");
+    await page.locator("#password").fill("Longenough-1");
+    await page.getByRole("button", { name: "Create account" }).click();
+    await expect(page).toHaveURL(/\/welcome$/);
+    await expect(page.getByRole("heading", { name: "Welcome, New" })).toBeVisible();
+    for (const path of ["/", "/businesses", "/settings", "/api/export"]) {
+      await page.goto(path);
+      await expect(page).toHaveURL(/\/welcome$/); // no workspace for a member, whatever the address
+    }
+    await page.getByRole("button", { name: "Sign out" }).click();
+    await expect(page.getByRole("link", { name: "Get started", exact: true })).toBeVisible();
+  });
 });

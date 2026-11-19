@@ -40,7 +40,7 @@ export default async function OutreachPage({ searchParams }: { searchParams: Pro
     <>
       <PageHeader
         title="Outreach"
-        subtitle={[`${c.ready} to review`, `${c.approved} approved`, c.pendingWrite ? `${c.pendingWrite} being written` : null, c.inFlight ? `${c.inFlight} queued to send` : null, c.failed ? `${c.failed} not sent` : null, c.bounced ? `${c.bounced} bounced` : null].filter(Boolean).join(" · ")}
+        subtitle={[c.pendingWrite ? `${c.pendingWrite} being written` : null, c.inFlight ? `${c.inFlight} queued to send` : null, c.failed ? `${c.failed} not sent` : null, c.bounced ? `${c.bounced} bounced` : null].filter(Boolean).join(" · ") || undefined}
         actions={
           <>
             <AutoRefresh active={c.inFlight > 0 || c.pendingWrite > 0} intervalMs={4000} label={c.inFlight > 0 ? `Sending (${c.inFlight} to go)` : "Writing emails"} />

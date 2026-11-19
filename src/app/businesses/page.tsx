@@ -97,7 +97,6 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
     <>
       <PageHeader
         title="Businesses"
-        subtitle="Every business found, newest first. Click a column heading to sort."
         actions={
           <>
             <Link href="/searches" className="btn btn-ghost" title="Every search you have run, with its results">

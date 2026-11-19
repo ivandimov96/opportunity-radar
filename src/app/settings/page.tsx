@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ConfirmButton } from "@/components/confirm-button";
-import { Badge, Callout, Card, Flash, Icon, KeyValue, PageHeader, Tabs, type Tone } from "@/components/ui";
+import { Badge, Callout, Card, Flash, Icon, KeyValue, PageHeader, Tabs, type Tone, EmptyLine } from "@/components/ui";
 import { usageSummary } from "@/lib/ai/usage";
 import { getConfig, integrationStatus, MAIL_PRESETS } from "@/lib/config";
 import { listSuppressions } from "@/lib/email/suppression";
@@ -64,7 +64,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
 
   return (
     <>
-      <PageHeader title="Settings" subtitle="Who the emails come from, how many go out, and what runs on its own." />
+      <PageHeader title="Settings" />
       <Flash msg={sp.ok} />
       <Flash msg={sp.error} tone="bad" />
       <Tabs items={SETTINGS_TABS.map((t) => ({ href: `/settings?tab=${t.key}`, label: t.label, count: tabBadge[t.key] || null, active: tab === t.key }))} />
@@ -238,7 +238,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               <button className="btn">Add</button>
             </form>
             {suppressions.length === 0 ? (
-              <p className="px-5 py-4 text-sm text-ink-faint">Nobody is on the list.</p>
+              <EmptyLine>Nobody is on the list.</EmptyLine>
             ) : (
               <ul className="divide-y divide-line">
                 {suppressions.map((x) => (
@@ -279,9 +279,9 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               )}
             </div>
             {removed.length === 0 ? (
-              <p className="px-5 py-4 text-sm text-ink-faint">Nothing has been removed. Use the remove button on a row of the Businesses table, or “Remove” on a business page.</p>
+              <EmptyLine>Nothing has been removed. Use the remove button on a row of the Businesses table, or “Remove” on a business page.</EmptyLine>
             ) : removedShown.length === 0 ? (
-              <p className="px-5 py-4 text-sm text-ink-faint">No removed business matches “{removedQuery}”.</p>
+              <EmptyLine>No removed business matches “{removedQuery}”.</EmptyLine>
             ) : (
               <>
                 <table className="table">

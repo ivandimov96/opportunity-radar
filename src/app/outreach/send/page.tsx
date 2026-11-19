@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Callout, Card, Flash, Icon, PageHeader } from "@/components/ui";
+import { Callout, Card, Flash, Icon, PageHeader, EmptyLine } from "@/components/ui";
 import { openCampaign } from "@/lib/outreach/campaigns";
 import { sendPreflight, spacingLabel } from "@/lib/outreach/send";
 import { getSettings } from "@/lib/settings";
@@ -17,6 +17,21 @@ export default async function SendPage({ searchParams }: { searchParams: Promise
   const pre = (await sendPreflight(campaign.id))!;
   const settings = await getSettings();
   const n = pre.sendable.length;
+  if (n === 0 && pre.blocked.length === 0)
+    return (
+      <>
+        <PageHeader crumbs={[{ href: "/outreach", label: "Outreach" }, { label: "Send" }]} title="Send approved emails" />
+        <Flash msg={sp.error} tone="bad" />
+        <section className="surface px-6 py-8 text-center">
+          <h2 className="text-lg font-semibold">Nothing to send yet</h2>
+          <p className="text-[0.95rem] text-ink-muted mt-1.5 max-w-xl mx-auto">{pre.problem ?? "No email is approved."} Open an email under Outreach, read it and press Approve; approved emails then appear here.</p>
+          <Link href={!pre.mailbox.ok ? settingsHref("mailbox") : pre.senderMissing.length ? settingsHref("sender") : "/outreach?tab=ready"} className="btn btn-primary mt-4">
+            {!pre.mailbox.ok ? "Connect a mailbox" : pre.senderMissing.length ? "Fill in your sender details" : "Go to the emails to review"}
+          </Link>
+        </section>
+      </>
+    );
+
   return (
     <>
       <PageHeader crumbs={[{ href: "/outreach", label: "Outreach" }, { label: "Send" }]} title="Send approved emails" subtitle="Check the summary, then send. Nothing goes out until you press the button below." />
@@ -31,7 +46,7 @@ export default async function SendPage({ searchParams }: { searchParams: Promise
           )}
           <Card title={`${n} email${n === 1 ? "" : "s"} will be sent`} description={pre.mailbox.address ? `From ${pre.mailbox.address}, each to one recipient.` : undefined} padded={false}>
             {n === 0 ? (
-              <p className="px-5 py-4 text-sm text-ink-faint">No approved email can be sent.</p>
+              <EmptyLine>No approved email can be sent.</EmptyLine>
             ) : (
               <ul className="divide-y divide-line">
                 {pre.sendable.map(({ draft, business }) => (

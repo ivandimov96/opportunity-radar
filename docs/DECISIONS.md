@@ -608,3 +608,24 @@ place, dropped on the empty part of a column it goes to the end. The stage tiles
 D47 are gone; its rules stay (nothing moves until dropped on a stage, an emailed business cannot
 go back before the email, a drop outside every stage changes nothing).
 
+## D49 — Accounts, a public front page, and what a new account may see (2026-11-19)
+The founder wants to open the product to paying users. Stage 1 of three, built now:
+- Accounts (`users`, `sessions`; `src/lib/auth/`). Passwords are stored as scrypt hashes with a
+  random salt. A session is a database row and an http-only cookie "<id>.<role>.<signature>",
+  signed with `AUTH_SECRET` (HMAC-SHA256).
+- One guard for every request (`src/proxy.ts`): without a validly signed cookie only "/", "/login"
+  and "/signup" can be read; everything else, including API routes and form posts, redirects to
+  the sign-in page. Every workspace action also starts with `requireOwner()`, which checks the
+  session in the database.
+- The workspace still holds one set of data (one mailbox, one list of businesses). So the first
+  account is the **owner** and works in it; every account created through the sign-up page is a
+  **member** and is kept on a welcome page ("your workspace is not open yet"). Rejected: letting
+  new accounts into the existing workspace, which would have shown them the founder's businesses
+  and let them send from the founder's mailbox.
+- "/" is the landing page for a visitor and the dashboard for the owner. The landing page makes
+  no claim that is not true of the product: no customer quotes, numbers or prices.
+- Sign-in attempts are limited per email address; a wrong email and a wrong password get the same
+  answer. Accounts can also be created with `scripts/create-user.ts`.
+Stage 2 (not built): a workspace per user, which means a user on every table and a mailbox per
+user. Stage 3 (not built): plans and payments.
+

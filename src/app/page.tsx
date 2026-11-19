@@ -8,8 +8,10 @@
  *  5. The latest events.
  */
 import Link from "next/link";
+import { Landing } from "@/components/landing";
+import { currentUser } from "@/lib/auth";
 import { AutoRefresh } from "@/components/auto-refresh";
-import { Badge, Card, Icon, PageHeader, fmtRelative, type Tone } from "@/components/ui";
+import { Badge, Card, Icon, PageHeader, fmtRelative, type Tone, EmptyLine } from "@/components/ui";
 import type { IconName } from "@/components/icons";
 import { monthSpendUsd } from "@/lib/ai/usage";
 import { getConfig } from "@/lib/config";
@@ -41,6 +43,7 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 const share = (part: number, whole: number) => (whole > 0 ? `${Math.round((part / whole) * 100)}%` : null);
 
 export default async function DashboardPage({ searchParams }: { searchParams: Promise<{ range?: string; from?: string; to?: string }> }) {
+  if (!(await currentUser())) return <Landing />;
   const cfg = getConfig();
   // The period: the last 7 days unless the URL says otherwise (see src/lib/date-range.ts).
   const range = resolveRange(await searchParams);
@@ -128,7 +131,6 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
 
       {/* 1. The next step: one line of text and one button, the full width. */}
       <section className="surface overflow-hidden mb-5" aria-label="Waiting for you">
-        <div className="airmail" aria-hidden />
         <div className="flex flex-wrap items-center gap-x-6 gap-y-3 px-6 py-5">
           <div className="min-w-0 flex-1 basis-80">
             <div className={`text-sm font-semibold ${top ? "text-accent-text" : "text-ok"}`}>{top ? "Your next step" : firstRun ? "Welcome" : "All caught up"}</div>
@@ -244,7 +246,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
         <div className="mb-5">
           <Card id="replies" className="scroll-mt-4" title="Replies to answer" description="Picked up from your inbox. Answer from your own mailbox, then tick them off on the business page." padded={false}>
             {d.openReplies.length === 0 ? (
-              <p className="px-5 py-4 text-sm text-ink-faint">{d.sentEver ? "No open replies. New ones show up here." : "Replies appear here once emails are out."}</p>
+              <EmptyLine>{d.sentEver ? "No open replies. New ones show up here." : "Replies appear here once emails are out."}</EmptyLine>
             ) : (
               <ul className="divide-y divide-line">
                 {d.openReplies.map(({ inbound: m, business: b }) => (
@@ -294,7 +296,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           </Link>
         }
       >
-        {recent.items.length === 0 ? <p className="px-5 py-4 text-sm text-ink-faint">Nothing has happened yet. Events appear here as businesses are found, researched and emailed.</p> : <ActivityTimeline activities={recent.items} />}
+        {recent.items.length === 0 ? <EmptyLine>Nothing has happened yet. Events appear here as businesses are found, researched and emailed.</EmptyLine> : <ActivityTimeline activities={recent.items} />}
       </Card>
     </>
   );

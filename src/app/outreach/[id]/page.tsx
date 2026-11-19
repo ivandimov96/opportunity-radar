@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ConfirmButton } from "@/components/confirm-button";
 import { EmailFields } from "@/components/email-editor";
-import { Badge, Callout, Card, Flash, Icon, PageHeader, ScoreRing, StatusPill } from "@/components/ui";
+import { Badge, Callout, Card, Flash, Icon, PageHeader, ScoreRing, StatusPill, EmptyLine } from "@/components/ui";
 import { getConfig } from "@/lib/config";
 import { signatureBlock, subjectIdeasFor } from "@/lib/outreach/drafts";
 import { draftDetail } from "@/lib/outreach/queries";
@@ -184,7 +184,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
 
           <Card title="What the email says about them" description="Each statement and the research behind it." padded={false}>
             {draft.claims.length === 0 ? (
-              <p className="px-5 py-4 text-sm text-ink-faint">No statement about the business is listed for this email.</p>
+              <EmptyLine>No statement about the business is listed for this email.</EmptyLine>
             ) : (
               <ul className="divide-y divide-line">
                 {draft.claims.map((c, n) => {

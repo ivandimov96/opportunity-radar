@@ -73,7 +73,7 @@ export default async function PipelinePage({ searchParams }: { searchParams: Pro
 
   return (
     <>
-      <PageHeader title="Pipeline" subtitle="Where each conversation stands. Cards move on their own until a company replies; after that, drag them." />
+      <PageHeader title="Pipeline" />
 
       <Tabs
         items={[
@@ -96,7 +96,7 @@ export default async function PipelinePage({ searchParams }: { searchParams: Pro
             <input className="input pl-9" name="q" placeholder={view === "board" ? "Search the board by name, city or domain" : "Search the history by business"} defaultValue={t.q} aria-label="Search" />
           </div>
           {view === "board" && (
-            <select className="select w-auto" name="industry" defaultValue={sp.industry ?? ""} aria-label="Industry">
+            <select className="select w-full sm:w-auto" name="industry" defaultValue={sp.industry ?? ""} aria-label="Industry">
               <option value="">Any industry</option>
               {listPlaybooks().map((p) => (
                 <option key={p.key} value={p.key}>

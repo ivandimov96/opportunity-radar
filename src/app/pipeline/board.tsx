@@ -83,7 +83,22 @@ const STATUS: Record<string, string> = {
   won: "Won",
   lost: "Lost",
 };
-const DOT: Record<string, string> = { qualified: "bg-ink-faint", ready_to_contact: "bg-warn", contacted: "bg-accent", replied: "bg-ok", meeting_scheduled: "bg-ok", proposal_sent: "bg-ok", won: "bg-ok", lost: "bg-bad" };
+/**
+ * Every stage has its own colour, the same ones the front page shows: on the
+ * column (its dot, the line along its top, its outline while a card is carried
+ * over it) and on each card in it (the line along its left edge).
+ */
+const STAGE_COLOR: Record<string, string> = {
+  qualified: "var(--text-faint)",
+  ready_to_contact: "color-mix(in srgb, var(--accent) 55%, var(--text-faint))",
+  contacted: "var(--accent)",
+  replied: "var(--info)",
+  meeting_scheduled: "var(--warn)",
+  proposal_sent: "color-mix(in srgb, var(--warn) 45%, var(--ok))",
+  won: "var(--ok)",
+  lost: "var(--bad)",
+};
+const stageVar = (stage: string) => ({ "--c": STAGE_COLOR[stage] ?? "var(--border-strong)" }) as React.CSSProperties;
 /** Stages offered in a card's "Move to" menu: the board's own, plus "Discovered" to take a card off the board. */
 const MOVE_TARGETS = PIPELINE_STAGES.filter((s) => s.key !== "researching");
 const STAGES = new Set<string>(PIPELINE_STAGES.map((s) => s.key));
@@ -296,7 +311,7 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
             return (
               <Zone key={stage} stage={stage} list={list} active={active} blocked={blocked}>
                 <div className="flex items-center gap-2 px-1.5 pt-1 pb-2.5">
-                  <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${countOf(stage) ? DOT[stage] : "bg-line-strong"}`} aria-hidden />
+                  <span className="w-2.5 h-2.5 rounded-full shrink-0 bg-[var(--c)]" aria-hidden />
                   <h2 className="text-sm font-semibold text-ink truncate" title={MEANING[stage]}>
                     {label(stage)}
                   </h2>
@@ -327,10 +342,10 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
 function Zone({ stage, list, active, blocked, children }: { stage: PipelineStage; list: BoardItem[]; active: BoardItem | null; blocked: boolean; children: React.ReactNode }) {
   const { setNodeRef, isOver } = useDroppable({ id: zoneId(stage) });
   const here = active !== null && list.some((i) => i.id === active.id);
-  const tone = blocked ? (isOver ? "border-bad/60 bg-bad/10" : "border-line bg-surface-3/40 opacity-60") : isOver || here ? "border-accent bg-accent-soft/50" : "border-line bg-surface-3/50";
+  const tone = blocked ? (isOver ? "border-bad/60 bg-bad/10" : "border-line bg-surface-3/40 opacity-60") : isOver || here ? "border-[var(--c)] bg-[color-mix(in_srgb,var(--c)_10%,var(--bg))]" : "border-line bg-surface-3/50";
   return (
     <SortableContext items={list.map((i) => i.id)} strategy={verticalListSortingStrategy}>
-      <section ref={setNodeRef} aria-label={label(stage)} data-stage={stage} className={`snap-center shrink-0 w-[84vw] sm:w-[16.5rem] xl:w-auto xl:flex-1 xl:min-w-[13rem] min-h-[26rem] rounded-[var(--radius)] border p-2 transition-colors ${tone}`}>
+      <section ref={setNodeRef} aria-label={label(stage)} data-stage={stage} style={stageVar(stage)} className={`snap-center shrink-0 w-[84vw] sm:w-[16.5rem] xl:w-auto xl:flex-1 xl:min-w-[13rem] min-h-[26rem] rounded-[var(--radius)] border border-t-[3px] !border-t-[color-mix(in_srgb,var(--c)_75%,transparent)] p-2 transition-colors ${tone}`}>
         {children}
       </section>
     </SortableContext>
@@ -383,7 +398,7 @@ function CardBody({ it, overlay = false, onMove }: { it: BoardItem; overlay?: bo
   const replies = it.openReplies ?? 0;
   const emailReady = it.draftCount > 0 && BEFORE_EMAIL.includes(it.stage);
   return (
-    <div className={`surface select-none p-3 flex flex-col ${overlay ? "shadow-lg cursor-grabbing rotate-[1.5deg] w-[15rem]" : "cursor-grab"}`}>
+    <div style={stageVar(it.stage)} className={`surface select-none p-3 flex flex-col border-l-[3px] !border-l-[var(--c)] ${overlay ? "shadow-lg cursor-grabbing rotate-[1.5deg] w-[15rem]" : "cursor-grab"}`}>
       {/* The name gets the whole width, as on a Jira card; the details sit in one row under it. */}
       <Link href={`/businesses/${it.id}`} title={it.name} className="block text-[0.92rem] font-semibold text-ink leading-snug hover:underline line-clamp-3" draggable={false} onClick={(e) => Date.now() - lastDragEnd < 400 && e.preventDefault()} onKeyDown={stop}>
         {it.name}
