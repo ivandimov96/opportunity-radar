@@ -211,14 +211,18 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   // Business page: the overview (what they do, the one idea and what it rests on), then research, emails, notes.
   await page.goto("/businesses");
   await page.getByRole("link", { name: "Barton Creek Auto Care" }).click();
-  await expect(page.getByText("Next step:")).toBeVisible();
+  await expect(page.getByText("Next step", { exact: true })).toBeVisible();
   await expect(page.locator('select[name="stage"]')).toHaveValue("replied"); // the board move above, persisted
   await expect(page.getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("href", /tab=opportunities/);
   await expect(page.getByText("Independent auto repair shop offering brake")).toBeVisible();
   await expect(page.getByText("published on their website")).toBeVisible(); // where the email address came from
   await expect(page.getByText("Automated estimate follow-up for pending approvals", { exact: true })).toBeVisible();
   await expect(page.getByText("The one idea to raise")).toBeVisible();
-  await expect(page.getByText("Its parts, and what each rests on")).toBeVisible();
+  // The page leads with the idea, what it is worth and what to ask; the reasoning opens on a click.
+  await expect(page.getByLabel("Progress")).toContainText("Emailed");
+  await expect(page.getByText("Questions to ask them").first()).toBeVisible();
+  await page.getByText("What we could build", { exact: true }).click();
+  await page.getByText("Evidence", { exact: true }).click();
   await expect(page.getByText("Not seen on their site.").first()).toBeVisible();
   await expect(page.getByText("Other ideas you could offer")).toBeVisible();
   await expect(page.getByRole("button", { name: "Raise this idea instead" })).toHaveCount(0); // already emailed: the idea that was raised stays

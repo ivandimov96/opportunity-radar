@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { CANDIDATE_SORTS, getSearchCandidates, getSearchOverview, type CandidateSort } from "@/lib/queries";
-import { Badge, Callout, Card, EmptyState, Icon, PageHeader, StatusPill, fmtRelative } from "@/components/ui";
+import { Badge, Callout, Card, EmptyState, Icon, PageHeader, StatusPill, fmtRelative, fmtDuration } from "@/components/ui";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { getPlaybook } from "@/lib/industries";
 import { PROVIDER_LABEL } from "@/lib/discovery";
@@ -13,7 +13,7 @@ import { FilterBar, Pagination } from "@/components/table";
 import { dateBounds, parseTableParams } from "@/lib/table";
 import { CandidateTable } from "./candidate-table";
 
-const fmtSec = (ms?: number | null) => (ms == null ? "" : `${(ms / 1000).toFixed(1)} s`);
+const fmtSec = fmtDuration;
 
 export default async function SearchDetail({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | undefined>> }) {
   const { id } = await params;

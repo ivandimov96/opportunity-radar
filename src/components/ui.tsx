@@ -315,6 +315,16 @@ export function fmtDate(iso?: string | null) {
   return isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
+/** How long something took, in words a person would use: "under a second", "12 seconds", "3 minutes". */
+export function fmtDuration(ms?: number | null): string {
+  if (ms == null) return "";
+  const sec = Math.round(ms / 1000);
+  if (sec < 1) return "under a second";
+  if (sec < 60) return `${sec} second${sec === 1 ? "" : "s"}`;
+  const min = Math.round(sec / 60);
+  return `${min} minute${min === 1 ? "" : "s"}`;
+}
+
 export function fmtRelative(iso?: string | null) {
   if (!iso) return "—";
   const t = new Date(iso).getTime();

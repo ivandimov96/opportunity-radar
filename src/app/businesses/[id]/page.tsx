@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { businessActivities, getBusinessDetail } from "@/lib/queries";
 import { getConfig } from "@/lib/config";
-import { Badge, Callout, Card, EmptyState, Flash, Icon, PageHeader, ScoreRing, StatusPill, Tabs, fmtDate, fmtRelative, type Tone } from "@/components/ui";
+import { Badge, Callout, Card, EmptyState, Flash, Icon, PageHeader, ScoreRing, StatusPill, Tabs, fmtDate, fmtDuration, fmtRelative, type Tone } from "@/components/ui";
 import { AutoRefresh } from "@/components/auto-refresh";
 import { formatPhone } from "@/lib/phone";
 import { ConfirmButton } from "@/components/confirm-button";
@@ -87,6 +87,10 @@ export default async function BusinessPage({ params, searchParams }: { params: P
     }
   };
 
+  /** The way from found to won, and how many of its steps this business has completed. */
+  const JOURNEY = ["Found", "Researched", "Qualified", "Emailed", "Replied", "Meeting", "Won"];
+  const reached = stage === "won" ? 7 : stage === "meeting_scheduled" || stage === "proposal_sent" ? 6 : stage === "replied" ? 5 : stage === "contacted" || stage === "lost" ? 4 : stage === "qualified" || stage === "ready_to_contact" || b.verdict === "qualified" ? 3 : b.investigatedAt ? 2 : 1;
+
   return (
     <>
       <PageHeader
@@ -138,16 +142,31 @@ export default async function BusinessPage({ params, searchParams }: { params: P
       <Flash msg={sp.ok} />
       <Flash msg={sp.error} tone="bad" />
 
-      <div className="surface px-4 py-3 mb-5">
-        <div className="flex flex-wrap items-center gap-3">
-          <span className={`w-8 h-8 rounded-lg grid place-items-center shrink-0 ${{ accent: "bg-accent-soft text-accent-text", ok: "bg-ok-soft text-ok", warn: "bg-warn-soft text-warn", neutral: "bg-surface-3 text-ink-muted", info: "bg-info-soft text-info" }[wf.next.tone]}`}>
+      <div className="surface px-5 py-4 mb-5">
+        <div className="flex flex-wrap items-center gap-4">
+          <span className={`w-10 h-10 rounded-lg grid place-items-center shrink-0 ${{ accent: "bg-accent-soft text-accent-text", ok: "bg-ok-soft text-ok", warn: "bg-warn-soft text-warn", neutral: "bg-surface-3 text-ink-muted", info: "bg-info-soft text-info" }[wf.next.tone]}`}>
             <Icon name={wf.next.tone === "warn" ? "alert" : wf.next.tone === "ok" ? "check" : wf.next.kind === "wait" ? "clock" : "arrowRight"} />
           </span>
           <div className="min-w-[220px] flex-1">
-            <div className="text-sm font-semibold">Next step: {wf.next.title}</div>
-            <div className="text-xs text-ink-muted">{wf.next.description}</div>
+            <div className="text-sm font-semibold text-accent-text">Next step</div>
+            <div className="text-lg font-semibold leading-snug">{wf.next.title}</div>
+            <div className="text-sm text-ink-muted mt-0.5">{wf.next.description}</div>
           </div>
-        </div>
+          {/* Where this business is on the way from found to won. */}
+        <ol className="flex items-start gap-0 basis-full lg:basis-0 lg:flex-1 lg:min-w-[30rem] mt-3 pt-4 border-t border-line lg:mt-0 lg:pt-0 lg:border-t-0 overflow-x-auto no-scrollbar" aria-label="Progress">
+          {JOURNEY.map((step, i) => {
+            const done = i < reached - 1;
+            const now = i === reached - 1;
+            return (
+              <li key={step} className="flex-1 min-w-[4.75rem] flex flex-col items-center text-center relative">
+                {i > 0 && <span className={`absolute top-3 right-1/2 w-full h-0.5 -z-0 ${i <= reached - 1 ? "bg-ok" : "bg-line-strong"}`} aria-hidden />}
+                <span className={`relative z-10 w-6 h-6 rounded-full grid place-items-center text-xs font-bold ${done ? "bg-ok text-accent-fg" : now ? (stage === "lost" ? "bg-bad text-accent-fg" : "bg-accent text-accent-fg") : "bg-surface-3 text-ink-faint border border-line-strong"}`}>{done ? <Icon name="check" className="w-3.5 h-3.5" /> : i + 1}</span>
+                <span className={`text-xs mt-1.5 ${now ? "font-semibold text-ink" : done ? "text-ink-muted" : "text-ink-faint"}`}>{step}</span>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
       </div>
 
       {wf.next.kind === "add_email" && (
@@ -184,7 +203,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
 
       <Tabs items={TABS.map((t) => ({ href: tabHref(t), label: TAB_LABEL[t], count: counts[t], active: tab === t }))} />
 
-      <div className="grid lg:grid-cols-[1fr_300px] gap-5 items-start">
+      <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
         <div className="min-w-0 space-y-5">
           {tab === "profile" && (
             <>
@@ -356,7 +375,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
 
           {tab === "opportunities" && (
             <>
-              <Card title="What this business does" description={d.latest ? `Investigated ${fmtRelative(d.latest.finishedAt ?? d.latest.startedAt)} · ${d.latest.pagesFetched} pages · ${verified.length} verified facts${d.latest.durationMs ? ` · ${(d.latest.durationMs / 1000).toFixed(1)}s` : ""}` : undefined}>
+              <Card title="What this business does" description={d.latest ? `Investigated ${fmtRelative(d.latest.finishedAt ?? d.latest.startedAt)} · ${d.latest.pagesFetched} pages · ${verified.length} verified facts${d.latest.durationMs ? ` · took ${fmtDuration(d.latest.durationMs)}` : ""}` : undefined}>
                 {b.summary ? (
                   <p className="text-sm leading-relaxed">{b.summary}</p>
                 ) : d.facts.length ? (
@@ -430,49 +449,59 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                     </div>
                   }
                 >
-                  <div className="space-y-4 text-sm">
-                    {primary.source === "ai" && primary.salesAngle && <Field label="In plain words" hint="how the email will put it">{primary.salesAngle}</Field>}
-                    {primary.whyRelevant && <Field label="Why this business">{primary.whyRelevant}</Field>}
-                    <Field label="The challenge" hint="a hypothesis to validate, not a fact">
-                      {primary.problemHypothesis}
-                    </Field>
-                    <Field label="What we could build">{primary.proposedSolution}</Field>
-                    {(primary.components ?? []).length > 0 && (
-                      <div>
-                        <div className="label">Its parts, and what each rests on</div>
-                        <ul className="space-y-2.5">
-                          {(primary.components ?? []).map((c) => (
-                            <li key={c.name} className="rounded-lg border border-line p-3">
-                              <div className="font-medium">{c.name}</div>
-                              <p className="text-ink-muted">{c.description}</p>
-                              <EvidenceChips refs={c.evidence} factByKey={factByKey} obsByRef={obsByRef} />
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
+                  <div className="text-sm">
+                    {/* First: the idea as it would be said, what it is worth, and what to ask. */}
+                    {primary.source === "ai" && primary.salesAngle ? (
+                      <p className="letter-text text-ink">{primary.salesAngle}</p>
+                    ) : (
+                      <p className="text-[0.95rem] text-ink">{primary.proposedSolution}</p>
                     )}
-                    <div>
-                      <div className="label">Everything this idea rests on</div>
-                      <EvidenceChips refs={primary.supportingFactKeys} factByKey={factByKey} obsByRef={obsByRef} />
-                    </div>
-                    <div className="grid md:grid-cols-2 gap-4">
-                      {primary.whyNotExistingTool && (
-                        <Field label="Why not an existing tool" muted>
-                          {primary.whyNotExistingTool}
-                        </Field>
-                      )}
-                      {primary.expectedValue && (
-                        <Field label="What it would be worth" muted>
-                          {primary.expectedValue}
-                        </Field>
-                      )}
-                      <ListField label="Unknown: assumptions to check" items={primary.assumptions} />
+                    <div className="grid md:grid-cols-2 gap-x-6 gap-y-4 mt-5 mb-5">
+                      {primary.expectedValue && <Field label="What it would be worth to them">{primary.expectedValue}</Field>}
                       <ListField label="Questions to ask them" items={primary.validationQuestions} />
-                      {primary.risks.length > 0 && <ListField label="Risks" items={primary.risks} />}
                     </div>
-                    <details className="text-xs text-ink-muted">
-                      <summary className="cursor-pointer select-none">How the two scores were calculated</summary>
-                      <div className="grid md:grid-cols-2 gap-4 mt-2">
+                    {/* Then the reasoning, each part behind its own heading. */}
+                    <Fold title="Why this business" hint="what was noticed, and the problem it suggests">
+                      <div className="space-y-4">
+                        {primary.whyRelevant && <Field label="Why it fits them">{primary.whyRelevant}</Field>}
+                        <Field label="The challenge" hint="a hypothesis to validate, not a fact">
+                          {primary.problemHypothesis}
+                        </Field>
+                      </div>
+                    </Fold>
+                    <Fold title="What we could build" hint={`${(primary.components ?? []).length || "no"} part${(primary.components ?? []).length === 1 ? "" : "s"}`}>
+                      <div className="space-y-4">
+                        <p>{primary.proposedSolution}</p>
+                        {(primary.components ?? []).length > 0 && (
+                          <ul className="space-y-2.5">
+                            {(primary.components ?? []).map((c) => (
+                              <li key={c.name} className="rounded-lg border border-line p-3">
+                                <div className="font-semibold">{c.name}</div>
+                                <p className="text-ink-muted">{c.description}</p>
+                                <EvidenceChips refs={c.evidence} factByKey={factByKey} obsByRef={obsByRef} />
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </div>
+                    </Fold>
+                    <Fold title="Evidence" hint={`${primary.supportingFactKeys.length} thing${primary.supportingFactKeys.length === 1 ? "" : "s"} from their website this idea rests on`}>
+                      <EvidenceChips refs={primary.supportingFactKeys} factByKey={factByKey} obsByRef={obsByRef} />
+                    </Fold>
+                    <Fold title="Risks and open questions" hint="what could be wrong, and what to check">
+                      <div className="grid md:grid-cols-2 gap-4">
+                        {primary.whyNotExistingTool && (
+                          <Field label="Why not an existing tool" muted>
+                            {primary.whyNotExistingTool}
+                          </Field>
+                        )}
+                        <ListField label="Unknown: assumptions to check" items={primary.assumptions} />
+                        {primary.risks.length > 0 && <ListField label="Risks" items={primary.risks} />}
+                      </div>
+                    </Fold>
+                    <Fold title="How the two scores were calculated" hint={`attractive ${primary.attractivenessScore}, confidence ${primary.confidenceScore}`}>
+                      <div className="text-xs text-ink-muted">
+                        <div className="grid md:grid-cols-2 gap-4 ">
                         {(["attractiveness", "confidence"] as const).map((k) => (
                           <ul key={k} className="space-y-1">
                             <li className="font-medium capitalize text-ink">{k}</li>
@@ -485,7 +514,8 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                         ))}
                       </div>
                       {primary.scoreBreakdown.notes.length > 0 && <p className="mt-2">{primary.scoreBreakdown.notes.join(" ")}</p>}
-                    </details>
+                      </div>
+                    </Fold>
                   </div>
                 </Card>
               )}
@@ -556,7 +586,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                     </Link>
                   }
                 >
-                  <p className="text-sm whitespace-pre-wrap">{dr.body}</p>
+                  <p className="letter-text whitespace-pre-wrap">{dr.body}</p>
                   {dr.lastError && <p className="text-xs text-bad mt-3">{dr.lastError}</p>}
                 </Card>
               ))}
@@ -578,7 +608,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                           <span className="text-xs text-ink-faint ml-auto">{fmtDate(m.receivedAt)}</span>
                         </div>
                         {m.classificationSummary && <p className="text-xs text-ink-muted mt-1.5">{m.classificationSummary}</p>}
-                        <p className="mt-2 whitespace-pre-wrap rounded-lg bg-surface-2 border border-line px-3 py-2">{stripQuoted(m.bodyText).slice(0, 3000)}</p>
+                        <p className="letter-text mt-2 whitespace-pre-wrap rounded-lg bg-surface-2 border border-line px-4 py-3">{stripQuoted(m.bodyText).slice(0, 3000)}</p>
                         {m.suggestedReply && !m.handledAt && (
                           <div className="mt-3">
                             <div className="label">A possible answer (send it from your own mailbox; fill in anything in brackets)</div>
@@ -721,7 +751,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
               return (
                 <>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs uppercase tracking-wide text-ink-faint">Stage</span>
+                    <span className="text-sm font-semibold text-ink-muted">Stage</span>
                     <Badge tone={stageTone(stage)} dot>
                       {stageLabel(stage)}
                     </Badge>
@@ -745,7 +775,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                   </form>
 
                   <div className="mt-4 pt-4 border-t border-line">
-                    <div className="text-xs uppercase tracking-wide text-ink-faint mb-1.5">Next action</div>
+                    <div className="text-sm font-semibold text-ink-muted mb-1.5">Next action</div>
                     {d.prospect?.nextAction ? (
                       <div className={`rounded-[var(--radius-sm)] border px-3 py-2.5 ${overdue ? "border-bad/40 bg-bad/5" : "border-accent/30 bg-accent-soft/40"}`}>
                         <div className="text-sm font-medium text-ink">{d.prospect.nextAction}</div>
@@ -889,6 +919,20 @@ export default async function BusinessPage({ params, searchParams }: { params: P
   );
 }
 
+/** A part of the page that opens on a click: its heading and a few words on what is inside. */
+function Fold({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <details className="border-t border-line">
+      <summary className="flex items-center gap-2 py-3 cursor-pointer select-none hover:text-accent-text">
+        <Icon name="chevronRight" className="chevron w-4 h-4 shrink-0 text-ink-faint transition-transform" />
+        <span className="text-[0.95rem] font-semibold">{title}</span>
+        {hint && <span className="text-sm text-ink-faint truncate">{hint}</span>}
+      </summary>
+      <div className="pb-5 pl-6">{children}</div>
+    </details>
+  );
+}
+
 function Field({ label, hint, children, muted }: { label: string; hint?: string; children: React.ReactNode; muted?: boolean }) {
   return (
     <div>
@@ -922,7 +966,7 @@ function ContactRow({ icon, label, children }: { icon: "mail" | "phone" | "globe
         <Icon name={icon} className="w-3.5 h-3.5" />
       </span>
       <div className="min-w-0 flex-1">
-        <div className="text-[10.5px] uppercase tracking-wide text-ink-faint leading-tight">{label}</div>
+        <div className="text-xs font-semibold text-ink-muted leading-tight">{label}</div>
         <div className="min-w-0 leading-snug">{children}</div>
       </div>
     </li>

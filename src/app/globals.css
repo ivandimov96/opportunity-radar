@@ -151,6 +151,8 @@ details[open] > summary .chevron {
 
 @layer components {
 .surface {
+  /* A long web address or a word without spaces wraps instead of pushing the page wider. */
+  overflow-wrap: anywhere;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -275,7 +277,13 @@ details[open] > summary .chevron {
   border-spacing: 0;
   font-size: 0.86rem;
 }
+/* In a table a word is never broken in the middle: column headings stay on one line and cells keep whole words. */
+.table th,
+.table td {
+  overflow-wrap: normal;
+}
 .table th {
+  white-space: nowrap;
   position: sticky;
   top: 0;
   z-index: 1;
