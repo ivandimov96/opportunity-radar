@@ -2,6 +2,7 @@ import { gte, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { aiUsage } from "@/db/schema";
 import { newId } from "@/lib/ids";
+import { workspaceId } from "@/lib/workspace";
 
 /** USD per million tokens. Source: Anthropic pricing as cached in the claude-api skill (2026-10). */
 const PRICING: Record<string, { input: number; output: number; cacheRead: number; cacheWrite: number }> = {
@@ -27,7 +28,8 @@ export async function recordUsage(args: { stage: string; model: string; provider
   const db = await getDb();
   await db
     .insert(aiUsage)
-    .values({ id: newId(), stage: args.stage, model: args.provider ? `${args.provider}:${args.model}` : args.model, businessId: args.businessId ?? null, inputTokens: args.input, outputTokens: args.output, cacheReadTokens: args.cacheRead, cacheWriteTokens: args.cacheWrite, estimatedCostUsd: cost })
+    // Who the call was made for. Budgets are still counted over every workspace together.
+    .values({ id: newId(), workspaceId: await workspaceId(), stage: args.stage, model: args.provider ? `${args.provider}:${args.model}` : args.model, businessId: args.businessId ?? null, inputTokens: args.input, outputTokens: args.output, cacheReadTokens: args.cacheRead, cacheWriteTokens: args.cacheWrite, estimatedCostUsd: cost })
     .run();
   return cost;
 }

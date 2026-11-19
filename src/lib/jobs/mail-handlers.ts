@@ -8,7 +8,7 @@
  * folder: found means it went out; not found, or no way to tell, means the
  * email is marked failed for the operator to decide. It is never re-sent on a guess.
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { businesses, emailEvents, inboundEmails, outreachDrafts } from "@/db/schema";
 import { AiRefusalError, AiSpendLimitError, AiUnavailableError, callStructured } from "@/lib/ai/client";
@@ -17,7 +17,7 @@ import { ReplySchema, type ReplyCategory } from "@/lib/ai/schemas";
 import { getConfig } from "@/lib/config";
 import { addSuppression } from "@/lib/email/suppression";
 import { newId, nowIso } from "@/lib/ids";
-import { getMailProvider, MailSendError } from "@/lib/mail";
+import { getMailProvider, mailboxFor, MailSendError } from "@/lib/mail";
 import { asksToUnsubscribe, stripQuoted } from "@/lib/mail/parse";
 import { syncMailbox } from "@/lib/mail/sync";
 import { composeEmailBody } from "@/lib/outreach/drafts";
@@ -25,6 +25,7 @@ import { contactBlockers } from "@/lib/outreach/eligibility";
 import { closeCampaignIfDone, dayKey, planSendTimes, sentToday, usedByDay } from "@/lib/outreach/send";
 import { advanceStageIfBehind, logActivity, setNextAction } from "@/lib/pipeline/prospects";
 import { getSettings, missingSenderDetails } from "@/lib/settings";
+import { businessIdsOf, draftInWorkspace, workspaceId } from "@/lib/workspace";
 import { NonRetryableError, RetryableError, type ProgressFn } from "./handlers";
 import { enqueueJob, type JobRow } from "./queue";
 
@@ -36,7 +37,8 @@ const event = async (draftId: string, businessId: string, type: string, detail: 
 export async function handleSendEmail(job: JobRow, _progress: ProgressFn, signal: AbortSignal = new AbortController().signal) {
   const db = await getDb();
   const draftId = String(job.payload.draftId);
-  let draft = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, draftId)).get();
+  // The job runs as the workspace it was queued in: an email of another workspace is "not found".
+  let draft = await draftInWorkspace(draftId);
   if (!draft) throw new NonRetryableError(`Email ${draftId} not found`);
   if (draft.status === "sent" || draft.status === "bounced") return; // already out: nothing to do
   const fail = async (message: string, type = "failed", extra: Record<string, unknown> = {}) => {
@@ -44,10 +46,12 @@ export async function handleSendEmail(job: JobRow, _progress: ProgressFn, signal
     await event(draftId, draft!.businessId, type, { message, ...extra });
     await closeCampaignIfDone(draft!.campaignId);
   };
-  const provider = getMailProvider();
+  // The mailbox of the workspace this job runs as; a workspace without one sends nothing.
+  const box = await mailboxFor();
+  const provider = box.enabled ? getMailProvider() : null;
   if (!provider) {
-    await fail(getConfig().mail.reason ?? "No mailbox is connected.");
-    throw new NonRetryableError("No mailbox is connected");
+    await fail(box.reason ?? "No mailbox is connected.");
+    throw new NonRetryableError(box.reason ?? "No mailbox is connected");
   }
 
   if (draft.status === "sending") {
@@ -172,7 +176,8 @@ const NEXT_ACTION: Record<ReplyCategory, string> = {
 /** Applies what a classification means for the business. The same function serves the model, the rules and the operator's correction. */
 export async function applyReplyClassification(inboundId: string, category: ReplyCategory, by: string, extra: { confidence?: number | null; summary?: string | null; suggestedReply?: string | null } = {}) {
   const db = await getDb();
-  const row = await db.select().from(inboundEmails).where(eq(inboundEmails.id, inboundId)).get();
+  // A reply belongs to the workspace of its business: one from elsewhere is not there.
+  const row = await db.select().from(inboundEmails).where(and(eq(inboundEmails.id, inboundId), inArray(inboundEmails.businessId, businessIdsOf(db, await workspaceId())))).get();
   if (!row) return;
   await db
     .update(inboundEmails)
@@ -191,7 +196,7 @@ export async function applyReplyClassification(inboundId: string, category: Repl
 export async function handleProcessReply(job: JobRow, progress: ProgressFn) {
   const db = await getDb();
   const inboundId = String(job.payload.inboundId);
-  const row = await db.select().from(inboundEmails).where(eq(inboundEmails.id, inboundId)).get();
+  const row = await db.select().from(inboundEmails).where(and(eq(inboundEmails.id, inboundId), inArray(inboundEmails.businessId, businessIdsOf(db, await workspaceId())))).get();
   if (!row || row.kind !== "reply" || row.classification) return;
   const text = stripQuoted(row.bodyText);
   if (asksToUnsubscribe(row.bodyText, row.subject ?? "")) {

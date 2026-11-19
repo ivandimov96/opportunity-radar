@@ -1,4 +1,4 @@
-/** Read-side queries for the Outreach screens and the dashboard. */
+/** Read-side queries for the Outreach screens and the dashboard. Businesses and what hangs off them (emails, replies, stages) and batches are read for the acting workspace only. */
 import { and, desc, eq, gte, inArray, isNull, ne, notInArray, sql, lte, type AnyColumn } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { businesses, campaigns, emailEvents, inboundEmails, observations, opportunities, facts, outreachDrafts, prospects } from "@/db/schema";
@@ -6,6 +6,13 @@ import { suppressionFor } from "@/lib/email/suppression";
 import { getSettings } from "@/lib/settings";
 import { openCampaign } from "./campaigns";
 import { buildEvidencePack } from "./evidence";
+import { workspaceId } from "@/lib/workspace";
+
+/** Ids of the businesses of a workspace: emails, replies and stages are scoped through their business. */
+function businessIdsOf(db: Awaited<ReturnType<typeof getDb>>, ws: string) {
+  // A subquery, never awaited on its own (awaiting it would run it and hand back rows).
+  return db.select({ id: businesses.id }).from(businesses).where(eq(businesses.workspaceId, ws));
+}
 
 export type OutreachTab = "ready" | "review" | "blocked" | "excluded" | "sent";
 export const OUTREACH_TABS: { key: OutreachTab; label: string }[] = [
@@ -36,12 +43,13 @@ export function placeOf(d: Pick<typeof outreachDrafts.$inferSelect, "status" | "
 export async function outreachOverview() {
   const db = await getDb();
   const campaign = await openCampaign();
+  const mine = eq(businesses.workspaceId, await workspaceId());
   const rows = await db
     .select({ draft: outreachDrafts, business: businesses, stage: prospects.stage })
     .from(outreachDrafts)
     .innerJoin(businesses, eq(businesses.id, outreachDrafts.businessId))
     .leftJoin(prospects, eq(prospects.businessId, businesses.id))
-    .where(ne(outreachDrafts.status, "archived"))
+    .where(and(ne(outreachDrafts.status, "archived"), mine))
     .orderBy(desc(sql`coalesce(${businesses.priority}, 0)`), outreachDrafts.createdAt)
     .all();
   const byTab: Record<OutreachTab, typeof rows> = { ready: [], review: [], blocked: [], excluded: [], sent: [] };
@@ -55,7 +63,7 @@ export async function outreachOverview() {
   const unreachable = await db
     .select()
     .from(businesses)
-    .where(and(eq(businesses.status, "profiled"), inArray(businesses.verdict, ["qualified", "no_contact"]), isNull(businesses.email), notInArray(businesses.id, withDraft)))
+    .where(and(mine, eq(businesses.status, "profiled"), inArray(businesses.verdict, ["qualified", "no_contact"]), isNull(businesses.email), notInArray(businesses.id, withDraft)))
     .orderBy(desc(sql`coalesce(${businesses.priority}, ${businesses.leadScore}, 0)`))
     .limit(100)
     .all();
@@ -65,7 +73,7 @@ export async function outreachOverview() {
       await db
         .select({ n: sql<number>`count(*)` })
         .from(businesses)
-        .where(and(eq(businesses.verdict, "qualified"), eq(businesses.status, "profiled"), sql`${businesses.email} is not null`, notInArray(businesses.id, withDraft)))
+        .where(and(mine, eq(businesses.verdict, "qualified"), eq(businesses.status, "profiled"), sql`${businesses.email} is not null`, notInArray(businesses.id, withDraft)))
         .get()
     )?.n ?? 0,
   );
@@ -89,7 +97,9 @@ export async function draftDetail(id: string) {
   const db = await getDb();
   const draft = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, id)).get();
   if (!draft) return null;
-  const business = (await db.select().from(businesses).where(eq(businesses.id, draft.businessId)).get())!;
+  // An email belongs to the workspace of its business: one written for another workspace's business is "not found".
+  const business = await db.select().from(businesses).where(and(eq(businesses.id, draft.businessId), eq(businesses.workspaceId, await workspaceId()))).get();
+  if (!business) return null;
   const prospect = (await db.select().from(prospects).where(eq(prospects.businessId, business.id)).get()) ?? null;
   const [factRows, obsRows, opps, events, inbound] = await Promise.all([
     db.select().from(facts).where(eq(facts.businessId, business.id)).all(),
@@ -118,7 +128,7 @@ export async function campaignHistory(limit = 12) {
     .select({ id: campaigns.id, name: campaigns.name, status: campaigns.status, sentAt: campaigns.sentAt, draftStatus: outreachDrafts.status, n: sql<number>`count(${outreachDrafts.id})` })
     .from(campaigns)
     .leftJoin(outreachDrafts, eq(outreachDrafts.campaignId, campaigns.id))
-    .where(ne(campaigns.status, "open"))
+    .where(and(eq(campaigns.workspaceId, await workspaceId()), ne(campaigns.status, "open")))
     .groupBy(campaigns.id, outreachDrafts.status)
     .orderBy(desc(campaigns.sentAt))
     .all();
@@ -142,36 +152,40 @@ export async function funnelForPeriod(range: { fromIso: string | null; toIso: st
   const db = await getDb();
   const within = (col: AnyColumn) => and(range.fromIso ? gte(col, range.fromIso) : undefined, range.toIso ? lte(col, range.toIso) : undefined);
   const count = async (q: Promise<{ n: number } | undefined>) => Number((await q)?.n ?? 0);
+  const ws = eq(businesses.workspaceId, await workspaceId());
+  const mine = businessIdsOf(db, await workspaceId());
   const [found, researched, qualified, contacted, replied, meetings, won] = await Promise.all([
-    count(db.select({ n: sql<number>`count(*)` }).from(businesses).where(within(businesses.createdAt)).get()),
-    count(db.select({ n: sql<number>`count(*)` }).from(businesses).where(and(eq(businesses.status, "profiled"), within(businesses.investigatedAt))).get()),
-    count(db.select({ n: sql<number>`count(*)` }).from(businesses).where(and(eq(businesses.verdict, "qualified"), within(businesses.investigatedAt))).get()),
-    count(db.select({ n: sql<number>`count(distinct ${outreachDrafts.businessId})` }).from(outreachDrafts).where(and(eq(outreachDrafts.step, 0), inArray(outreachDrafts.status, ["sent", "bounced"]), within(outreachDrafts.sentAt))).get()),
-    count(db.select({ n: sql<number>`count(distinct ${inboundEmails.businessId})` }).from(inboundEmails).where(and(eq(inboundEmails.kind, "reply"), within(inboundEmails.receivedAt))).get()),
-    count(db.select({ n: sql<number>`count(*)` }).from(prospects).where(and(inArray(prospects.stage, ["meeting_scheduled", "proposal_sent", "won"]), within(prospects.updatedAt))).get()),
-    count(db.select({ n: sql<number>`count(*)` }).from(prospects).where(and(eq(prospects.stage, "won"), within(prospects.updatedAt))).get()),
+    count(db.select({ n: sql<number>`count(*)` }).from(businesses).where(and(ws, within(businesses.createdAt))).get()),
+    count(db.select({ n: sql<number>`count(*)` }).from(businesses).where(and(ws, eq(businesses.status, "profiled"), within(businesses.investigatedAt))).get()),
+    count(db.select({ n: sql<number>`count(*)` }).from(businesses).where(and(ws, eq(businesses.verdict, "qualified"), within(businesses.investigatedAt))).get()),
+    count(db.select({ n: sql<number>`count(distinct ${outreachDrafts.businessId})` }).from(outreachDrafts).where(and(inArray(outreachDrafts.businessId, mine), eq(outreachDrafts.step, 0), inArray(outreachDrafts.status, ["sent", "bounced"]), within(outreachDrafts.sentAt))).get()),
+    count(db.select({ n: sql<number>`count(distinct ${inboundEmails.businessId})` }).from(inboundEmails).where(and(inArray(inboundEmails.businessId, mine), eq(inboundEmails.kind, "reply"), within(inboundEmails.receivedAt))).get()),
+    count(db.select({ n: sql<number>`count(*)` }).from(prospects).where(and(inArray(prospects.businessId, mine), inArray(prospects.stage, ["meeting_scheduled", "proposal_sent", "won"]), within(prospects.updatedAt))).get()),
+    count(db.select({ n: sql<number>`count(*)` }).from(prospects).where(and(inArray(prospects.businessId, mine), eq(prospects.stage, "won"), within(prospects.updatedAt))).get()),
   ]);
   return { found, researched, qualified, contacted, replied, meetings, won };
 }
 
 export async function dashboardData() {
   const db = await getDb();
+  const ws = await workspaceId();
+  const mine = businessIdsOf(db, ws);
   const n = async (table: "businesses" | "drafts" | "inbound", where: ReturnType<typeof sql>) => {
-    const from = table === "businesses" ? db.select({ n: sql<number>`count(*)` }).from(businesses).leftJoin(prospects, eq(prospects.businessId, businesses.id)) : table === "drafts" ? db.select({ n: sql<number>`count(*)` }).from(outreachDrafts) : db.select({ n: sql<number>`count(*)` }).from(inboundEmails);
-    return Number((await from.where(where).get())?.n ?? 0);
+    const q = table === "businesses" ? db.select({ n: sql<number>`count(*)` }).from(businesses).leftJoin(prospects, eq(prospects.businessId, businesses.id)).where(and(eq(businesses.workspaceId, ws), where)) : table === "drafts" ? db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(and(inArray(outreachDrafts.businessId, mine), where)) : db.select({ n: sql<number>`count(*)` }).from(inboundEmails).where(and(inArray(inboundEmails.businessId, mine), where));
+    return Number((await q.get())?.n ?? 0);
   };
   const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString();
-  const stageRows = await db.select({ stage: prospects.stage, n: sql<number>`count(*)` }).from(prospects).groupBy(prospects.stage).all();
+  const stageRows = await db.select({ stage: prospects.stage, n: sql<number>`count(*)` }).from(prospects).where(inArray(prospects.businessId, mine)).groupBy(prospects.stage).all();
   const stage = Object.fromEntries(stageRows.map((r) => [r.stage, Number(r.n)])) as Record<string, number>;
   const total = stageRows.reduce((s, r) => s + Number(r.n), 0);
   const contactedEver = await n("drafts", sql`${outreachDrafts.step} = 0 and ${outreachDrafts.status} in ('sent', 'bounced')`);
-  const repliedBusinesses = Number((await db.select({ n: sql<number>`count(distinct ${inboundEmails.businessId})` }).from(inboundEmails).where(eq(inboundEmails.kind, "reply")).get())?.n ?? 0);
+  const repliedBusinesses = Number((await db.select({ n: sql<number>`count(distinct ${inboundEmails.businessId})` }).from(inboundEmails).where(and(eq(inboundEmails.kind, "reply"), inArray(inboundEmails.businessId, mine))).get())?.n ?? 0);
   const overview = await outreachOverview();
   const openReplies = await db
     .select({ inbound: inboundEmails, business: { id: businesses.id, name: businesses.name } })
     .from(inboundEmails)
     .innerJoin(businesses, eq(businesses.id, inboundEmails.businessId))
-    .where(and(eq(inboundEmails.kind, "reply"), isNull(inboundEmails.handledAt)))
+    .where(and(eq(businesses.workspaceId, ws), eq(inboundEmails.kind, "reply"), isNull(inboundEmails.handledAt)))
     .orderBy(desc(inboundEmails.receivedAt))
     .limit(8)
     .all();
@@ -179,7 +193,7 @@ export async function dashboardData() {
     .select({ business: { id: businesses.id, name: businesses.name }, nextAction: prospects.nextAction, nextActionAt: prospects.nextActionAt, stage: prospects.stage })
     .from(prospects)
     .innerJoin(businesses, eq(businesses.id, prospects.businessId))
-    .where(and(sql`${prospects.nextAction} is not null`, notInArray(prospects.stage, ["won", "lost"])))
+    .where(and(eq(businesses.workspaceId, ws), sql`${prospects.nextAction} is not null`, notInArray(prospects.stage, ["won", "lost"])))
     .orderBy(prospects.nextActionAt)
     .limit(8)
     .all();
@@ -201,6 +215,6 @@ export async function dashboardData() {
     won: stage.won ?? 0,
     openReplies,
     dueActions,
-    repliesThisMonth: Number((await db.select({ n: sql<number>`count(*)` }).from(inboundEmails).where(and(eq(inboundEmails.kind, "reply"), gte(inboundEmails.receivedAt, monthStart))).get())?.n ?? 0),
+    repliesThisMonth: Number((await db.select({ n: sql<number>`count(*)` }).from(inboundEmails).where(and(inArray(inboundEmails.businessId, mine), eq(inboundEmails.kind, "reply"), gte(inboundEmails.receivedAt, monthStart))).get())?.n ?? 0),
   };
 }

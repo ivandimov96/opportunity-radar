@@ -9,7 +9,7 @@ import { and, eq, gt, lt } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db/client";
-import { sessions, users } from "@/db/schema";
+import { FIRST_WORKSPACE_ID, sessions, users, workspaces } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
 import { SESSION_COOKIE, makeToken, readToken, type Role } from "./token";
 
@@ -21,6 +21,20 @@ export interface SessionUser {
   email: string;
   name: string;
   role: Role;
+  /** The workspace this user works in: every search, business and email they see belongs to it. */
+  workspaceId: string;
+}
+
+/**
+ * The workspace a new account gets. The first account ever takes the first
+ * workspace (which holds whatever existed before accounts); every later
+ * account gets a new, empty one of its own.
+ */
+export async function workspaceForNewUser(first: boolean, name: string): Promise<string> {
+  const db = await getDb();
+  const id = first ? FIRST_WORKSPACE_ID : newId();
+  await db.insert(workspaces).values({ id, name: name ? `${name}'s workspace` : "", createdAt: nowIso() }).onConflictDoNothing().run();
+  return id;
 }
 
 export const normalizeEmail = (email: string) => email.trim().toLowerCase();
@@ -56,7 +70,10 @@ export async function createUser(input: { email: string; password: string; name?
   const db = await getDb();
   if (await db.select({ id: users.id }).from(users).where(eq(users.email, email)).get()) return { ok: false, error: "An account with this email already exists. Sign in instead." };
   const first = !(await db.select({ id: users.id }).from(users).limit(1).get());
-  const user: SessionUser = { id: newId(), email, name: (input.name ?? "").trim().slice(0, 80), role: input.role ?? (first ? "owner" : "member") };
+  const name = (input.name ?? "").trim().slice(0, 80);
+  const role = input.role ?? (first ? "owner" : "member");
+  // An owner made on purpose after the first account (from the command line) shares the first workspace.
+  const user: SessionUser = { id: newId(), email, name, role, workspaceId: await workspaceForNewUser(first || role === "owner", name) };
   await db.insert(users).values({ ...user, passwordHash: await hashPassword(input.password), createdAt: nowIso() }).run();
   return { ok: true, user };
 }
@@ -67,7 +84,7 @@ export async function checkLogin(emailRaw: string, password: string): Promise<Se
   const row = await db.select().from(users).where(eq(users.email, normalizeEmail(emailRaw))).get();
   const ok = await verifyPassword(password, row?.passwordHash ?? "scrypt$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==");
   if (!row || !ok) return null;
-  return { id: row.id, email: row.email, name: row.name, role: row.role === "owner" ? "owner" : "member" };
+  return { id: row.id, email: row.email, name: row.name, role: row.role === "owner" ? "owner" : "member", workspaceId: row.workspaceId };
 }
 
 export async function startSession(user: SessionUser): Promise<void> {
@@ -95,7 +112,7 @@ export async function currentUser(): Promise<SessionUser | null> {
   if (!token) return null;
   const db = await getDb();
   const row = await db
-    .select({ id: users.id, email: users.email, name: users.name, role: users.role })
+    .select({ id: users.id, email: users.email, name: users.name, role: users.role, workspaceId: users.workspaceId })
     .from(sessions)
     .innerJoin(users, eq(users.id, sessions.userId))
     .where(and(eq(sessions.id, token.sessionId), gt(sessions.expiresAt, nowIso())))

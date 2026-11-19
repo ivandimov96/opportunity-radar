@@ -38,6 +38,7 @@ import { getPlaybook, type OpportunityCategory } from "@/lib/industries";
 import { filtersOf } from "@/lib/search-input";
 import { advanceStageIfBehind, ensureProspect, logActivity, markResearching, syncStageWithVerdict } from "@/lib/pipeline/prospects";
 import { enqueueJob, type JobRow } from "./queue";
+import { assertBusinessInWorkspace, businessInWorkspace, workspaceId } from "@/lib/workspace";
 
 export type ProgressFn = (p: { message?: string; done?: number; total?: number }) => void;
 export class NonRetryableError extends Error {}
@@ -55,7 +56,7 @@ export class RetryableError extends Error {}
 export async function handleDiscoverSearch(job: JobRow, progress: ProgressFn, signal: AbortSignal = new AbortController().signal) {
   const db = await getDb();
   const searchId = String(job.payload.searchId);
-  const search = await db.select().from(searches).where(eq(searches.id, searchId)).get();
+  const search = await db.select().from(searches).where(and(eq(searches.id, searchId), eq(searches.workspaceId, await workspaceId()))).get();
   if (!search) throw new NonRetryableError(`Search ${searchId} not found`);
   await db.update(searches).set({ status: "running", updatedAt: nowIso(), error: null }).where(eq(searches.id, searchId)).run();
   const filters = filtersOf(search);
@@ -102,6 +103,7 @@ export async function handleDiscoverSearch(job: JobRow, progress: ProgressFn, si
 export type InvestigateMode = "auto" | "recrawl" | "reanalyze";
 
 export async function enqueueInvestigation(businessId: string, mode: InvestigateMode = "auto") {
+  await assertBusinessInWorkspace(businessId);
   const db = await getDb();
   await db.update(businesses).set({ status: "queued", statusMessage: mode === "reanalyze" ? "Waiting to re-analyze stored pages" : "Waiting to be investigated", updatedAt: nowIso() }).where(eq(businesses.id, businessId)).run();
   return enqueueJob("investigate_business", { businessId, mode }, { idempotencyKey: `investigate:${businessId}` });
@@ -150,7 +152,8 @@ export async function markJobTimedOut(job: JobRow, message: string) {
 export async function handleInvestigateBusiness(job: JobRow, progress: ProgressFn, signal: AbortSignal = new AbortController().signal) {
   const db = await getDb();
   const businessId = String(job.payload.businessId);
-  let biz = (await db.select().from(businesses).where(eq(businesses.id, businessId)).get())!;
+  // The job runs as the workspace it was queued in: a business of another workspace is "not found".
+  let biz = (await db.select().from(businesses).where(and(eq(businesses.id, businessId), eq(businesses.workspaceId, await workspaceId()))).get())!;
   if (!biz) throw new NonRetryableError(`Business ${businessId} not found`);
   await ensureProspect(businessId);
   const setStatus = (status: string, statusMessage: string | null, extra: Partial<typeof businesses.$inferInsert> = {}) => db.update(businesses).set({ status, statusMessage, updatedAt: nowIso(), ...extra }).where(eq(businesses.id, businessId)).run();
@@ -440,6 +443,7 @@ export const MAX_OPPORTUNITIES = 3;
 /** Queue the email for a business: step 0 = first email, 1 = the follow-up. One job per business and step at a time. */
 export async function enqueueOutreach(businessId: string, opts: { step?: 0 | 1; feedback?: string | null } = {}) {
   const step = opts.step ?? 0;
+  await assertBusinessInWorkspace(businessId);
   return enqueueJob("generate_outreach", { businessId, step, feedback: opts.feedback ?? null }, { idempotencyKey: `outreach:${businessId}:${step}` });
 }
 
@@ -454,7 +458,7 @@ export async function maybeAutoDraft(businessId: string): Promise<boolean> {
   const settings = await getSettings();
   if (!settings.autoDraft) return false;
   const db = await getDb();
-  const biz = await db.select().from(businesses).where(eq(businesses.id, businessId)).get();
+  const biz = await db.select().from(businesses).where(and(eq(businesses.id, businessId), eq(businesses.workspaceId, await workspaceId()))).get();
   if (!biz || biz.verdict !== "qualified") return false;
   if ((await contactBlockers(biz, settings)).length) return false;
   const existing = await db.select().from(outreachDrafts).where(and(eq(outreachDrafts.businessId, businessId), eq(outreachDrafts.step, 0), ne(outreachDrafts.status, "archived"))).all();
@@ -476,7 +480,7 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
   const businessId = String(job.payload.businessId);
   const step = Number(job.payload.step ?? 0) === 1 ? 1 : 0;
   const feedback = (job.payload.feedback as string | null) ?? null;
-  const biz = await db.select().from(businesses).where(eq(businesses.id, businessId)).get();
+  const biz = await db.select().from(businesses).where(and(eq(businesses.id, businessId), eq(businesses.workspaceId, await workspaceId()))).get();
   if (!biz) throw new NonRetryableError(`Business ${businessId} not found`);
   if (!cfg.ai.enabled) throw new NonRetryableError("Writing emails needs a model key (ANTHROPIC_API_KEY). Research and review work without it.");
   const opp = (await db.select().from(opportunities).where(and(eq(opportunities.businessId, businessId), eq(opportunities.role, "primary"))).limit(1).get()) ?? (await db.select().from(opportunities).where(eq(opportunities.businessId, businessId)).orderBy(opportunities.rank).limit(1).get());
@@ -536,6 +540,7 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
 
 /** Latest investigation for a business (helper for pages). */
 export async function latestInvestigation(businessId: string) {
+  if (!(await businessInWorkspace(businessId))) return null; // another workspace's research is "not there"
   const db = await getDb();
   return (await db.select().from(investigations).where(eq(investigations.businessId, businessId)).orderBy(desc(investigations.startedAt)).limit(1).get()) ?? null;
 }

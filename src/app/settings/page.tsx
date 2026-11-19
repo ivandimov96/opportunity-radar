@@ -3,6 +3,7 @@ import { ConfirmButton } from "@/components/confirm-button";
 import { Badge, Callout, Card, Flash, Icon, KeyValue, PageHeader, Tabs, type Tone, EmptyLine } from "@/components/ui";
 import { usageSummary } from "@/lib/ai/usage";
 import { getConfig, integrationStatus, MAIL_PRESETS } from "@/lib/config";
+import { mailboxFor, NO_WORKSPACE_MAILBOX } from "@/lib/mail";
 import { listSuppressions } from "@/lib/email/suppression";
 import { listRemoved } from "@/lib/pipeline/removed";
 import { verdictLabel } from "@/lib/pipeline/stages";
@@ -20,6 +21,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const sp = await searchParams;
   const tab: SettingsTab = SETTINGS_TABS.some((t) => t.key === sp.tab) ? (sp.tab as SettingsTab) : "sender";
   const cfg = getConfig();
+  // The mailbox as this workspace has it (only the first workspace has one for now).
+  const box = await mailboxFor();
   const [s, usage, aiLimit, credits, serperUsed, suppressions, lastSync] = await Promise.all([getSettings(), usageSummary(), monthlyAiBudgetUsd(), creditsUsedThisMonth(), usageTotal("serper"), listSuppressions(200), getState<{ at: string; replies: number; bounces: number; fetched: number }>("mail.lastSync")]);
   const removed = tab === "do-not-contact" ? await listRemoved() : [];
   /** The removed list can grow long: it has its own search and pages. */
@@ -60,7 +63,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
     </div>
   );
 
-  const tabBadge: Partial<Record<SettingsTab, number>> = { sender: missing.length, mailbox: cfg.mail.enabled ? 0 : 1, system: [integ.googleMaps, integ.websiteResearch, integ.ai].filter((i) => i.status !== "live").length };
+  const tabBadge: Partial<Record<SettingsTab, number>> = { sender: missing.length, mailbox: box.enabled ? 0 : 1, system: [integ.googleMaps, integ.websiteResearch, integ.ai].filter((i) => i.status !== "live").length };
 
   return (
     <>
@@ -108,13 +111,13 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       {tab === "mailbox" && (
         <div className="grid lg:grid-cols-2 gap-5 items-stretch">
           <Card id="mailbox" className="scroll-mt-4" title="Mailbox" description="Emails go out from your own address and replies are read from its inbox.">
-            {cfg.mail.enabled ? (
+            {box.enabled ? (
               <>
                 <div className="flex items-center gap-2 flex-wrap text-sm">
                   <Badge tone="ok" dot>
                     Connected
                   </Badge>
-                  <strong>{cfg.mail.address}</strong>
+                  <strong>{box.address}</strong>
                   <span className="text-ink-muted">{cfg.mail.provider === "fake" ? "in-memory test mailbox: nothing leaves this computer" : (MAIL_PRESETS[cfg.mail.provider ?? ""]?.label ?? `${cfg.mail.smtp?.host} / ${cfg.mail.imap?.host}`)}</span>
                 </div>
                 <p className="text-xs text-ink-muted mt-2">{lastSync ? `Inbox last read ${new Date(lastSync.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}: ${lastSync.replies} repl${lastSync.replies === 1 ? "y" : "ies"}, ${lastSync.bounces} bounce(s) in ${lastSync.fetched} new message(s).` : "The inbox is read every five minutes while sent emails are waiting for an answer."} Only messages that answer an email sent from here are kept.</p>
@@ -123,7 +126,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                     <button className="btn btn-sm">Check the connection</button>
                   </form>
                   <form action={sendTestEmailAction}>
-                    <ConfirmButton confirmLabel="Send the test" className="btn btn-sm" message={`Send one test email to ${cfg.mail.address}?`}>
+                    <ConfirmButton confirmLabel="Send the test" className="btn btn-sm" message={`Send one test email to ${box.address}?`}>
                       Send a test email to myself
                     </ConfirmButton>
                   </form>
@@ -136,13 +139,16 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             ) : (
               <>
                 <Callout tone="info" title="Not connected">
-                  {cfg.mail.reason}
+                  {box.reason}
                 </Callout>
+                {/* The .env mailbox is the first workspace's: the steps below would not connect anyone else's. */}
+                {box.reason !== NO_WORKSPACE_MAILBOX && (
                 <div className="text-sm mt-4 space-y-2">
                   <p>To connect, create an <strong>app password</strong> in your mailbox's security settings (not your normal password), add three lines to <code>.env</code> and restart:</p>
                   <pre className="text-xs rounded-lg bg-surface-2 border border-line px-3 py-2 overflow-x-auto">{`MAIL_PROVIDER=gmail        # ${Object.keys(MAIL_PRESETS).join(" | ")} | custom\nMAIL_USER=you@yourcompany.com\nMAIL_PASSWORD=the-app-password`}</pre>
                   <p className="text-xs text-ink-muted">Works with Gmail and Google Workspace, Yahoo, iCloud, Zoho, Fastmail and most hosting providers. For another provider use <code>MAIL_PROVIDER=custom</code> with <code>MAIL_SMTP_HOST</code> and <code>MAIL_IMAP_HOST</code>. Microsoft 365 often has app passwords switched off by its administrator. Until a mailbox is connected you can still copy an approved email and send it yourself.</p>
                 </div>
+                )}
               </>
             )}
           </Card>

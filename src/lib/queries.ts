@@ -1,4 +1,4 @@
-/** Read-side queries for pages. Kept in one place so pages stay thin. */
+/** Read-side queries for pages. Kept in one place so pages stay thin. Searches and businesses (and what hangs off a business) are read for the acting workspace only. */
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { activities, businesses, businessSources, facts, inboundEmails, investigations, jobs, observations, opportunities, outreachDrafts, pages, prospects, searchCandidates, searchResults, searches } from "@/db/schema";
@@ -8,6 +8,7 @@ import { MACHINE_STAGES, PIPELINE_STAGE_KEYS } from "@/lib/pipeline/stages";
 import { priorityScore } from "@/lib/scoring/score";
 import { getSettings, missingSenderDetails } from "@/lib/settings";
 import { settingsHref } from "@/lib/settings-nav";
+import { workspaceId } from "@/lib/workspace";
 
 export type BusinessRow = typeof businesses.$inferSelect;
 
@@ -29,6 +30,12 @@ async function oppSubquery() {
     .as("opps");
 }
 
+/** Ids of the businesses of a workspace: the tables that hang off a business (emails, replies, activity) are scoped through it. */
+function businessIdsOf(db: Awaited<ReturnType<typeof getDb>>, ws: string) {
+  // A subquery, never awaited on its own (awaiting it would run it and hand back rows).
+  return db.select({ id: businesses.id }).from(businesses).where(eq(businesses.workspaceId, ws));
+}
+
 export type AttentionItem = { kind: "failed" | "draft" | "due" | "ready_draft" | "ready_investigate"; businessId: string; businessName: string; detail: string; href: string; when?: string | null };
 
 export interface SearchListFilters {
@@ -42,13 +49,13 @@ export interface SearchListFilters {
 }
 export async function listSearches(f: SearchListFilters = {}) {
   const db = await getDb();
-  const conds = [];
-  if (f.q) conds.push(or(like(searches.name, `%${f.q}%`), like(searches.city, `%${f.q}%`), like(searches.region, `%${f.q}%`), like(searches.industry, `%${f.q}%`)));
+  const conds = [eq(searches.workspaceId, await workspaceId())];
+  if (f.q) conds.push(or(like(searches.name, `%${f.q}%`), like(searches.city, `%${f.q}%`), like(searches.region, `%${f.q}%`), like(searches.industry, `%${f.q}%`))!);
   if (f.from) conds.push(sql`${searches.createdAt} >= ${f.from}`);
   if (f.to) conds.push(sql`${searches.createdAt} <= ${f.to}`);
   const dir = f.dir === "asc" ? asc : desc;
   const order = { created: searches.createdAt, name: sql`lower(${searches.name})`, results: sql`coalesce(json_extract(${searches.stats}, '$.total'), -1)`, status: searches.status }[f.sort ?? "created"];
-  const where = conds.length ? and(...conds) : undefined;
+  const where = and(...conds);
   const pageSize = f.pageSize ?? 500;
   const page = f.page ?? 1;
   const rows = await db.select().from(searches).where(where).orderBy(dir(order), desc(searches.createdAt)).limit(pageSize).offset((page - 1) * pageSize).all();
@@ -58,11 +65,12 @@ export async function listSearches(f: SearchListFilters = {}) {
 
 export async function getSearchWithResults(id: string, f: { q?: string; sort?: "priority" | "lead" | "name" | "status" | "rank"; dir?: "asc" | "desc" } = {}) {
   const db = await getDb();
-  const search = await db.select().from(searches).where(eq(searches.id, id)).get();
+  const ws = await workspaceId();
+  const search = await db.select().from(searches).where(and(eq(searches.id, id), eq(searches.workspaceId, ws))).get();
   if (!search) return null;
   const dr = await draftSubquery();
   const op = await oppSubquery();
-  const conds = [eq(searchResults.searchId, id)];
+  const conds = [eq(searchResults.searchId, id), eq(businesses.workspaceId, ws)];
   if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`), like(businesses.street, `%${f.q}%`))!);
   const dir = f.dir === "asc" ? asc : desc;
   const order = { priority: sql`coalesce(${businesses.priority}, -1)`, lead: sql`coalesce(${businesses.leadScore}, -1)`, name: sql`lower(${businesses.name})`, status: businesses.status, rank: searchResults.rank }[f.sort ?? "priority"];
@@ -161,8 +169,8 @@ function quickCondition(quick: BusinessFilters["quick"], dr: DraftSub): SQL | un
 }
 
 /** WHERE clause for the businesses list: text search, the labeled filters, the date range and the quick view. */
-function businessWhere(f: BusinessFilters, dr: DraftSub): SQL | undefined {
-  const conds: SQL[] = [];
+function businessWhere(f: BusinessFilters, dr: DraftSub, ws: string): SQL | undefined {
+  const conds: SQL[] = [eq(businesses.workspaceId, ws)];
   if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`), like(businesses.email, `%${f.q}%`), like(businesses.phone, `%${f.q}%`))!);
   if (f.industry) conds.push(eq(businesses.industry, f.industry));
   if (f.stage) conds.push(eq(prospects.stage, f.stage));
@@ -184,7 +192,7 @@ export async function quickViewCounts(f: BusinessFilters = {}) {
   const db = await getDb();
   const dr = await draftSubquery();
   // One pass: the shared filters in WHERE, one conditional sum per view.
-  const where = businessWhere({ ...f, quick: undefined }, dr);
+  const where = businessWhere({ ...f, quick: undefined }, dr, await workspaceId());
   const cols = Object.fromEntries(BUSINESS_QUICK_VIEWS.map((key) => {
     const cond = quickCondition((key || undefined) as BusinessFilters["quick"], dr);
     return [key || "all", cond ? sql<number>`sum(case when ${cond} then 1 else 0 end)` : sql<number>`count(*)`];
@@ -197,7 +205,7 @@ export async function listBusinesses(f: BusinessFilters = {}) {
   const db = await getDb();
   const dr = await draftSubquery();
   const op = await oppSubquery();
-  const where = businessWhere(f, dr);
+  const where = businessWhere(f, dr, await workspaceId());
   const dir = f.dir === "asc" ? asc : desc;
   const orderExpr = {
     priority: sql`coalesce(${businesses.priority}, -1)`,
@@ -231,7 +239,8 @@ export async function listBusinesses(f: BusinessFilters = {}) {
 
 export async function getBusinessDetail(id: string) {
   const db = await getDb();
-  const business = await db.select().from(businesses).where(eq(businesses.id, id)).get();
+  const ws = await workspaceId();
+  const business = await db.select().from(businesses).where(and(eq(businesses.id, id), eq(businesses.workspaceId, ws))).get();
   if (!business) return null;
   const sources = await db.select().from(businessSources).where(eq(businessSources.businessId, id)).all();
   const prospect = (await db.select().from(prospects).where(eq(prospects.businessId, id)).get()) ?? null;
@@ -242,7 +251,7 @@ export async function getBusinessDetail(id: string) {
     .select({ searchId: searches.id, name: searches.name, rank: searchResults.rank, wasNew: searchResults.wasNew, createdAt: searches.createdAt, providers: searches.providers })
     .from(searchResults)
     .innerJoin(searches, eq(searchResults.searchId, searches.id))
-    .where(eq(searchResults.businessId, id))
+    .where(and(eq(searchResults.businessId, id), eq(searches.workspaceId, ws)))
     .orderBy(desc(searches.createdAt))
     .all();
   const factRows = await db.select().from(facts).where(eq(facts.businessId, id)).all();
@@ -254,7 +263,7 @@ export async function getBusinessDetail(id: string) {
   const activeJobs = await db
     .select()
     .from(jobs)
-    .where(and(inArray(jobs.status, ["queued", "running"]), sql`json_extract(${jobs.payload}, '$.businessId') = ${id}`))
+    .where(and(eq(jobs.workspaceId, ws), inArray(jobs.status, ["queued", "running"]), sql`json_extract(${jobs.payload}, '$.businessId') = ${id}`))
     .all();
   return { business, sources, prospect, runs, latest, pages: pageRows, facts: factRows, opportunities: opps, observations: observationRows, drafts, inbound, activityCount, activeJobs, foundBy };
 }
@@ -269,7 +278,7 @@ export async function pipelineBoard(f: { q?: string; industry?: string; fromIso?
   const dr = await draftSubquery();
   // The board shows the stages a person works with. "Discovered" and "Researching" can hold hundreds of
   // businesses the system is still handling, so they are counted, not listed.
-  const conds = [notInArray(prospects.stage, MACHINE_STAGES)];
+  const conds = [notInArray(prospects.stage, MACHINE_STAGES), eq(businesses.workspaceId, await workspaceId())];
   if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`))!);
   if (f.industry) conds.push(eq(businesses.industry, f.industry));
   if (f.fromIso) conds.push(gte(prospects.updatedAt, f.fromIso));
@@ -298,17 +307,19 @@ export async function navStatus(): Promise<{ counts: { businesses: number; outre
   const db = await getDb();
   const cfg = getConfig();
   const one = async (q: Promise<{ n: number } | undefined>) => Number((await q)?.n ?? 0);
+  const ws = await workspaceId();
+  const mine = businessIdsOf(db, ws);
   const [toJudge, emails, replies, settings] = await Promise.all([
     one(
       db
         .select({ n: sql<number>`count(*)` })
         .from(businesses)
         .leftJoin(prospects, eq(prospects.businessId, businesses.id))
-        .where(sql`${businesses.verdict} in ('needs_review', 'insufficient_evidence') and coalesce(${prospects.stage}, 'discovered') in ('discovered', 'researching')`)
+        .where(sql`${businesses.workspaceId} = ${ws} and ${businesses.verdict} in ('needs_review', 'insufficient_evidence') and coalesce(${prospects.stage}, 'discovered') in ('discovered', 'researching')`)
         .get(),
     ),
-    one(db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(inArray(outreachDrafts.status, ["ready", "needs_review", "failed"])).get()),
-    one(db.select({ n: sql<number>`count(*)` }).from(inboundEmails).where(and(eq(inboundEmails.kind, "reply"), isNull(inboundEmails.handledAt))).get()),
+    one(db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(and(inArray(outreachDrafts.status, ["ready", "needs_review", "failed"]), inArray(outreachDrafts.businessId, mine))).get()),
+    one(db.select({ n: sql<number>`count(*)` }).from(inboundEmails).where(and(eq(inboundEmails.kind, "reply"), isNull(inboundEmails.handledAt), inArray(inboundEmails.businessId, mine))).get()),
     getSettings(),
   ]);
   const setup: { label: string; href: string }[] = [];
@@ -326,7 +337,7 @@ export async function machineStageCounts() {
     .select({ stage: prospects.stage, verdict: businesses.verdict, status: businesses.status, n: sql<number>`count(*)` })
     .from(prospects)
     .innerJoin(businesses, eq(prospects.businessId, businesses.id))
-    .where(inArray(prospects.stage, MACHINE_STAGES))
+    .where(and(inArray(prospects.stage, MACHINE_STAGES), eq(businesses.workspaceId, await workspaceId())))
     .groupBy(prospects.stage, businesses.verdict, businesses.status)
     .all();
   const sum = (pred: (r: (typeof rows)[number]) => boolean) => rows.filter(pred).reduce((n, r) => n + Number(r.n), 0);
@@ -347,14 +358,15 @@ export async function exportBusinessesCsv() {
   return [header.join(","), ...lines].join("\n");
 }
 
-/** Recent jobs for the system page, newest first, with the business/search they belong to. */
+/** Recent jobs of the acting workspace for the system page, newest first, with the business/search they belong to. */
 export async function recentJobs(limit = 60) {
   const db = await getDb();
-  const rows = await db.select().from(jobs).orderBy(desc(jobs.createdAt)).limit(limit).all();
+  const rows = await db.select().from(jobs).where(eq(jobs.workspaceId, await workspaceId())).orderBy(desc(jobs.createdAt)).limit(limit).all();
   const bizIds = [...new Set(rows.map((j) => (j.payload as { businessId?: string }).businessId).filter((x): x is string => Boolean(x)))];
   const searchIds = [...new Set(rows.map((j) => (j.payload as { searchId?: string }).searchId).filter((x): x is string => Boolean(x)))];
-  const bizNames = bizIds.length ? await db.select({ id: businesses.id, name: businesses.name }).from(businesses).where(inArray(businesses.id, bizIds)).all() : [];
-  const searchNames = searchIds.length ? await db.select({ id: searches.id, name: searches.name }).from(searches).where(inArray(searches.id, searchIds)).all() : [];
+  const ws = await workspaceId();
+  const bizNames = bizIds.length ? await db.select({ id: businesses.id, name: businesses.name }).from(businesses).where(and(inArray(businesses.id, bizIds), eq(businesses.workspaceId, ws))).all() : [];
+  const searchNames = searchIds.length ? await db.select({ id: searches.id, name: searches.name }).from(searches).where(and(inArray(searches.id, searchIds), eq(searches.workspaceId, ws))).all() : [];
   const nameOf = new Map<string, { href: string; label: string }>();
   for (const b of bizNames) nameOf.set(b.id, { href: `/businesses/${b.id}`, label: b.name });
   for (const s of searchNames) nameOf.set(s.id, { href: `/searches/${s.id}`, label: s.name });
@@ -367,7 +379,7 @@ export async function recentJobs(limit = 60) {
 /** How each discovery source behaved over the last searches: runs, failures, average time, last error. */
 export async function sourceHealth(limit = 40) {
   const db = await getDb();
-  const rows = await db.select({ stats: searches.stats, createdAt: searches.createdAt }).from(searches).where(sql`${searches.stats} is not null`).orderBy(desc(searches.createdAt)).limit(limit).all();
+  const rows = await db.select({ stats: searches.stats, createdAt: searches.createdAt }).from(searches).where(and(sql`${searches.stats} is not null`, eq(searches.workspaceId, await workspaceId()))).orderBy(desc(searches.createdAt)).limit(limit).all();
   const acc = new Map<string, { runs: number; failures: number; totalMs: number; timed: number; found: number; lastError: string | null; lastAt: string | null }>();
   for (const r of rows) {
     for (const [key, pr] of Object.entries(r.stats?.providerResults ?? {})) {
@@ -411,7 +423,10 @@ export interface CandidateFilters {
 /** What a search found: candidates with their saved business (if any), filtered, sorted and paged server-side. */
 export async function getSearchCandidates(searchId: string, f: CandidateFilters = {}) {
   const db = await getDb();
-  const conds = [eq(searchCandidates.searchId, searchId)];
+  const ws = await workspaceId();
+  // Candidates carry no workspace of their own: they are read through their search, and a search of another workspace has none.
+  const ofSearch = inArray(searchCandidates.searchId, db.select({ id: searches.id }).from(searches).where(and(eq(searches.id, searchId), eq(searches.workspaceId, ws))));
+  const conds = [ofSearch];
   if (f.q) conds.push(or(like(searchCandidates.name, `%${f.q}%`), like(searchCandidates.city, `%${f.q}%`), like(searchCandidates.websiteDomain, `%${f.q}%`), like(searchCandidates.street, `%${f.q}%`), like(searchCandidates.category, `%${f.q}%`))!);
   if (f.source) conds.push(like(searchCandidates.sources, `%"provider":"${f.source.replace(/[^a-z_]/g, "")}"%`));
   if (f.website === "yes") conds.push(isNotNull(searchCandidates.website));
@@ -430,14 +445,14 @@ export async function getSearchCandidates(searchId: string, f: CandidateFilters 
   const rows = await db
     .select({ candidate: searchCandidates, business: { id: businesses.id, status: businesses.status, verdict: businesses.verdict, priority: businesses.priority, investigatedAt: businesses.investigatedAt } })
     .from(searchCandidates)
-    .leftJoin(businesses, eq(searchCandidates.businessId, businesses.id))
+    .leftJoin(businesses, and(eq(searchCandidates.businessId, businesses.id), eq(businesses.workspaceId, ws)))
     .where(where)
     .orderBy(dir(order), searchCandidates.rank)
     .limit(pageSize)
     .offset((page - 1) * pageSize)
     .all();
   const totalRow = await db.select({ n: sql<number>`count(*)` }).from(searchCandidates).where(where).get();
-  const all = await db.select({ sources: searchCandidates.sources, website: searchCandidates.website, phone: searchCandidates.phone, businessId: searchCandidates.businessId, possibleDuplicateOf: searchCandidates.possibleDuplicateOf }).from(searchCandidates).where(eq(searchCandidates.searchId, searchId)).all();
+  const all = await db.select({ sources: searchCandidates.sources, website: searchCandidates.website, phone: searchCandidates.phone, businessId: searchCandidates.businessId, possibleDuplicateOf: searchCandidates.possibleDuplicateOf }).from(searchCandidates).where(ofSearch).all();
   const bySource: Record<string, number> = {};
   for (const r of all) for (const s of new Set(r.sources.map((x) => x.provider))) bySource[s] = (bySource[s] ?? 0) + 1;
   const counts = { total: all.length, saved: all.filter((r) => r.businessId).length, withWebsite: all.filter((r) => r.website).length, withPhone: all.filter((r) => r.phone).length, possibleDuplicates: all.filter((r) => r.possibleDuplicateOf).length, bySource };
@@ -447,10 +462,11 @@ export async function getSearchCandidates(searchId: string, f: CandidateFilters 
 /** Header data for a search page: the search, its latest discovery job, and what happened to the saved businesses. */
 export async function getSearchOverview(id: string) {
   const db = await getDb();
-  const search = await db.select().from(searches).where(eq(searches.id, id)).get();
+  const ws = await workspaceId();
+  const search = await db.select().from(searches).where(and(eq(searches.id, id), eq(searches.workspaceId, ws))).get();
   if (!search) return null;
   const job = (await db.select().from(jobs).where(and(eq(jobs.type, "discover_search"), sql`json_extract(${jobs.payload}, '$.searchId') = ${id}`)).orderBy(desc(jobs.createdAt)).limit(1).get()) ?? null;
-  const saved = await db.select({ status: businesses.status, verdict: businesses.verdict, kind: businesses.kind }).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, id)).all();
+  const saved = await db.select({ status: businesses.status, verdict: businesses.verdict, kind: businesses.kind }).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(and(eq(searchResults.searchId, id), eq(businesses.workspaceId, ws))).all();
   const businessStats = {
     saved: saved.length,
     investigated: saved.filter((b) => b.status === "profiled").length,
@@ -466,9 +482,10 @@ export async function getSearchOverview(id: string) {
 /** How many businesses are on the board at all, whatever the period, and which of them have a reply nobody answered yet. */
 export async function boardTotals(): Promise<{ onBoard: number; openReplies: Record<string, number> }> {
   const db = await getDb();
+  const mine = businessIdsOf(db, await workspaceId());
   const [total, replies] = await Promise.all([
-    db.select({ n: sql<number>`count(*)` }).from(prospects).where(notInArray(prospects.stage, MACHINE_STAGES)).get(),
-    db.select({ businessId: inboundEmails.businessId, n: sql<number>`count(*)` }).from(inboundEmails).where(and(eq(inboundEmails.kind, "reply"), isNull(inboundEmails.handledAt))).groupBy(inboundEmails.businessId).all(),
+    db.select({ n: sql<number>`count(*)` }).from(prospects).where(and(notInArray(prospects.stage, MACHINE_STAGES), inArray(prospects.businessId, mine))).get(),
+    db.select({ businessId: inboundEmails.businessId, n: sql<number>`count(*)` }).from(inboundEmails).where(and(eq(inboundEmails.kind, "reply"), isNull(inboundEmails.handledAt), inArray(inboundEmails.businessId, mine))).groupBy(inboundEmails.businessId).all(),
   ]);
   return { onBoard: Number(total?.n ?? 0), openReplies: Object.fromEntries(replies.filter((r) => r.businessId).map((r) => [r.businessId as string, Number(r.n)])) };
 }
@@ -489,7 +506,7 @@ export type HistoryKind = (typeof HISTORY_KINDS)[number]["key"];
  */
 export async function pipelineHistory({ fromIso, toIso, kind = "all", q, page = 1, pageSize = 40 }: { fromIso?: string | null; toIso?: string | null; kind?: HistoryKind; q?: string; page?: number; pageSize?: number }) {
   const db = await getDb();
-  const period = [fromIso ? gte(activities.createdAt, fromIso) : undefined, toIso ? lte(activities.createdAt, toIso) : undefined, q ? or(like(businesses.name, `%${q}%`), like(businesses.city, `%${q}%`), like(businesses.websiteDomain, `%${q}%`)) : undefined];
+  const period = [eq(businesses.workspaceId, await workspaceId()), fromIso ? gte(activities.createdAt, fromIso) : undefined, toIso ? lte(activities.createdAt, toIso) : undefined, q ? or(like(businesses.name, `%${q}%`), like(businesses.city, `%${q}%`), like(businesses.websiteDomain, `%${q}%`)) : undefined];
   const types = HISTORY_KINDS.find((k) => k.key === kind)?.types ?? [];
   const where = and(...period, types.length ? inArray(activities.type, types) : undefined);
   const [rows, total, byType] = await Promise.all([
@@ -516,12 +533,13 @@ export async function pipelineHistory({ fromIso, toIso, kind = "all", q, page = 
 
 export async function recentStageChanges({ limit = 20, offset = 0 }: { limit?: number; offset?: number } = {}) {
   const db = await getDb();
-  const total = (await db.select({ n: sql<number>`count(*)` }).from(activities).where(eq(activities.type, "stage_change")).get())?.n ?? 0;
+  const ws = await workspaceId();
+  const total = (await db.select({ n: sql<number>`count(*)` }).from(activities).where(and(eq(activities.type, "stage_change"), inArray(activities.businessId, businessIdsOf(db, ws)))).get())?.n ?? 0;
   const rows = await db
     .select({ id: activities.id, businessId: activities.businessId, name: businesses.name, content: activities.content, metadata: activities.metadata, createdAt: activities.createdAt })
     .from(activities)
     .innerJoin(businesses, eq(activities.businessId, businesses.id))
-    .where(eq(activities.type, "stage_change"))
+    .where(and(eq(activities.type, "stage_change"), eq(businesses.workspaceId, ws)))
     .orderBy(desc(activities.createdAt), desc(activities.id))
     .limit(limit)
     .offset(offset)
@@ -537,11 +555,12 @@ export async function recentStageChanges({ limit = 20, offset = 0 }: { limit?: n
 /** One page of a business's activity log, newest first, optionally limited to some event types; plus counts per type. */
 export async function businessActivities(id: string, { types, page, pageSize }: { types?: string[]; page: number; pageSize: number }) {
   const db = await getDb();
-  const where = types?.length ? and(eq(activities.businessId, id), inArray(activities.type, types)) : eq(activities.businessId, id);
+  const ofBusiness = and(eq(activities.businessId, id), inArray(activities.businessId, businessIdsOf(db, await workspaceId())));
+  const where = types?.length ? and(ofBusiness, inArray(activities.type, types)) : ofBusiness;
   const [items, total, byType] = await Promise.all([
     db.select().from(activities).where(where).orderBy(desc(activities.createdAt), desc(activities.id)).limit(pageSize).offset((page - 1) * pageSize).all(),
     db.select({ n: sql<number>`count(*)` }).from(activities).where(where).get().then((r) => r?.n ?? 0),
-    db.select({ type: activities.type, n: sql<number>`count(*)` }).from(activities).where(eq(activities.businessId, id)).groupBy(activities.type).all(),
+    db.select({ type: activities.type, n: sql<number>`count(*)` }).from(activities).where(ofBusiness).groupBy(activities.type).all(),
   ]);
   return { items, total, countsByType: Object.fromEntries(byType.map((r) => [r.type, r.n])) as Record<string, number> };
 }

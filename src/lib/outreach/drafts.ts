@@ -4,15 +4,19 @@
  * call). Approving an email whose checks failed is possible, because the
  * operator has the last word, and is recorded as an override; an email whose
  * recipient is blocked (invalid, suppressed, already contacted) cannot be approved.
+ * Every operation looks the email up through `draftInWorkspace`: an email of
+ * another workspace is "not found" and is never changed.
  */
 import { suggestSubjects } from "@/lib/ai/outreach";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { businesses, facts, observations, opportunities, outreachDrafts, type DraftIssue, type DraftValidation } from "@/db/schema";
 import { nowIso } from "@/lib/ids";
+import { businessIdsOf, draftInWorkspace, workspaceId } from "@/lib/workspace";
 import { logActivity } from "@/lib/pipeline/prospects";
 import { getState, setState, getSettings, type AppSettings } from "@/lib/settings";
 import { buildEvidencePack, type EvidencePack } from "./evidence";
+import { campaignInWorkspace } from "./campaigns";
 import { contactBlockers } from "./eligibility";
 import { checkEmailText, hasBlock } from "./validate";
 
@@ -43,7 +47,7 @@ export async function draftEvidence(draft: Pick<Draft, "id" | "businessId" | "ca
   return { pack: buildEvidencePack(factRows, obsRows, opp ?? null), others: await batchPeers(draft.campaignId, draft.businessId, draft.step) };
 }
 
-/** Other reviewable emails of the same batch and step (for "do not repeat" checks). */
+/** Other reviewable emails of the same batch and step (for "do not repeat" checks). Only emails to businesses of the acting workspace count. */
 export async function batchPeers(campaignId: string | null, businessId: string, step: number) {
   if (!campaignId) return [];
   const db = await getDb();
@@ -51,7 +55,7 @@ export async function batchPeers(campaignId: string | null, businessId: string, 
     .select({ subject: outreachDrafts.subject, body: outreachDrafts.body, label: businesses.name })
     .from(outreachDrafts)
     .innerJoin(businesses, eq(businesses.id, outreachDrafts.businessId))
-    .where(and(eq(outreachDrafts.campaignId, campaignId), eq(outreachDrafts.step, step), ne(outreachDrafts.businessId, businessId), inArray(outreachDrafts.status, ["needs_review", "ready", "approved"])))
+    .where(and(eq(businesses.workspaceId, await workspaceId()), eq(outreachDrafts.campaignId, campaignId), eq(outreachDrafts.step, step), ne(outreachDrafts.businessId, businessId), inArray(outreachDrafts.status, ["needs_review", "ready", "approved"])))
     .orderBy(desc(outreachDrafts.createdAt))
     .limit(12)
     .all();
@@ -71,13 +75,14 @@ export interface SubjectIdeas {
 const subjectKey = (draftId: string) => `subjects:${draftId}`;
 
 export async function subjectIdeasFor(draftId: string): Promise<SubjectIdeas | null> {
+  if (!(await draftInWorkspace(draftId))) return null;
   return getState<SubjectIdeas>(subjectKey(draftId));
 }
 
 /** Ask the model for other subjects for an email under review and keep them with the email until one is used. */
 export async function suggestSubjectsFor(draftId: string): Promise<{ ok: boolean; error?: string; count?: number }> {
   const db = await getDb();
-  const draft = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, draftId)).get();
+  const draft = await draftInWorkspace(draftId);
   if (!draft) return { ok: false, error: "Email not found" };
   if (!REVIEW_STATUSES.includes(draft.status)) return { ok: false, error: "This email can no longer be edited" };
   if (draft.step !== 0) return { ok: false, error: "A follow-up keeps the subject of the first email" };
@@ -92,7 +97,7 @@ export async function suggestSubjectsFor(draftId: string): Promise<{ ok: boolean
 
 export async function saveDraftEdit(draftId: string, subject: string, body: string): Promise<{ ok: boolean; error?: string }> {
   const db = await getDb();
-  const draft = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, draftId)).get();
+  const draft = await draftInWorkspace(draftId);
   if (!draft) return { ok: false, error: "Email not found" };
   if (!REVIEW_STATUSES.includes(draft.status)) return { ok: false, error: "This email was already handed to the mailbox and can no longer be edited" };
   const cleanSubject = subject.trim();
@@ -117,7 +122,7 @@ export async function saveDraftEdit(draftId: string, subject: string, body: stri
 /** Approves an email for sending. Recipient problems cannot be overridden; text checks can. */
 export async function approveDraft(draftId: string): Promise<{ ok: boolean; error?: string }> {
   const db = await getDb();
-  const draft = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, draftId)).get();
+  const draft = await draftInWorkspace(draftId);
   if (!draft) return { ok: false, error: "Email not found" };
   if (draft.status === "approved") return { ok: true };
   if (!["needs_review", "ready"].includes(draft.status)) return { ok: false, error: `This email is ${draft.status} and cannot be approved` };
@@ -139,8 +144,9 @@ export async function approveDraft(draftId: string): Promise<{ ok: boolean; erro
 
 /** Approves every email of the open batch whose checks passed. Returns how many. */
 export async function approveAllReady(campaignId: string): Promise<number> {
+  if (!(await campaignInWorkspace(campaignId))) return 0;
   const db = await getDb();
-  const ready = await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.campaignId, campaignId), eq(outreachDrafts.status, "ready"))).all();
+  const ready = await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.campaignId, campaignId), eq(outreachDrafts.status, "ready"), inArray(outreachDrafts.businessId, businessIdsOf(db, await workspaceId())))).all();
   let n = 0;
   for (const d of ready) if ((await approveDraft(d.id)).ok) n++;
   return n;
@@ -148,13 +154,13 @@ export async function approveAllReady(campaignId: string): Promise<number> {
 
 export async function unapproveDraft(draftId: string) {
   const db = await getDb();
-  await db.update(outreachDrafts).set({ status: "ready", updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draftId), eq(outreachDrafts.status, "approved"))).run();
+  await db.update(outreachDrafts).set({ status: "ready", updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draftId), eq(outreachDrafts.status, "approved"), inArray(outreachDrafts.businessId, businessIdsOf(db, await workspaceId())))).run();
 }
 
 /** Takes a recipient out of the batch without deleting the email. */
 export async function excludeDraft(draftId: string) {
   const db = await getDb();
-  const draft = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, draftId)).get();
+  const draft = await draftInWorkspace(draftId);
   if (!draft || !["needs_review", "ready", "approved"].includes(draft.status)) return;
   await db.update(outreachDrafts).set({ status: "excluded", updatedAt: nowIso() }).where(eq(outreachDrafts.id, draftId)).run();
   await logActivity(draft.businessId, "system", "Excluded from the outreach batch by the operator.", { draftId });
@@ -162,7 +168,7 @@ export async function excludeDraft(draftId: string) {
 
 export async function restoreDraft(draftId: string) {
   const db = await getDb();
-  const draft = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, draftId)).get();
+  const draft = await draftInWorkspace(draftId);
   if (!draft || draft.status !== "excluded") return;
   await db.update(outreachDrafts).set({ status: draft.validation?.passed ? "ready" : "needs_review", updatedAt: nowIso() }).where(eq(outreachDrafts.id, draftId)).run();
 }

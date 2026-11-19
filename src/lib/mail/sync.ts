@@ -3,6 +3,9 @@
  * email this app sent are stored: a reply in the same thread (reply headers
  * point at our Message-ID), a message from an address we wrote to, or a bounce
  * that names our email. Everything else in the mailbox is skipped and never kept.
+ * The inbox is read as the workspace the mailbox belongs to, and a message is
+ * only ever matched to an email of that workspace; the reply then belongs to
+ * that email's business.
  */
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { getDb } from "@/db/client";
@@ -12,7 +15,8 @@ import { enqueueJob } from "@/lib/jobs/queue";
 import { logActivity, markNotReached, markReplied, setNextAction } from "@/lib/pipeline/prospects";
 import { addSuppression } from "@/lib/email/suppression";
 import { getState, setState } from "@/lib/settings";
-import { getMailProvider } from "./index";
+import { businessIdsOf, workspaceId } from "@/lib/workspace";
+import { assertMailboxForWorkspace, getMailProvider } from "./index";
 import { bouncedRecipients, isAutoReply, isBounce, isHardBounce, stripQuoted } from "./parse";
 import type { InboundMessage, InboxCursor } from "./types";
 
@@ -28,13 +32,15 @@ type SentDraft = Pick<typeof outreachDrafts.$inferSelect, "id" | "businessId" | 
 
 export async function syncMailbox(): Promise<SyncResult> {
   const result: SyncResult = { fetched: 0, replies: 0, autoReplies: 0, bounces: 0, ignored: 0 };
+  await assertMailboxForWorkspace();
   const provider = getMailProvider();
   if (!provider) return result;
   const db = await getDb();
+  const mine = businessIdsOf(db, await workspaceId());
   const sent: SentDraft[] = await db
     .select({ id: outreachDrafts.id, businessId: outreachDrafts.businessId, messageId: outreachDrafts.messageId, toEmail: outreachDrafts.toEmail, sentAt: outreachDrafts.sentAt, step: outreachDrafts.step, subject: outreachDrafts.subject, campaignId: outreachDrafts.campaignId })
     .from(outreachDrafts)
-    .where(and(inArray(outreachDrafts.status, ["sent", "bounced"]), isNotNull(outreachDrafts.messageId), isNotNull(outreachDrafts.sentAt)))
+    .where(and(inArray(outreachDrafts.businessId, mine), inArray(outreachDrafts.status, ["sent", "bounced"]), isNotNull(outreachDrafts.messageId), isNotNull(outreachDrafts.sentAt)))
     .all();
   if (!sent.length) return result; // nothing was sent, so nothing in the inbox can belong to outreach
 

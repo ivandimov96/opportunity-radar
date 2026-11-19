@@ -22,6 +22,7 @@ import { resolveSearchArea } from "./area";
 import { haversineKm } from "./cells";
 import { upsertCandidate } from "./dedupe";
 import { findRemoved } from "@/lib/pipeline/removed";
+import { workspaceId } from "@/lib/workspace";
 import { PROVIDERS } from "./index";
 import { normalizeCity, normalizeName, normalizePhone, normalizeWebsite, websiteDomain } from "./normalize";
 import { ProviderError, type BusinessCandidate, type DiscoveryProvider, type DiscoveryProviderKey, type DiscoveryQuery, type ResolvedArea } from "./types";
@@ -238,23 +239,24 @@ export function completenessOf(m: { street: string | null; city: string | null; 
   return Math.round((parts.filter(Boolean).length / parts.length) * 100);
 }
 
-/** A saved business this merged record corresponds to, by the same rules the saver uses. */
+/** A saved business of the acting workspace this merged record corresponds to, by the same rules the saver uses. Another workspace's copy of the same company is never a match. */
 export async function findExistingBusiness(db: Db, m: MergedCandidate): Promise<{ id: string; via: "provider_id" | "domain" | "phone" | "name_city" } | null> {
+  const mine = eq(businesses.workspaceId, await workspaceId());
   for (const s of m.sources) {
-    const row = await db.select({ businessId: businessSources.businessId }).from(businessSources).where(and(eq(businessSources.provider, s.provider), eq(businessSources.providerId, s.providerId))).get();
+    const row = await db.select({ businessId: businessSources.businessId }).from(businessSources).innerJoin(businesses, eq(businesses.id, businessSources.businessId)).where(and(eq(businessSources.provider, s.provider), eq(businessSources.providerId, s.providerId), mine)).get();
     if (row) return { id: row.businessId, via: "provider_id" };
   }
   if (m.websiteDomain) {
-    const row = await db.select({ id: businesses.id }).from(businesses).where(eq(businesses.websiteDomain, m.websiteDomain)).get();
+    const row = await db.select({ id: businesses.id }).from(businesses).where(and(eq(businesses.websiteDomain, m.websiteDomain), mine)).get();
     if (row) return { id: row.id, via: "domain" };
   }
   if (m.phone) {
-    const row = await db.select({ id: businesses.id }).from(businesses).where(eq(businesses.phone, m.phone)).get();
+    const row = await db.select({ id: businesses.id }).from(businesses).where(and(eq(businesses.phone, m.phone), mine)).get();
     if (row) return { id: row.id, via: "phone" };
   }
   const cityNorm = normalizeCity(m.city);
   if (m.nameNormalized && cityNorm) {
-    const rows = await db.select({ id: businesses.id, city: businesses.city }).from(businesses).where(eq(businesses.nameNormalized, m.nameNormalized)).all();
+    const rows = await db.select({ id: businesses.id, city: businesses.city }).from(businesses).where(and(eq(businesses.nameNormalized, m.nameNormalized), mine)).all();
     const hit = rows.find((r) => normalizeCity(r.city) === cityNorm);
     if (hit) return { id: hit.id, via: "name_city" };
   }

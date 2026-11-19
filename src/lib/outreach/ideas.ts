@@ -10,11 +10,14 @@ import { businesses, opportunities, outreachDrafts } from "@/db/schema";
 import { nowIso } from "@/lib/ids";
 import { logActivity } from "@/lib/pipeline/prospects";
 import { priorityScore } from "@/lib/scoring/score";
+import { businessInWorkspace } from "@/lib/workspace";
 import { OUTBOUND_COMMITTED } from "./eligibility";
 
 export type ChooseIdeaResult = { ok: true; title: string; withdrawn: number } | { ok: false; error: string };
 
 export async function chooseIdea(businessId: string, opportunityId: string): Promise<ChooseIdeaResult> {
+  // Safe by itself: the ideas of another workspace's business cannot be chosen from here, whoever calls.
+  if (!(await businessInWorkspace(businessId))) return { ok: false, error: "That business no longer exists." };
   const db = await getDb();
   const all = await db.select().from(opportunities).where(eq(opportunities.businessId, businessId)).all();
   const chosen = all.find((o) => o.id === opportunityId);

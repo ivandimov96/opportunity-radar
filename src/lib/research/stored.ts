@@ -8,6 +8,7 @@ import { and, desc, eq, gte, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { investigations, pages } from "@/db/schema";
 import { websiteDomain } from "@/lib/discovery/normalize";
+import { businessInWorkspace } from "@/lib/workspace";
 import { extractPage, type PageKind } from "./html";
 import type { CrawledPage } from "./crawl";
 
@@ -25,6 +26,8 @@ export interface StoredPages {
  * kept with their HTML, belong to the same website and are younger than `maxAgeDays`.
  */
 export async function loadStoredPages(businessId: string, website: string, maxAgeDays: number): Promise<StoredPages | null> {
+  // Research kept for another workspace's business is not there for this one.
+  if (!(await businessInWorkspace(businessId))) return null;
   const db = await getDb();
   const inv = await db
     .select({ id: investigations.id, startedAt: investigations.startedAt, verdict: investigations.verdict })

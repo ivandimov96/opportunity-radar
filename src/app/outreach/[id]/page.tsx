@@ -4,6 +4,7 @@ import { ConfirmButton } from "@/components/confirm-button";
 import { EmailFields } from "@/components/email-editor";
 import { Badge, Callout, Card, Flash, Icon, PageHeader, ScoreRing, StatusPill, EmptyLine } from "@/components/ui";
 import { getConfig } from "@/lib/config";
+import { mailboxFor } from "@/lib/mail";
 import { signatureBlock, subjectIdeasFor } from "@/lib/outreach/drafts";
 import { draftDetail } from "@/lib/outreach/queries";
 import { stripQuoted } from "@/lib/mail/parse";
@@ -25,6 +26,8 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
   if (!d) notFound();
   const { draft, business: b, opportunity: opp, pack, settings } = d;
   const cfg = getConfig();
+  // The mailbox as this workspace has it (only the first workspace has one for now).
+  const box = await mailboxFor();
   const editable = ["needs_review", "ready", "approved", "excluded"].includes(draft.status);
   const ideas = editable ? await subjectIdeasFor(draft.id) : null;
   const issues = draft.validation?.issues ?? [];
@@ -96,7 +99,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
               <>
                 To <strong>{b.email ?? "no address yet"}</strong>
                 {b.emailSource && ` · ${b.emailSource === "site" ? "published on their website" : b.emailSource === "manual" ? "added by you" : "from their listing"}`}
-                {cfg.mail.address && ` · from ${cfg.mail.address}`}
+                {box.address && ` · from ${box.address}`}
               </>
             }
           >

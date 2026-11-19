@@ -1,10 +1,11 @@
-import { and, eq, or } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@/db/client";
 import { businesses, businessSources } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
 import type { BusinessCandidate } from "./types";
 import { normalizeCity, normalizeEmail, normalizeName, normalizePhone, normalizeWebsite, websiteDomain } from "./normalize";
 import { leadScore } from "@/lib/scoring/lead";
+import { workspaceId } from "@/lib/workspace";
 
 export type UpsertOutcome = { businessId: string; wasNew: boolean; matchedBy?: "provider_id" | "domain" | "name_city" | "phone" };
 
@@ -15,6 +16,8 @@ export type UpsertOutcome = { businessId: string; wasNew: boolean; matchedBy?: "
  *  3. Same normalized phone.
  *  4. Same normalized name + city.
  * A match merges missing fields only; it never overwrites values already present.
+ * Only businesses of the acting workspace can match: two workspaces each keep
+ * their own copy of the same company.
  */
 export async function upsertCandidate(
   db: Db,
@@ -31,25 +34,28 @@ export async function upsertCandidate(
 
   let existingId: string | null = null;
   let matchedBy: UpsertOutcome["matchedBy"];
+  const ws = await workspaceId();
+  const mine = eq(businesses.workspaceId, ws);
 
   const bySource = await db
     .select({ businessId: businessSources.businessId })
     .from(businessSources)
-    .where(and(eq(businessSources.provider, c.provider), eq(businessSources.providerId, c.providerId)))
+    .innerJoin(businesses, eq(businesses.id, businessSources.businessId))
+    .where(and(eq(businessSources.provider, c.provider), eq(businessSources.providerId, c.providerId), mine))
     .get();
   if (bySource) {
     existingId = bySource.businessId;
     matchedBy = "provider_id";
   }
   if (!existingId && domain) {
-    const row = await db.select({ id: businesses.id }).from(businesses).where(eq(businesses.websiteDomain, domain)).get();
+    const row = await db.select({ id: businesses.id }).from(businesses).where(and(eq(businesses.websiteDomain, domain), mine)).get();
     if (row) {
       existingId = row.id;
       matchedBy = "domain";
     }
   }
   if (!existingId && phone) {
-    const row = await db.select({ id: businesses.id }).from(businesses).where(eq(businesses.phone, phone)).get();
+    const row = await db.select({ id: businesses.id }).from(businesses).where(and(eq(businesses.phone, phone), mine)).get();
     if (row) {
       existingId = row.id;
       matchedBy = "phone";
@@ -59,7 +65,7 @@ export async function upsertCandidate(
     const rows = await db
       .select({ id: businesses.id, city: businesses.city })
       .from(businesses)
-      .where(or(eq(businesses.nameNormalized, nameNormalized)))
+      .where(and(eq(businesses.nameNormalized, nameNormalized), mine))
       .all();
     const hit = rows.find((r) => normalizeCity(r.city) === cityNorm);
     if (hit) {
@@ -103,7 +109,7 @@ export async function upsertCandidate(
     if (matchedBy !== "provider_id") {
       await db.insert(businessSources)
         .values({
-          id: newId(),
+          id: newId(), workspaceId: ws,
           businessId: existingId,
           provider: c.provider,
           providerId: c.providerId,
@@ -124,6 +130,7 @@ export async function upsertCandidate(
   await db.insert(businesses)
     .values({
       id,
+      workspaceId: ws,
       leadScore: lead.score,
       kind: lead.kind,
       websiteSource: website ? c.provider : null,
@@ -158,7 +165,7 @@ export async function upsertCandidate(
     .run();
   await db.insert(businessSources)
     .values({
-      id: newId(),
+      id: newId(), workspaceId: ws,
       businessId: id,
       provider: c.provider,
       providerId: c.providerId,
@@ -167,6 +174,10 @@ export async function upsertCandidate(
       searchId: ctx.searchId ?? null,
       raw: c.raw ?? null,
     })
+    // The unique index on (provider, provider id) still spans all workspaces. When another workspace already
+    // holds this listing, this copy is saved without its source row instead of failing half-way; it is then
+    // recognised again by website, phone or name and city. Goes away when the index is made per workspace.
+    .onConflictDoNothing()
     .run();
   await addSources(db, id, ctx);
   return { businessId: id, wasNew: true };
@@ -174,7 +185,8 @@ export async function upsertCandidate(
 
 /** Every other source record that contributed to a merged candidate is kept as provenance. */
 async function addSources(db: Db, businessId: string, ctx: { searchId?: string | null; extraSources?: { provider: BusinessCandidate["provider"]; providerId: string; sourceUrl: string | null; attribution: string; raw: Record<string, unknown> | null }[] }) {
+  const ws = await workspaceId();
   for (const s of ctx.extraSources ?? []) {
-    await db.insert(businessSources).values({ id: newId(), businessId, provider: s.provider, providerId: s.providerId, sourceUrl: s.sourceUrl, attribution: s.attribution, searchId: ctx.searchId ?? null, raw: s.raw }).onConflictDoNothing().run();
+    await db.insert(businessSources).values({ id: newId(), workspaceId: ws, businessId, provider: s.provider, providerId: s.providerId, sourceUrl: s.sourceUrl, attribution: s.attribution, searchId: ctx.searchId ?? null, raw: s.raw }).onConflictDoNothing().run();
   }
 }

@@ -113,6 +113,20 @@
       "when": 1795100052790,
       "tag": "0015_users",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "6",
+      "when": 1795104218649,
+      "tag": "0016_workspaces",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "6",
+      "when": 1795105096362,
+      "tag": "0017_business_sources_workspace",
+      "breakpoints": true
     }
   ]
 }

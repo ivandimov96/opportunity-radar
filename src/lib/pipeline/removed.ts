@@ -3,7 +3,9 @@
  * it is deleted, and a small record of who it was stays behind so that a later
  * search or import recognises it and leaves it out. A business that has already
  * been emailed is never removed: the record of that email (and of any reply or
- * opt-out) must stay, so it is moved to "Lost" instead.
+ * opt-out) must stay, so it is moved to "Lost" instead. What was removed is
+ * remembered per workspace: one workspace's decision never hides a business
+ * from another's searches.
  */
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { getDb } from "@/db/client";
@@ -11,6 +13,7 @@ import { businesses, businessSources, outreachDrafts, removedBusinesses } from "
 import { normalizeCity, normalizeName, normalizePhone, websiteDomain, normalizeWebsite } from "@/lib/discovery/normalize";
 import { newId } from "@/lib/ids";
 import { OUTBOUND_COMMITTED } from "@/lib/outreach/eligibility";
+import { workspaceId } from "@/lib/workspace";
 
 type Db = Awaited<ReturnType<typeof getDb>>;
 export type RemovedRow = typeof removedBusinesses.$inferSelect;
@@ -18,7 +21,8 @@ export type RemoveResult = { ok: true; name: string } | { ok: false; error: stri
 
 export async function removeBusiness(id: string, note?: string | null): Promise<RemoveResult> {
   const db = await getDb();
-  const b = await db.select().from(businesses).where(eq(businesses.id, id)).get();
+  const ws = await workspaceId();
+  const b = await db.select().from(businesses).where(and(eq(businesses.id, id), eq(businesses.workspaceId, ws))).get();
   if (!b) return { ok: false, error: "That business no longer exists." };
   const emailed = await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.businessId, id), inArray(outreachDrafts.status, OUTBOUND_COMMITTED))).limit(1).get();
   if (emailed) return { ok: false, error: `${b.name} was already emailed, so its record is kept. Move it to "Lost" on the pipeline instead.` };
@@ -27,6 +31,7 @@ export async function removeBusiness(id: string, note?: string | null): Promise<
   await db.batch([
     db.insert(removedBusinesses).values({
       id: newId(),
+      workspaceId: ws,
       name: b.name,
       nameNormalized: b.nameNormalized,
       city: b.city,
@@ -52,7 +57,7 @@ export interface RemovedMatchInput {
 
 /** The removed business a newly found record corresponds to, if any: same listing, same website, same phone, or same name in the same city. */
 export async function findRemoved(db: Db, m: RemovedMatchInput): Promise<RemovedRow | null> {
-  const all = await db.select().from(removedBusinesses).all();
+  const all = await db.select().from(removedBusinesses).where(eq(removedBusinesses.workspaceId, await workspaceId())).all();
   if (!all.length) return null;
   const ids = new Set((m.sources ?? []).filter((s) => s.providerId).map((s) => `${s.provider}:${s.providerId}`));
   const domain = m.websiteDomain ?? websiteDomain(normalizeWebsite(m.website ?? null));
@@ -70,11 +75,11 @@ export async function findRemoved(db: Db, m: RemovedMatchInput): Promise<Removed
 
 export async function listRemoved(limit = 200): Promise<RemovedRow[]> {
   const db = await getDb();
-  return db.select().from(removedBusinesses).orderBy(desc(removedBusinesses.removedAt)).limit(limit).all();
+  return db.select().from(removedBusinesses).where(eq(removedBusinesses.workspaceId, await workspaceId())).orderBy(desc(removedBusinesses.removedAt)).limit(limit).all();
 }
 
 /** Forget that a business was removed, so a later search may find and save it again. */
 export async function allowAgain(id: string): Promise<void> {
   const db = await getDb();
-  await db.delete(removedBusinesses).where(eq(removedBusinesses.id, id)).run();
+  await db.delete(removedBusinesses).where(and(eq(removedBusinesses.id, id), eq(removedBusinesses.workspaceId, await workspaceId()))).run();
 }

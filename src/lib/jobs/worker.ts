@@ -10,6 +10,8 @@ import os from "node:os";
 import { handleDiscoverSearch, handleGenerateOutreach, handleInvestigateBusiness, markJobTimedOut, NonRetryableError, RetryableError, type ProgressFn } from "./handlers";
 import { handleProcessReply, handleSendEmail, handleSyncMailbox } from "./mail-handlers";
 import { runScheduler } from "./scheduler";
+import { FIRST_WORKSPACE_ID } from "@/db/schema";
+import { runInWorkspace } from "@/lib/workspace";
 
 const HANDLERS: Record<JobType, (job: JobRow, progress: ProgressFn, signal: AbortSignal) => Promise<void>> = {
   discover_search: handleDiscoverSearch,
@@ -35,7 +37,12 @@ function isRetryable(err: unknown) {
   return /timeout|ECONN|ENOTFOUND|EAI_AGAIN|429|5\d\d|overloaded|rate limit|fetch failed/i.test(msg);
 }
 
-export async function runJob(job: JobRow) {
+/** Runs one claimed job as the workspace it was queued in (the embedded worker, the serverless drain and the scripts all come through here). */
+export function runJob(job: JobRow) {
+  return runInWorkspace(job.workspaceId, () => runJobHere(job));
+}
+
+async function runJobHere(job: JobRow) {
   const handler = HANDLERS[job.type as JobType];
   const progress: ProgressFn = (p) => {
     void updateJobProgress(job.id, p).catch(() => {});
@@ -111,7 +118,8 @@ export function startWorker(opts: { pollMs?: number } = {}) {
     try {
       if (Date.now() - state.lastSchedule >= SCHEDULER_EVERY_MS) {
         state.lastSchedule = Date.now();
-        await runScheduler().catch((err) => console.warn("[worker] scheduler failed", err));
+        // The scheduler is the system's own: it looks across workspaces and queues each job as the workspace of its business.
+        await runInWorkspace(FIRST_WORKSPACE_ID, () => runScheduler()).catch((err) => console.warn("[worker] scheduler failed", err));
       }
       while (state.active < maxConcurrent) {
         const types = (Object.keys(HANDLERS) as JobType[]).filter((t) => (state.byType[t] ?? 0) < (TYPE_LIMITS[t] ?? Number.POSITIVE_INFINITY));

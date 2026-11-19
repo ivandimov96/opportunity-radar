@@ -5,8 +5,18 @@ const now = () => sql`(strftime('%Y-%m-%dT%H:%M:%fZ','now'))`;
 const json = <T>(name: string) => text(name, { mode: "json" }).$type<T>();
 
 // ---------------------------------------------------------------- searches
+/**
+ * Workspaces. Everything a person builds here (searches, businesses, emails,
+ * the do-not-contact list, usage) belongs to one workspace, and a user works
+ * in exactly one. The data that existed before accounts belongs to the first
+ * workspace, whose id is fixed so that old rows and old code paths land in it
+ * until each of them is given the workspace of the signed-in user.
+ */
+export const FIRST_WORKSPACE_ID = "ws-first";
+
 export const searches = sqliteTable("searches", {
   id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
   name: text("name").notNull(),
   industry: text("industry").notNull(),
   categoryQuery: text("category_query"),
@@ -94,6 +104,7 @@ export const businesses = sqliteTable(
   "businesses",
   {
     id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
     name: text("name").notNull(),
     nameNormalized: text("name_normalized").notNull(),
     industry: text("industry").notNull(),
@@ -152,6 +163,8 @@ export const businessSources = sqliteTable(
   "business_sources",
   {
     id: text("id").primaryKey(),
+    /** The workspace of the business: a map listing may be saved once per workspace, by any number of workspaces. */
+    workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
     businessId: text("business_id")
       .notNull()
       .references(() => businesses.id, { onDelete: "cascade" }),
@@ -163,7 +176,7 @@ export const businessSources = sqliteTable(
     raw: json<Record<string, unknown>>("raw"),
     discoveredAt: text("discovered_at").notNull().default(now()),
   },
-  (t) => [uniqueIndex("business_sources_provider_pid").on(t.provider, t.providerId), index("business_sources_business_idx").on(t.businessId)],
+  (t) => [uniqueIndex("business_sources_ws_provider_pid").on(t.workspaceId, t.provider, t.providerId), index("business_sources_business_idx").on(t.businessId)],
 );
 
 export const searchResults = sqliteTable(
@@ -343,6 +356,7 @@ export type ScoreBreakdown = {
 /** A batch of outreach emails reviewed and sent together. One is open at a time; sending closes it. */
 export const campaigns = sqliteTable("campaigns", {
   id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
   name: text("name").notNull(),
   status: text("status").notNull().default("open"), // open | sending | sent
   createdAt: text("created_at").notNull().default(now()),
@@ -467,6 +481,7 @@ export const removedBusinesses = sqliteTable(
   "removed_businesses",
   {
     id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
     name: text("name").notNull(),
     nameNormalized: text("name_normalized").notNull(),
     city: text("city"),
@@ -484,6 +499,7 @@ export const removedBusinesses = sqliteTable(
 
 export const suppressions = sqliteTable("suppressions", {
   id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
   /** Lower-case email address, or a bare domain. */
   value: text("value").notNull().unique(),
   kind: text("kind").notNull().default("email"), // email | domain
@@ -549,6 +565,7 @@ export const jobs = sqliteTable(
   "jobs",
   {
     id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
     type: text("type").notNull(),
     payload: json<Record<string, unknown>>("payload").notNull(),
     idempotencyKey: text("idempotency_key"),
@@ -568,6 +585,7 @@ export const jobs = sqliteTable(
 
 export const aiUsage = sqliteTable("ai_usage", {
   id: text("id").primaryKey(),
+  workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
   stage: text("stage").notNull(),
   model: text("model").notNull(),
   businessId: text("business_id"),
@@ -737,6 +755,7 @@ export const users = sqliteTable(
   "users",
   {
     id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
     email: text("email").notNull(),
     name: text("name").notNull().default(""),
     passwordHash: text("password_hash").notNull(),
@@ -760,3 +779,10 @@ export const sessions = sqliteTable(
   },
   (t) => [index("sessions_user_idx").on(t.userId)],
 );
+
+/** One workspace per customer: the owner of a set of businesses, emails and settings. */
+export const workspaces = sqliteTable("workspaces", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull().default(""),
+  createdAt: text("created_at").notNull(),
+});

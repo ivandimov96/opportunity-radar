@@ -3,17 +3,20 @@
  * once more, then queues one job per email at paced times inside the sending
  * hours and the daily cap. Each email gets its Message-ID here, before the
  * first attempt, so a retry can never produce a second, different message.
+ * A batch, its emails and the daily count are the acting workspace's own: a
+ * batch or email id from another workspace is "not found".
  */
 import { randomUUID } from "node:crypto";
 import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { businesses, campaigns, emailEvents, jobs, outreachDrafts } from "@/db/schema";
-import { getConfig } from "@/lib/config";
 import { emailDomain, normalizeAddress } from "@/lib/email/address";
 import { newId, nowIso } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { getSettings, missingSenderDetails, type AppSettings } from "@/lib/settings";
-import { openCampaign, type Campaign } from "./campaigns";
+import { mailboxFor } from "@/lib/mail";
+import { businessIdsOf, workspaceId } from "@/lib/workspace";
+import { campaignInWorkspace, openCampaign, type Campaign } from "./campaigns";
 import { contactBlockers } from "./eligibility";
 
 export type Draft = typeof outreachDrafts.$inferSelect;
@@ -62,14 +65,15 @@ export function planSendTimes(now: Date, n: number, o: SendPlanOptions): Date[] 
   return out;
 }
 
-/** Emails already sent or queued per local day, from today on. */
+/** Emails of the acting workspace already sent or queued per local day, from today on. */
 export async function usedByDay(now = new Date()): Promise<Record<string, number>> {
   const db = await getDb();
+  const mine = businessIdsOf(db, await workspaceId());
   const since = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
   const rows = await db
     .select({ status: outreachDrafts.status, sentAt: outreachDrafts.sentAt, scheduledAt: outreachDrafts.scheduledAt })
     .from(outreachDrafts)
-    .where(and(inArray(outreachDrafts.status, ["sent", "bounced", "queued", "sending"]), sql`coalesce(${outreachDrafts.sentAt}, ${outreachDrafts.scheduledAt}) >= ${since}`))
+    .where(and(inArray(outreachDrafts.businessId, mine), inArray(outreachDrafts.status, ["sent", "bounced", "queued", "sending"]), sql`coalesce(${outreachDrafts.sentAt}, ${outreachDrafts.scheduledAt}) >= ${since}`))
     .all();
   const out: Record<string, number> = {};
   for (const r of rows) {
@@ -102,11 +106,10 @@ export interface Preflight {
 /** Everything "Send approved" would do, without doing it. The same function decides what is actually queued. */
 export async function sendPreflight(campaignId: string, now = new Date()): Promise<Preflight | null> {
   const db = await getDb();
-  const campaign = await db.select().from(campaigns).where(eq(campaigns.id, campaignId)).get();
+  const campaign = await campaignInWorkspace(campaignId);
   if (!campaign) return null;
-  const cfg = getConfig();
   const settings = await getSettings();
-  const rows = await db.select({ draft: outreachDrafts, business: businesses }).from(outreachDrafts).innerJoin(businesses, eq(businesses.id, outreachDrafts.businessId)).where(and(eq(outreachDrafts.campaignId, campaignId), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "excluded"]))).orderBy(outreachDrafts.createdAt).all();
+  const rows = await db.select({ draft: outreachDrafts, business: businesses }).from(outreachDrafts).innerJoin(businesses, eq(businesses.id, outreachDrafts.businessId)).where(and(eq(businesses.workspaceId, campaign.workspaceId), eq(outreachDrafts.campaignId, campaignId), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "excluded"]))).orderBy(outreachDrafts.createdAt).all();
   const counts = { approved: 0, ready: 0, needsReview: 0, excluded: 0 };
   const sendable: Preflight["sendable"] = [];
   const blocked: Preflight["blocked"] = [];
@@ -129,7 +132,9 @@ export async function sendPreflight(campaignId: string, now = new Date()): Promi
     }
   }
   const senderMissing = missingSenderDetails(settings);
-  const mailbox = { ok: cfg.mail.enabled, reason: cfg.mail.reason, address: cfg.mail.address };
+  // The mailbox as this workspace has it: a workspace without one gets "no mailbox connected yet" here and nothing is queued.
+  const box = await mailboxFor();
+  const mailbox = { ok: box.enabled, reason: box.reason, address: box.address };
   let plan: Preflight["plan"] = null;
   if (sendable.length) {
     const times = planSendTimes(now, sendable.length, { ...planOptions(settings), usedByDay: await usedByDay(now), jitter: () => 1 });
@@ -171,8 +176,10 @@ export async function sendCampaign(campaignId: string, now = new Date()): Promis
 
 /** Emails of a closed batch that were not sent (not approved, excluded, blocked) move on to the open batch. */
 async function carryOverUnsent(campaignId: string) {
+  if (!(await campaignInWorkspace(campaignId))) return;
   const db = await getDb();
-  const left = await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.campaignId, campaignId), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "excluded"]))).all();
+  // Only this workspace's emails move on: the next batch is this workspace's, and nobody else's email belongs in it.
+  const left = await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.campaignId, campaignId), inArray(outreachDrafts.businessId, businessIdsOf(db, await workspaceId())), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "excluded"]))).all();
   if (!left.length) return;
   const next = await openCampaign();
   await db.update(outreachDrafts).set({ campaignId: next.id }).where(inArray(outreachDrafts.id, left.map((d) => d.id))).run();
@@ -180,22 +187,25 @@ async function carryOverUnsent(campaignId: string) {
 
 /** A batch is done when nothing of it is queued or being sent any more. */
 export async function closeCampaignIfDone(campaignId: string | null) {
-  if (!campaignId) return;
+  const campaign = await campaignInWorkspace(campaignId);
+  if (!campaign) return;
   const db = await getDb();
-  const pending = await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.campaignId, campaignId), inArray(outreachDrafts.status, ["queued", "sending"]))).limit(1).get();
+  const pending = await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.campaignId, campaign.id), inArray(outreachDrafts.status, ["queued", "sending"]))).limit(1).get();
   if (pending) return;
-  await db.update(campaigns).set({ status: "sent" }).where(and(eq(campaigns.id, campaignId), eq(campaigns.status, "sending"))).run();
+  await db.update(campaigns).set({ status: "sent" }).where(and(eq(campaigns.id, campaign.id), eq(campaigns.status, "sending"))).run();
 }
 
 /** Stops what has not gone out yet: queued emails return to "approved" in the open batch. Emails already sent stay sent. */
 export async function cancelQueued(campaignId: string): Promise<number> {
+  if (!(await campaignInWorkspace(campaignId))) return 0;
   const db = await getDb();
-  const queued = await db.select().from(outreachDrafts).where(and(eq(outreachDrafts.campaignId, campaignId), eq(outreachDrafts.status, "queued"))).all();
+  const ws = await workspaceId();
+  const queued = await db.select().from(outreachDrafts).where(and(eq(outreachDrafts.campaignId, campaignId), eq(outreachDrafts.status, "queued"), inArray(outreachDrafts.businessId, businessIdsOf(db, ws)))).all();
   let n = 0;
   for (const d of queued) {
     const res = await db.update(outreachDrafts).set({ status: "approved", scheduledAt: null, updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, d.id), eq(outreachDrafts.status, "queued"))).run();
     if (!res.rowsAffected) continue;
-    await db.update(jobs).set({ status: "cancelled", finishedAt: nowIso() }).where(and(eq(jobs.type, "send_email"), eq(jobs.status, "queued"), sql`json_extract(${jobs.payload}, '$.draftId') = ${d.id}`)).run();
+    await db.update(jobs).set({ status: "cancelled", finishedAt: nowIso() }).where(and(eq(jobs.workspaceId, ws), eq(jobs.type, "send_email"), eq(jobs.status, "queued"), sql`json_extract(${jobs.payload}, '$.draftId') = ${d.id}`)).run();
     await db.insert(emailEvents).values({ id: newId(), draftId: d.id, businessId: d.businessId, type: "cancelled", detail: { by: "operator" } }).run();
     n++;
   }
@@ -207,17 +217,17 @@ export async function cancelQueued(campaignId: string): Promise<number> {
 /** Try a failed email again, now. The operator does this after checking that it is not already in their Sent folder. */
 export async function retryFailed(draftId: string): Promise<boolean> {
   const db = await getDb();
-  const res = await db.update(outreachDrafts).set({ status: "queued", scheduledAt: nowIso(), lastError: null, updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draftId), eq(outreachDrafts.status, "failed"), isNotNull(outreachDrafts.messageId))).returning().get();
+  const res = await db.update(outreachDrafts).set({ status: "queued", scheduledAt: nowIso(), lastError: null, updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draftId), eq(outreachDrafts.status, "failed"), isNotNull(outreachDrafts.messageId), inArray(outreachDrafts.businessId, businessIdsOf(db, await workspaceId())))).returning().get();
   if (!res) return false;
   await db.insert(emailEvents).values({ id: newId(), draftId, businessId: res.businessId, type: "queued", detail: { retry: true } }).run();
   await enqueueJob("send_email", { draftId }, { idempotencyKey: `send:${draftId}`, maxAttempts: 4 });
   return true;
 }
 
-/** Emails sent today (local day): the number the daily cap is compared with. */
+/** Emails the acting workspace sent today (local day): the number the daily cap is compared with. */
 export async function sentToday(now = new Date()): Promise<number> {
   const db = await getDb();
   const since = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
-  const row = await db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(and(inArray(outreachDrafts.status, ["sent", "bounced"]), gte(outreachDrafts.sentAt, since))).get();
+  const row = await db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(and(inArray(outreachDrafts.businessId, businessIdsOf(db, await workspaceId())), inArray(outreachDrafts.status, ["sent", "bounced"]), gte(outreachDrafts.sentAt, since))).get();
   return Number(row?.n ?? 0);
 }

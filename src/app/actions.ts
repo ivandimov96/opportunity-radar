@@ -27,15 +27,28 @@ import { getSettings, saveSettings, type AppSettings } from "@/lib/settings";
 import { settingsHref } from "@/lib/settings-nav";
 import { chooseIdea } from "@/lib/outreach/ideas";
 import { allowAgain, findRemoved, removeBusiness } from "@/lib/pipeline/removed";
-import { getMailProvider } from "@/lib/mail";
+import { getMailProvider, mailboxFor, syncMailboxKey } from "@/lib/mail";
 import { applyReplyClassification } from "@/lib/jobs/mail-handlers";
 import { maybeAutoDraft } from "@/lib/jobs/handlers";
 import { REPLY_CATEGORIES, type ReplyCategory } from "@/lib/ai/schemas";
 import { composeEmailBody } from "@/lib/outreach/drafts";
 import { makeMessageId } from "@/lib/outreach/send";
 import { parseSearchForm, type RawSearchValues, type SearchFieldErrors } from "@/lib/search-input";
+import { assertBusinessInWorkspace, businessIdsOf, draftInWorkspace, searchInWorkspace, workspaceId } from "@/lib/workspace";
 
 const str = (fd: FormData, k: string) => (fd.get(k)?.toString() ?? "").trim();
+
+/** An email or a reply belongs to the workspace of its business: one from another workspace is refused like the business itself would be. */
+const assertDraftInWorkspace = async (draftId: string) => {
+  const db = await getDb();
+  const d = await db.select({ businessId: outreachDrafts.businessId }).from(outreachDrafts).where(eq(outreachDrafts.id, draftId)).get();
+  if (d) await assertBusinessInWorkspace(d.businessId);
+};
+const assertReplyInWorkspace = async (inboundId: string) => {
+  const db = await getDb();
+  const r = await db.select({ businessId: inboundEmails.businessId }).from(inboundEmails).where(eq(inboundEmails.id, inboundId)).get();
+  if (r) await assertBusinessInWorkspace(r.businessId);
+};
 
 export type CreateSearchState = { errors: SearchFieldErrors; values: RawSearchValues } | null;
 
@@ -49,7 +62,7 @@ export async function createSearch(_prev: CreateSearchState, fd: FormData): Prom
   const db = await getDb();
   await db
     .insert(searches)
-    .values({ id, name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoInvestigate: v.autoInvestigate, filters, providers: v.providers as DiscoveryProviderKey[], status: "queued" })
+    .values({ id, workspaceId: await workspaceId(), name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoInvestigate: v.autoInvestigate, filters, providers: v.providers as DiscoveryProviderKey[], status: "queued" })
     .run();
   await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
   kickWorker();
@@ -59,6 +72,7 @@ export async function createSearch(_prev: CreateSearchState, fd: FormData): Prom
 export async function rerunSearch(fd: FormData) {
   await requireOwner();
   const id = str(fd, "searchId");
+  if (!(await searchInWorkspace(id))) return;
   const db = await getDb();
   await db.update(searches).set({ status: "queued", error: null, updatedAt: nowIso() }).where(eq(searches.id, id)).run();
   await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
@@ -81,14 +95,15 @@ export async function investigateManyAction(fd: FormData) {
   const db = await getDb();
   const searchId = str(fd, "searchId");
   const ids = fd.getAll("businessId").map(String).filter(Boolean);
+  const mine = eq(businesses.workspaceId, await workspaceId());
   const includeDone = fd.get("includeDone") === "on";
   const includeChains = fd.get("includeChains") === "on";
   const cols = { id: businesses.id, website: businesses.website, status: businesses.status, leadScore: businesses.leadScore, kind: businesses.kind };
   let targets: { id: string; website: string | null; status: string; leadScore: number | null; kind: string }[] = [];
   if (searchId) {
-    targets = await db.select(cols).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(eq(searchResults.searchId, searchId)).all();
+    targets = await db.select(cols).from(searchResults).innerJoin(businesses, eq(searchResults.businessId, businesses.id)).where(and(eq(searchResults.searchId, searchId), mine)).all();
   } else if (ids.length) {
-    targets = await db.select(cols).from(businesses).where(inArray(businesses.id, ids)).all();
+    targets = await db.select(cols).from(businesses).where(and(inArray(businesses.id, ids), mine)).all();
   }
   // Best leads first: the queue is FIFO, so enqueue order is investigation order.
   targets.sort((a, b) => (b.leadScore ?? 0) - (a.leadScore ?? 0));
@@ -125,6 +140,7 @@ export async function moveOnBoardAction(businessId: string, stage: PipelineStage
   // succeed and then vanish (or appear to move other cards) on the next request. Refuse it honestly.
   if (cfg.serverless && !cfg.TURSO_DATABASE_URL) return { ok: false, error: "this preview has no persistent database, so moves cannot be saved (connect a Turso database in the Vercel project settings)" };
   try {
+    await assertBusinessInWorkspace(businessId);
     await moveOnBoard(businessId, stage, orderedIds);
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
@@ -139,6 +155,7 @@ export async function updateStageAction(fd: FormData) {
   const businessId = str(fd, "businessId");
   const stage = str(fd, "stage") as PipelineStage;
   if (!PIPELINE_STAGE_KEYS.includes(stage)) return;
+  await assertBusinessInWorkspace(businessId);
   await setStage(businessId, stage, str(fd, "note") || undefined);
   revalidatePath(`/businesses/${businessId}`);
   revalidatePath("/pipeline");
@@ -150,6 +167,7 @@ export async function addNoteAction(fd: FormData) {
   const content = str(fd, "content");
   const type = ["note", "call", "email", "meeting"].includes(str(fd, "type")) ? str(fd, "type") : "note";
   if (!content) return;
+  await assertBusinessInWorkspace(businessId);
   await ensureProspect(businessId);
   await logActivity(businessId, type, content);
   if (type !== "note") {
@@ -166,6 +184,7 @@ export async function setNextActionAction(fd: FormData) {
   const nextAction = str(fd, "nextAction") || null;
   const at = str(fd, "nextActionAt") || null;
   const priority = ["low", "normal", "high"].includes(str(fd, "priority")) ? str(fd, "priority") : undefined;
+  await assertBusinessInWorkspace(businessId);
   await setNextAction(businessId, nextAction, at ? new Date(at).toISOString() : null, priority);
   revalidatePath(`/businesses/${businessId}`);
 }
@@ -174,6 +193,7 @@ export async function setNextActionAction(fd: FormData) {
 export async function completeNextActionAction(fd: FormData) {
   await requireOwner();
   const businessId = str(fd, "businessId");
+  await assertBusinessInWorkspace(businessId);
   const db = await getDb();
   const p = await db.select().from(prospects).where(eq(prospects.businessId, businessId)).get();
   if (!p?.nextAction) return;
@@ -187,6 +207,7 @@ export async function updateWebsiteAction(fd: FormData) {
   await requireOwner();
   const id = str(fd, "businessId");
   const website = normalizeWebsite(str(fd, "website"));
+  await assertBusinessInWorkspace(id);
   const db = await getDb();
   await db.update(businesses).set({ website, websiteDomain: websiteDomain(website), status: website ? "new" : "no_website", statusMessage: website ? null : "No website on record", updatedAt: nowIso() }).where(eq(businesses.id, id)).run();
   await logActivity(id, "note", website ? `Website set to ${website}` : "Website cleared");
@@ -212,7 +233,7 @@ export async function importCsvAction(fd: FormData) {
   if (!candidates.length) redirect(`/import?error=${encodeURIComponent(errors.join("; ") || "No rows found")}`);
   const db = await getDb();
   const id = newId();
-  await db.insert(searches).values({ id, name: `CSV import: ${file.name}`, industry, country, region, city, maxResults: candidates.length, providers: ["csv"], requireWebsite: false, autoInvestigate, status: "done", stats: { providerResults: { csv: { found: candidates.length, error: errors.length ? `${errors.length} row error(s): ${errors.slice(0, 3).join("; ")}` : undefined } }, created: 0, merged: 0, skippedNoWebsite: 0, total: 0, attribution: ["Operator-supplied CSV import"] } }).run();
+  await db.insert(searches).values({ id, workspaceId: await workspaceId(), name: `CSV import: ${file.name}`, industry, country, region, city, maxResults: candidates.length, providers: ["csv"], requireWebsite: false, autoInvestigate, status: "done", stats: { providerResults: { csv: { found: candidates.length, error: errors.length ? `${errors.length} row error(s): ${errors.slice(0, 3).join("; ")}` : undefined } }, created: 0, merged: 0, skippedNoWebsite: 0, total: 0, attribution: ["Operator-supplied CSV import"] } }).run();
   let created = 0;
   let merged = 0;
   let rank = 0;
@@ -278,7 +299,8 @@ export async function retryJobAction(fd: FormData) {
   await requireOwner();
   const id = str(fd, "jobId");
   const db = await getDb();
-  await db.update(jobs).set({ status: "queued", attempts: 0, error: null, lockedBy: null, scheduledAt: nowIso() }).where(and(eq(jobs.id, id), inArray(jobs.status, ["failed", "queued"]))).run();
+  // Only a job of the acting workspace: another workspace's job id changes nothing.
+  await db.update(jobs).set({ status: "queued", attempts: 0, error: null, lockedBy: null, scheduledAt: nowIso() }).where(and(eq(jobs.id, id), eq(jobs.workspaceId, await workspaceId()), inArray(jobs.status, ["failed", "queued"]))).run();
   kickWorker();
   revalidatePath("/system");
 }
@@ -288,16 +310,17 @@ export async function cancelJobAction(fd: FormData) {
   await requireOwner();
   const id = str(fd, "jobId");
   const db = await getDb();
-  const job = await db.select().from(jobs).where(eq(jobs.id, id)).get();
-  const res = await db.update(jobs).set({ status: "failed", error: "Cancelled by the operator", finishedAt: nowIso(), lockedBy: null }).where(and(eq(jobs.id, id), eq(jobs.status, "queued"))).run();
+  const ws = await workspaceId();
+  const job = await db.select().from(jobs).where(and(eq(jobs.id, id), eq(jobs.workspaceId, ws))).get();
+  const res = await db.update(jobs).set({ status: "failed", error: "Cancelled by the operator", finishedAt: nowIso(), lockedBy: null }).where(and(eq(jobs.id, id), eq(jobs.workspaceId, ws), eq(jobs.status, "queued"))).run();
   if (job && res.rowsAffected) {
     // What the job was for must not look "in progress" forever.
     if (job.type === "discover_search") {
-      await db.update(searches).set({ status: "failed", error: "Cancelled by the operator", updatedAt: nowIso() }).where(and(eq(searches.id, String(job.payload.searchId)), eq(searches.status, "queued"))).run();
+      await db.update(searches).set({ status: "failed", error: "Cancelled by the operator", updatedAt: nowIso() }).where(and(eq(searches.id, String(job.payload.searchId)), eq(searches.workspaceId, ws), eq(searches.status, "queued"))).run();
     } else if (job.type === "investigate_business") {
       const businessId = String(job.payload.businessId);
       const biz = await db.select({ investigatedAt: businesses.investigatedAt }).from(businesses).where(eq(businesses.id, businessId)).get();
-      await db.update(businesses).set({ status: biz?.investigatedAt ? "profiled" : "new", statusMessage: "Investigation cancelled by the operator", updatedAt: nowIso() }).where(and(eq(businesses.id, businessId), eq(businesses.status, "queued"))).run();
+      await db.update(businesses).set({ status: biz?.investigatedAt ? "profiled" : "new", statusMessage: "Investigation cancelled by the operator", updatedAt: nowIso() }).where(and(eq(businesses.id, businessId), eq(businesses.workspaceId, ws), eq(businesses.status, "queued"))).run();
     }
   }
   revalidatePath("/system");
@@ -312,7 +335,7 @@ export async function saveCandidatesAction(fd: FormData) {
   const all = fd.get("all") === "on";
   const investigate = fd.get("investigate") === "on";
   const db = await getDb();
-  const search = await db.select().from(searches).where(eq(searches.id, searchId)).get();
+  const search = await db.select().from(searches).where(and(eq(searches.id, searchId), eq(searches.workspaceId, await workspaceId()))).get();
   if (!search || (!all && !ids.length)) return;
   const outcome = await saveCandidates(db, search, all ? undefined : ids);
   let queued = 0;
@@ -356,6 +379,7 @@ const withMessage = (path: string, key: "ok" | "error", message: string) => {
 export async function suggestSubjectsAction(fd: FormData) {
   await requireOwner();
   const id = str(fd, "draftId");
+  await assertDraftInWorkspace(id);
   const here = `/outreach/${id}`;
   if (fd.has("body")) {
     const saved = await saveDraftEdit(id, str(fd, "subject"), fd.get("body")?.toString() ?? "");
@@ -376,6 +400,7 @@ export async function suggestSubjectsAction(fd: FormData) {
 export async function saveDraftAction(fd: FormData) {
   await requireOwner();
   const id = str(fd, "draftId");
+  await assertDraftInWorkspace(id);
   const then = str(fd, "then");
   const here = `/outreach/${id}`;
   const saved = await saveDraftEdit(id, str(fd, "subject"), (fd.get("body")?.toString() ?? ""));
@@ -393,6 +418,7 @@ export async function saveDraftAction(fd: FormData) {
 export async function draftStatusAction(fd: FormData) {
   await requireOwner();
   const id = str(fd, "draftId");
+  await assertDraftInWorkspace(id);
   const op = str(fd, "op");
   const back = backTo(fd, "/outreach");
   if (op === "approve") {
@@ -433,6 +459,7 @@ export async function cancelQueuedAction(fd: FormData) {
 
 export async function retryFailedAction(fd: FormData) {
   await requireOwner();
+  await assertDraftInWorkspace(str(fd, "draftId"));
   const ok = await retryFailed(str(fd, "draftId"));
   if (ok) kickWorker();
   revalidatePath("/outreach");
@@ -446,11 +473,12 @@ export async function retryFailedAction(fd: FormData) {
 export async function markDraftSentAction(fd: FormData) {
   await requireOwner();
   const id = str(fd, "draftId");
+  await assertDraftInWorkspace(id);
   const db = await getDb();
-  const cur = await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, id)).get();
+  const cur = await draftInWorkspace(id);
   if (!cur || !["ready", "approved", "needs_review", "failed"].includes(cur.status)) redirect(backTo(fd, "/outreach"));
   const at = nowIso();
-  await db.update(outreachDrafts).set({ status: "sent", sentAt: at, lastError: null, messageId: cur.messageId ?? makeMessageId(getMailProvider()?.address ?? "manual@local"), updatedAt: at }).where(eq(outreachDrafts.id, id)).run();
+  await db.update(outreachDrafts).set({ status: "sent", sentAt: at, lastError: null, messageId: cur.messageId ?? makeMessageId((await mailboxFor()).address ?? "manual@local"), updatedAt: at }).where(eq(outreachDrafts.id, id)).run();
   await db.insert(emailEvents).values({ id: newId(), draftId: id, businessId: cur.businessId, type: "sent", detail: { by: "operator", manual: true } }).run();
   await logActivity(cur.businessId, "email", `Marked as sent by you: "${cur.subject ?? "(no subject)"}"${cur.toEmail ? ` to ${cur.toEmail}` : ""}`, { draftId: id });
   if (cur.step === 0) await advanceStageIfBehind(cur.businessId, "contacted", "outreach email sent by the operator");
@@ -462,7 +490,9 @@ export async function markDraftSentAction(fd: FormData) {
 /** Read the inbox now instead of waiting for the next scheduled check. */
 export async function syncMailboxAction(fd: FormData) {
   await requireOwner();
-  await enqueueJob("sync_mailbox", {}, { idempotencyKey: "sync_mailbox", maxAttempts: 1 });
+  const box = await mailboxFor();
+  if (!box.enabled) redirect(withMessage(backTo(fd, "/outreach?tab=sent"), "error", box.reason ?? "No mailbox is connected."));
+  await enqueueJob("sync_mailbox", {}, { idempotencyKey: syncMailboxKey(await workspaceId()), maxAttempts: 1 });
   kickWorker();
   redirect(withMessage(backTo(fd, "/outreach?tab=sent"), "ok", "Checking the inbox now."));
 }
@@ -475,7 +505,7 @@ export async function setBusinessEmailAction(fd: FormData) {
   const back = backTo(fd, `/businesses/${id}`);
   const email = normalizeAddress(str(fd, "email"));
   const db = await getDb();
-  const biz = await db.select().from(businesses).where(eq(businesses.id, id)).get();
+  const biz = await db.select().from(businesses).where(and(eq(businesses.id, id), eq(businesses.workspaceId, await workspaceId()))).get();
   if (!biz) redirect(back);
   if (!email) redirect(withMessage(back, "error", "Enter an email address"));
   const check = await checkEmailAddress(email, { mx: getConfig().RESEARCH_FOOTPRINT });
@@ -506,6 +536,7 @@ export async function setBusinessEmailAction(fd: FormData) {
 export async function chooseIdeaAction(fd: FormData) {
   await requireOwner();
   const businessId = str(fd, "businessId");
+  await assertBusinessInWorkspace(businessId);
   const res = await chooseIdea(businessId, str(fd, "opportunityId"));
   const back = `/businesses/${businessId}?tab=opportunities`;
   if (!res.ok) redirect(withMessage(back, "error", res.error));
@@ -521,6 +552,7 @@ export async function setVerdictAction(fd: FormData) {
   const id = str(fd, "businessId");
   const verdict = str(fd, "verdict");
   if (!["qualified", "not_a_fit"].includes(verdict)) return;
+  await assertBusinessInWorkspace(id);
   const db = await getDb();
   const reason = verdict === "qualified" ? "Qualified by you." : "Set aside by you as not a fit.";
   await db.update(businesses).set({ verdict, verdictReasons: [reason], statusMessage: verdict === "qualified" ? "Qualified by you" : "Not a fit (your decision)", updatedAt: nowIso() }).where(eq(businesses.id, id)).run();
@@ -540,6 +572,7 @@ export async function reclassifyReplyAction(fd: FormData) {
   const id = str(fd, "inboundId");
   const category = str(fd, "category") as ReplyCategory;
   if (!REPLY_CATEGORIES.includes(category)) return;
+  await assertReplyInWorkspace(id);
   await applyReplyClassification(id, category, "operator");
   revalidatePath(backTo(fd, "/"));
 }
@@ -548,8 +581,9 @@ export async function reclassifyReplyAction(fd: FormData) {
 export async function markReplyHandledAction(fd: FormData) {
   await requireOwner();
   const id = str(fd, "inboundId");
+  await assertReplyInWorkspace(id);
   const db = await getDb();
-  const row = await db.select().from(inboundEmails).where(eq(inboundEmails.id, id)).get();
+  const row = await db.select().from(inboundEmails).where(and(eq(inboundEmails.id, id), inArray(inboundEmails.businessId, businessIdsOf(db, await workspaceId())))).get();
   if (!row) return;
   await db.update(inboundEmails).set({ handledAt: row.handledAt ? null : nowIso() }).where(eq(inboundEmails.id, id)).run();
   if (!row.handledAt) await logActivity(row.businessId, "note", "Reply handled.", { inboundId: id });
@@ -590,8 +624,9 @@ export async function removeSuppressionAction(fd: FormData) {
 /** Checks the mailbox connection (sign-in to send and to read) without sending anything. */
 export async function testMailboxAction() {
   await requireOwner();
-  const provider = getMailProvider();
-  if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", getConfig().mail.reason ?? "No mailbox is connected."));
+  const box = await mailboxFor();
+  const provider = box.enabled ? getMailProvider() : null;
+  if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", box.reason ?? "No mailbox is connected."));
   const r = await provider.verify();
   const problems = [r.smtp ? `Sending: ${r.smtp}` : null, r.imap ? `Reading: ${r.imap}` : null].filter(Boolean);
   redirect(withMessage(settingsHref("mailbox"), problems.length ? "error" : "ok", problems.length ? problems.join(" · ") : `Connected as ${provider.address}: sending and reading both work.`));
@@ -600,8 +635,10 @@ export async function testMailboxAction() {
 /** Sends one test email to the operator's own address, with the signature exactly as recipients will see it. */
 export async function sendTestEmailAction() {
   await requireOwner();
-  const provider = getMailProvider();
-  if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", getConfig().mail.reason ?? "No mailbox is connected."));
+  // A workspace without a mailbox of its own sends nothing, not even a test.
+  const box = await mailboxFor();
+  const provider = box.enabled ? getMailProvider() : null;
+  if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", box.reason ?? "No mailbox is connected."));
   const settings = await getSettings();
   try {
     await provider.send({ from: { name: settings.senderName || "Opportunity Radar", address: provider.address }, to: provider.address, subject: "Test email from Opportunity Radar", text: composeEmailBody("Hello,\n\nThis is a test from your own Opportunity Radar. If you can read it, sending works, and this is what your signature looks like.", settings), messageId: makeMessageId(provider.address) });

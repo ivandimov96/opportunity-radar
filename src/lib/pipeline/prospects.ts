@@ -2,9 +2,16 @@ import { and, desc, eq } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { activities, businesses, prospects } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
+import { assertBusinessInWorkspace, businessInWorkspace, workspaceId } from "@/lib/workspace";
 import { CONTACTED_STAGES, PIPELINE_STAGE_KEYS, PRE_CONTACT_STAGES, type PipelineStage } from "./stages";
 
+/**
+ * Every function here that changes something goes through `ensureProspect` or `logActivity`, and both
+ * refuse a business that is not in the acting workspace. A request acts as its signed-in user's
+ * workspace and a job as the workspace it was queued in, so each can only move its own businesses.
+ */
 export async function ensureProspect(businessId: string, stage: PipelineStage = "discovered") {
+  await assertBusinessInWorkspace(businessId);
   const db = await getDb();
   const existing = await db.select().from(prospects).where(eq(prospects.businessId, businessId)).get();
   if (existing) return existing;
@@ -13,6 +20,7 @@ export async function ensureProspect(businessId: string, stage: PipelineStage = 
 }
 
 export async function logActivity(businessId: string, type: string, content: string, metadata?: Record<string, unknown>) {
+  await assertBusinessInWorkspace(businessId);
   const db = await getDb();
   await db.insert(activities).values({ id: newId(), businessId, type, content, metadata: metadata ?? null }).run();
 }
@@ -90,7 +98,7 @@ export async function moveOnBoard(businessId: string, stage: PipelineStage, orde
   // The board may be filtered, so `visible` can be a subset of the column. Keep hidden cards where they
   // are and fill the slots of the visible ones in their new order; the moved card lands just before the
   // visible card that follows it (or at the end).
-  const column = (await db.select({ id: prospects.businessId, position: prospects.position, priority: businesses.priority }).from(prospects).innerJoin(businesses, eq(businesses.id, prospects.businessId)).where(eq(prospects.stage, stage)).all())
+  const column = (await db.select({ id: prospects.businessId, position: prospects.position, priority: businesses.priority }).from(prospects).innerJoin(businesses, eq(businesses.id, prospects.businessId)).where(and(eq(prospects.stage, stage), eq(businesses.workspaceId, await workspaceId()))).all())
     .sort((a, b) => (a.position ?? 1e9) - (b.position ?? 1e9) || (b.priority ?? -1) - (a.priority ?? -1))
     .map((r) => r.id)
     .filter((id) => id !== businessId);
@@ -107,6 +115,7 @@ export async function moveOnBoard(businessId: string, stage: PipelineStage, orde
     if (queue.length) final.push(queue.shift()!);
   }
   final.push(...queue);
+  // `final` holds ids of this workspace's column plus the moved card (checked by setStage above): nothing else is repositioned.
   const updates = final.map((id, i) => db.update(prospects).set({ position: i }).where(eq(prospects.businessId, id)));
   if (updates.length) await db.batch(updates as [(typeof updates)[number], ...typeof updates]);
 }
@@ -122,6 +131,7 @@ export async function setNextAction(businessId: string, nextAction: string | nul
 }
 
 export async function recentActivities(businessId: string, limit = 50) {
+  if (!(await businessInWorkspace(businessId))) return [];
   const db = await getDb();
   return db.select().from(activities).where(eq(activities.businessId, businessId)).orderBy(desc(activities.createdAt)).limit(limit).all();
 }

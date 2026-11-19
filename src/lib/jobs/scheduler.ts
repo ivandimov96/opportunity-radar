@@ -6,6 +6,8 @@
  *  - researches saved businesses, best leads first, while few emails are waiting for review.
  * It never sends anything and never starts a search: those stay the operator's.
  * Every step is bounded by the budgets in Settings and by the monthly spend guards.
+ * It looks across all workspaces (the budgets are still shared) and queues each job as
+ * the workspace of the business it is for, so the handler runs where the business lives.
  */
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, notInArray, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
@@ -16,6 +18,8 @@ import { contactBlockers } from "@/lib/outreach/eligibility";
 import { getSettings, getState, setState } from "@/lib/settings";
 import { enqueueInvestigation, enqueueOutreach, maybeAutoDraft } from "./handlers";
 import { enqueueJob } from "./queue";
+import { MAILBOX_WORKSPACE_ID, syncMailboxKey } from "@/lib/mail";
+import { businessIdsOf, runInWorkspace } from "@/lib/workspace";
 
 export const SYNC_EVERY_MS = 5 * 60_000;
 const PER_TICK = 3;
@@ -52,13 +56,13 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
   const db = await getDb();
   const settings = await getSettings();
 
-  // 1. Inbox: only while there is sent mail a reply could belong to.
+  // 1. Inbox: only while there is sent mail a reply could belong to. One mailbox, so one workspace: the one it belongs to.
   if (cfg.mail.enabled) {
     const last = await getState<{ at: string }>("mail.syncQueued");
     const due = !last || now.getTime() - new Date(last.at).getTime() >= SYNC_EVERY_MS;
-    const watching = due ? await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(inArray(outreachDrafts.status, ["sent", "bounced"]), gte(outreachDrafts.sentAt, new Date(now.getTime() - 90 * 86_400_000).toISOString()))).limit(1).get() : null;
+    const watching = due ? await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(inArray(outreachDrafts.businessId, businessIdsOf(db, MAILBOX_WORKSPACE_ID)), inArray(outreachDrafts.status, ["sent", "bounced"]), gte(outreachDrafts.sentAt, new Date(now.getTime() - 90 * 86_400_000).toISOString()))).limit(1).get() : null;
     if (watching) {
-      await enqueueJob("sync_mailbox", {}, { idempotencyKey: "sync_mailbox", maxAttempts: 1 });
+      await runInWorkspace(MAILBOX_WORKSPACE_ID, () => enqueueJob("sync_mailbox", {}, { idempotencyKey: syncMailboxKey(MAILBOX_WORKSPACE_ID), maxAttempts: 1 }));
       await setState("mail.syncQueued", { at: now.toISOString() });
       out.sync = true;
     }
@@ -82,9 +86,10 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
         if (await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.businessId, c.businessId), eq(outreachDrafts.step, 1), ne(outreachDrafts.status, "archived"))).limit(1).get()) continue;
         if (await db.select({ id: inboundEmails.id }).from(inboundEmails).where(and(eq(inboundEmails.businessId, c.businessId), inArray(inboundEmails.kind, ["reply", "bounce"]))).limit(1).get()) continue;
         const biz = await db.select().from(businesses).where(eq(businesses.id, c.businessId)).get();
-        if (!biz || (await contactBlockers(biz, settings)).length) continue;
+        // Checked as the business's own workspace: "already emailed" only counts that workspace's emails.
+        if (!biz || (await runInWorkspace(biz.workspaceId, () => contactBlockers(biz, settings))).length) continue;
         if (await failedRecently(`outreach:${c.businessId}:1`)) continue;
-        const { created } = await enqueueOutreach(c.businessId, { step: 1 });
+        const { created } = await runInWorkspace(biz.workspaceId, () => enqueueOutreach(c.businessId, { step: 1 }));
         if (created) out.followUps++;
       }
     }
@@ -93,7 +98,7 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
     if (settings.autoDraft) {
       const withDraft = db.select({ id: outreachDrafts.businessId }).from(outreachDrafts).where(and(eq(outreachDrafts.step, 0), ne(outreachDrafts.status, "archived")));
       const pending = await db
-        .select({ id: businesses.id })
+        .select({ id: businesses.id, workspaceId: businesses.workspaceId })
         .from(businesses)
         .innerJoin(prospects, eq(prospects.businessId, businesses.id))
         .where(and(eq(businesses.verdict, "qualified"), eq(businesses.status, "profiled"), isNotNull(businesses.email), eq(prospects.stage, "qualified"), notInArray(businesses.id, withDraft)))
@@ -103,7 +108,7 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
       for (const b of pending) {
         if (out.drafts >= PER_TICK) break;
         if (await failedRecently(`outreach:${b.id}:0`)) continue;
-        if (await maybeAutoDraft(b.id)) out.drafts++;
+        if (await runInWorkspace(b.workspaceId, () => maybeAutoDraft(b.id))) out.drafts++;
       }
     }
   }
@@ -117,7 +122,7 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
     const room = Math.min(PER_TICK - inFlight, settings.researchPerDay - today - inFlight);
     if (waiting < settings.readyBuffer && room > 0) {
       const next = await db
-        .select({ id: businesses.id })
+        .select({ id: businesses.id, workspaceId: businesses.workspaceId })
         .from(businesses)
         .where(and(eq(businesses.status, "new"), isNotNull(businesses.website), ne(businesses.kind, "chain"), isNull(businesses.investigatedAt)))
         .orderBy(desc(businesses.leadScore))
@@ -125,7 +130,7 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
         .all();
       for (const b of next) {
         if (await failedRecently(`investigate:${b.id}`)) continue;
-        await enqueueInvestigation(b.id);
+        await runInWorkspace(b.workspaceId, () => enqueueInvestigation(b.id));
         out.research++;
       }
     }

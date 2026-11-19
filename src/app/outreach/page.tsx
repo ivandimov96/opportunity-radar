@@ -3,6 +3,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { ConfirmButton } from "@/components/confirm-button";
 import { Badge, Callout, Card, EmptyState, Flash, Icon, PageHeader, ScoreRing, StatusPill, Tabs, fmtRelative } from "@/components/ui";
 import { getConfig } from "@/lib/config";
+import { mailboxFor } from "@/lib/mail";
 import { outreachOverview, OUTREACH_TABS, type OutreachTab } from "@/lib/outreach/queries";
 import { openingLine } from "@/lib/outreach/validate";
 import { getSettings, missingSenderDetails } from "@/lib/settings";
@@ -17,6 +18,8 @@ const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString("en-US"
 export default async function OutreachPage({ searchParams }: { searchParams: Promise<{ tab?: string; ok?: string; error?: string }> }) {
   const sp = await searchParams;
   const cfg = getConfig();
+  // The mailbox as this workspace has it (only the first workspace has one for now).
+  const box = await mailboxFor();
   const [o, settings] = await Promise.all([outreachOverview(), getSettings()]);
   const c = o.counts;
   const requested = OUTREACH_TABS.some((t) => t.key === sp.tab) ? (sp.tab as OutreachTab) : null;
@@ -63,16 +66,16 @@ export default async function OutreachPage({ searchParams }: { searchParams: Pro
       <Flash msg={sp.ok} />
       <Flash msg={sp.error} tone="bad" />
 
-      {(!cfg.mail.enabled || missing.length > 0 || !cfg.ai.enabled) && (
+      {(!box.enabled || missing.length > 0 || !cfg.ai.enabled) && (
         <div className="mb-5 space-y-3">
           {!cfg.ai.enabled && (
             <Callout tone="warn" title="Emails cannot be written yet">
               Writing emails needs a model key (ANTHROPIC_API_KEY in <code>.env</code>). Research and review work without it.
             </Callout>
           )}
-          {!cfg.mail.enabled && (
+          {!box.enabled && (
             <Callout tone="info" title="No mailbox is connected, so nothing can be sent from here yet" action={<Link href={settingsHref("mailbox")} className="btn btn-sm">Connect a mailbox</Link>}>
-              {cfg.mail.reason} You can still review and approve emails, or copy one and send it yourself.
+              {box.reason} You can still review and approve emails, or copy one and send it yourself.
             </Callout>
           )}
           {missing.length > 0 && (
@@ -106,7 +109,7 @@ export default async function OutreachPage({ searchParams }: { searchParams: Pro
           </span>
           {tab === "sent" && (
             <div className="flex flex-wrap items-center gap-2">
-              {cfg.mail.enabled && (
+              {box.enabled && (
                 <form action={syncMailboxAction}>
                   <input type="hidden" name="returnTo" value={here} />
                   <button className="btn btn-sm">

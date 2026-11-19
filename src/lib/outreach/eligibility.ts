@@ -10,6 +10,7 @@ import { businesses, outreachDrafts } from "@/db/schema";
 import { emailSyntaxOk, normalizeAddress } from "@/lib/email/address";
 import { suppressionFor } from "@/lib/email/suppression";
 import type { AppSettings } from "@/lib/settings";
+import { workspaceId } from "@/lib/workspace";
 
 export type ContactBusiness = Pick<typeof businesses.$inferSelect, "id" | "email" | "emailStatus" | "country">;
 
@@ -32,7 +33,8 @@ export async function contactBlockers(biz: ContactBusiness, settings: Pick<AppSe
     .select({ name: businesses.name })
     .from(outreachDrafts)
     .innerJoin(businesses, eq(businesses.id, outreachDrafts.businessId))
-    .where(and(eq(outreachDrafts.toEmail, email), ne(outreachDrafts.businessId, biz.id), inArray(outreachDrafts.status, OUTBOUND_COMMITTED)))
+    // "Never the same address twice" is a promise inside one workspace: what another workspace sent is not ours to know or to count.
+    .where(and(eq(businesses.workspaceId, await workspaceId()), eq(outreachDrafts.toEmail, email), ne(outreachDrafts.businessId, biz.id), inArray(outreachDrafts.status, OUTBOUND_COMMITTED)))
     .limit(1)
     .get();
   if (other) reasons.push(`${email} was already emailed for ${other.name}.`);

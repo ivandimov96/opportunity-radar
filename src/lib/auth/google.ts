@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { users } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
-import { normalizeEmail, type SessionUser } from "./index";
+import { normalizeEmail, workspaceForNewUser, type SessionUser } from "./index";
 
 export const GOOGLE_STATE_COOKIE = "radar_google_state";
 export const googleConfigured = () => Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
@@ -43,9 +43,9 @@ export async function googleProfile(origin: string, code: string, nonce: string)
 export async function userForGoogle(profile: { email: string; name: string }): Promise<SessionUser> {
   const db = await getDb();
   const row = await db.select().from(users).where(eq(users.email, profile.email)).get();
-  if (row) return { id: row.id, email: row.email, name: row.name, role: row.role === "owner" ? "owner" : "member" };
+  if (row) return { id: row.id, email: row.email, name: row.name, role: row.role === "owner" ? "owner" : "member", workspaceId: row.workspaceId };
   const first = !(await db.select({ id: users.id }).from(users).limit(1).get());
-  const user: SessionUser = { id: newId(), email: profile.email, name: profile.name, role: first ? "owner" : "member" };
+  const user: SessionUser = { id: newId(), email: profile.email, name: profile.name, role: first ? "owner" : "member", workspaceId: await workspaceForNewUser(first, profile.name) };
   // No password: this account signs in with Google only (the marker can never match a typed password).
   await db.insert(users).values({ ...user, passwordHash: "google", createdAt: nowIso() }).run();
   return user;

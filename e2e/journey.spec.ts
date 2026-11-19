@@ -292,21 +292,26 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await expect(page.getByText("Needs a key").first()).toBeVisible();
 });
 
-test("new search form shows Google Maps as the only active source and planned sources that cannot be selected", async ({ page }) => {
+test("new search form takes any kind of business in plain words and says what the search will cost", async ({ page }) => {
   await page.goto("/searches/new");
-  const maps = page.getByRole("checkbox", { name: "Google Maps" });
-  if (await maps.isEnabled()) await expect(maps).toBeChecked();
-  else await expect(page.getByText(/Unavailable here: Set SERPER_API_KEY/)).toBeVisible(); // no key in the test environment
-  await expect(page.getByRole("checkbox", { name: "Overture Maps" })).toHaveCount(0);
-  await expect(page.getByRole("checkbox", { name: "OpenStreetMap" })).toHaveCount(0);
-  for (const name of ["Foursquare Places API", "Web Search APIs", "LinkedIn Sales Navigator"]) {
-    const box = page.getByRole("checkbox", { name });
-    await expect(box).toBeDisabled();
-    await expect(box).not.toBeChecked();
-  }
-  await expect(page.getByText("New", { exact: true })).toHaveCount(3);
-  await expect(page.getByText(/B2B company discovery, account research and sales prospecting/)).toBeVisible();
-  await expect(page.getByText(/not selectable/).first()).toBeVisible();
+  // No list of sources to choose from: the form says so when search is not set up (no key in the test environment).
+  await expect(page.getByRole("checkbox", { name: "Google Maps" })).toHaveCount(0);
+  await expect(page.getByRole("checkbox", { name: /Foursquare/ })).toHaveCount(0);
+  await expect(page.getByText("Search is not set up yet")).toBeVisible();
+  // Any kind of business, typed; the cost follows the choices.
+  const kind = page.getByLabel("Kind of business");
+  await kind.fill("sign makers");
+  const cost = page.getByLabel("Expected cost");
+  await expect(cost).toContainText("9 search credits");
+  await expect(cost).toContainText("Total");
+  await page.locator('input[name="maxResults"]').fill("20");
+  await expect(cost).toContainText("Research, up to 20");
+  await page.getByText("Research them straight away").click(); // research off: only the search itself costs something
+  await expect(cost).toContainText("not started");
+  // Typing a word a ready-made type covers offers that type; it is never switched on its own.
+  await kind.fill("dentist");
+  await page.getByRole("button", { name: "Dental practices" }).first().click();
+  await expect(page.getByRole("button", { name: "Orthodontics" })).toBeVisible();
   // Any country: regions load for the chosen one and the city list follows.
   await page.locator('select[name="country"]').selectOption("DE");
   await expect(page.locator('select[name="region"] option', { hasText: "Bavaria" })).toHaveCount(1);
@@ -316,9 +321,13 @@ test("new search form shows Google Maps as the only active source and planned so
 
 test("search form validates inline, keeps values and suggests cities by state", async ({ page }) => {
   await page.goto("/searches/new");
-  // Category chips narrow the search and are reflected in the live summary.
+  // Sub-category chips narrow the search; each one is its own query, and the cost says so.
+  const cost = page.getByLabel("Expected cost");
   await page.getByRole("button", { name: /Tire shops/ }).click();
-  await expect(page.getByText(/1 of 6 categories/)).toBeVisible();
+  await expect(cost).toContainText("9 search credits");
+  await page.getByRole("button", { name: /Transmission specialists/ }).click();
+  await expect(cost).toContainText("18 search credits");
+  await page.getByRole("button", { name: /Transmission specialists/ }).click();
   // City suggestions follow the selected state (bundled GeoNames data, no network).
   await page.locator('select[name="region"]').selectOption("MN");
   const city = page.locator('input[name="city"]');
@@ -326,8 +335,8 @@ test("search form validates inline, keeps values and suggests cities by state", 
   await expect(page.getByRole("option", { name: /Austin, Minnesota/ })).toBeVisible();
   await page.getByRole("option", { name: /Austin, Minnesota/ }).click();
   await expect(city).toHaveValue("Austin");
-  await page.getByLabel("Radius around the center").check();
-  await expect(page.getByText(/center 43\.6666/)).toBeVisible();
+  await expect(page.locator('input[name="centerLat"]')).toHaveValue(/^43\.66/); // the centre comes with the chosen city
+  await page.getByLabel("Around the centre").check();
   // Invalid: no city, bad radius.
   await city.fill("");
   await page.locator('input[name="radiusKm"]').fill("500");
@@ -339,11 +348,6 @@ test("search form validates inline, keeps values and suggests cities by state", 
   await expect(page.locator('input[name="maxResults"]')).toHaveValue("7");
   await expect(page.locator('select[name="region"]')).toHaveValue("MN");
   await expect(page.getByRole("button", { name: /Tire shops/ })).toHaveAttribute("aria-pressed", "true");
-  // Only Google Maps is selectable; planned ones are shown but disabled; there is no demo source.
-  await expect(page.getByRole("checkbox", { name: "Google Maps" })).toHaveCount(1);
-  await expect(page.getByRole("checkbox", { name: /Foursquare/ })).toBeDisabled();
-  await expect(page.getByRole("checkbox", { name: "Demo data" })).toHaveCount(0);
-  await expect(page.getByText("Extras")).toHaveCount(0);
 });
 
 test("mobile layout exposes navigation and the primary action", async ({ page }) => {

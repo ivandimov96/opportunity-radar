@@ -9,6 +9,7 @@ import { getDb } from "@/db/client";
 import { getConfig } from "@/lib/config";
 import { jobs } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
+import { workspaceId } from "@/lib/workspace";
 
 export type JobType = "discover_search" | "investigate_business" | "generate_outreach" | "send_email" | "sync_mailbox" | "process_reply";
 export type JobRow = typeof jobs.$inferSelect;
@@ -22,7 +23,8 @@ export async function enqueueJob(type: JobType, payload: Record<string, unknown>
   }
   const id = newId();
   const scheduledAt = new Date(Date.now() + (opts.delayMs ?? 0)).toISOString();
-  await db.insert(jobs).values({ id, type, payload, idempotencyKey: opts.idempotencyKey ?? null, maxAttempts: opts.maxAttempts ?? 3, scheduledAt }).run();
+  // The job remembers who asked for it: the worker has no signed-in user and runs the handler as this workspace.
+  await db.insert(jobs).values({ id, workspaceId: await workspaceId(), type, payload, idempotencyKey: opts.idempotencyKey ?? null, maxAttempts: opts.maxAttempts ?? 3, scheduledAt }).run();
   return { id, created: true };
 }
 
@@ -102,18 +104,20 @@ function processAlive(pid: number): boolean {
   }
 }
 
-export async function jobCounts() {
+/** Jobs by status and type: the acting workspace's own, or the whole queue for the system's own callers (the drain endpoint). */
+export async function jobCounts(scope: "workspace" | "all" = "workspace") {
   const db = await getDb();
-  return db.select({ status: jobs.status, type: jobs.type, n: sql<number>`count(*)` }).from(jobs).groupBy(jobs.status, jobs.type).all();
+  return db.select({ status: jobs.status, type: jobs.type, n: sql<number>`count(*)` }).from(jobs).where(scope === "all" ? undefined : eq(jobs.workspaceId, await workspaceId())).groupBy(jobs.status, jobs.type).all();
 }
 
+/** A job of the acting workspace; another workspace's job is "not found". */
 export async function getJob(id: string) {
   const db = await getDb();
-  return (await db.select().from(jobs).where(eq(jobs.id, id)).get()) ?? null;
+  return (await db.select().from(jobs).where(and(eq(jobs.id, id), eq(jobs.workspaceId, await workspaceId()))).get()) ?? null;
 }
 
 export async function cancelQueuedJob(id: string) {
   const db = await getDb();
-  const res = await db.update(jobs).set({ status: "cancelled", finishedAt: nowIso() }).where(and(eq(jobs.id, id), eq(jobs.status, "queued"))).run();
+  const res = await db.update(jobs).set({ status: "cancelled", finishedAt: nowIso() }).where(and(eq(jobs.id, id), eq(jobs.workspaceId, await workspaceId()), eq(jobs.status, "queued"))).run();
   return res.rowsAffected > 0;
 }
