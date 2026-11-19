@@ -23,7 +23,7 @@ import { MailSendError } from "@/lib/mail";
 import { syncMailbox } from "@/lib/mail/sync";
 import { asksToUnsubscribe, isAutoReply, isBounce, isHardBounce, parseRawEmail, stripQuoted } from "@/lib/mail/parse";
 import { openCampaign } from "@/lib/outreach/campaigns";
-import { cancelQueued, dayKey, planSendTimes, retryFailed, sendCampaign, sendPreflight } from "@/lib/outreach/send";
+import { cancelQueued, dayKey, planSendTimes, retryFailed, sendCampaign, sendPreflight, spacingLabel } from "@/lib/outreach/send";
 import { addSuppression, isSuppressed } from "@/lib/email/suppression";
 import { ensureProspect } from "@/lib/pipeline/prospects";
 import { saveSettings } from "@/lib/settings";
@@ -31,6 +31,9 @@ import { saveSettings } from "@/lib/settings";
 const BODY = "Hi team,\n\nI noticed that every replacement starts with a free in-home estimate. Would a short call be useful?";
 
 describe("planSendTimes", () => {
+  it("names the pause between two emails exactly as it is set", () => {
+    expect([50, 60, 90, 120].map(spacingLabel)).toEqual(["50 seconds", "1 minute", "1 min 30 s", "2 minutes"]);
+  });
   const base = { dailyCap: 3, spacingSeconds: 120, windowStart: 9, windowEnd: 17, jitter: () => 1 };
   it("paces sends, stays inside the sending hours and never exceeds the daily cap", () => {
     const now = new Date(2026, 10, 12, 10, 0, 0);

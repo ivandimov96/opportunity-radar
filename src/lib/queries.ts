@@ -204,10 +204,16 @@ export async function listBusinesses(f: BusinessFilters = {}) {
     lead: sql`coalesce(${businesses.leadScore}, -1)`,
     name: sql`lower(${businesses.name})`,
     updated: businesses.updatedAt,
-    discovered: businesses.createdAt,
+    // To the minute: the businesses of one search are saved together, so they stay together and the best come first within it.
+    discovered: sql`substr(${businesses.createdAt}, 1, 16)`,
     investigated: sql`coalesce(${businesses.investigatedAt}, '')`,
   }[f.sort ?? "priority"];
-  const secondary = f.sort === "priority" || !f.sort ? desc(sql`coalesce(${businesses.leadScore}, -1)`) : asc(businesses.name);
+  const secondary =
+    f.sort === "discovered"
+      ? desc(sql`coalesce(${businesses.priority}, -1) * 1000 + coalesce(${businesses.leadScore}, -1)`)
+      : f.sort === "priority" || !f.sort
+        ? desc(sql`coalesce(${businesses.leadScore}, -1)`)
+        : asc(businesses.name);
   const base = db
     .select({ business: businesses, stage: prospects.stage, nextAction: prospects.nextAction, nextActionAt: prospects.nextActionAt, oppCount: op.count, draftCount: dr.drafts })
     .from(businesses)

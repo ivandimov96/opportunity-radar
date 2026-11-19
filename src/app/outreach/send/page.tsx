@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { Callout, Card, Flash, Icon, PageHeader } from "@/components/ui";
 import { openCampaign } from "@/lib/outreach/campaigns";
-import { sendPreflight } from "@/lib/outreach/send";
+import { sendPreflight, spacingLabel } from "@/lib/outreach/send";
 import { getSettings } from "@/lib/settings";
 import { settingsHref } from "@/lib/settings-nav";
 import { sendCampaignAction } from "@/app/actions";
@@ -73,7 +73,7 @@ export default async function SendPage({ searchParams }: { searchParams: Promise
               <p>Checked just now for every recipient: a valid address, not on your do-not-contact list, not emailed before, no duplicate in this batch.</p>
               {pre.plan && (
                 <p>
-                  One at a time, about {Math.round(settings.sendSpacingSeconds / 60) || 1} min apart, at most {settings.dailySendCap} a day between {settings.sendWindowStart}:00 and {settings.sendWindowEnd}:00.
+                  One at a time, about {spacingLabel(settings.sendSpacingSeconds)} apart, at most {settings.dailySendCap} a day between {settings.sendWindowStart}:00 and {settings.sendWindowEnd}:00.
                   {pre.plan.perDay.length > 1 ? ` ${pre.plan.perDay.map(([k, c]) => `${c} on ${day(k)}`).join(", ")}.` : ` First ${time(pre.plan.firstAt)}, last ${time(pre.plan.lastAt)}.`}
                 </p>
               )}

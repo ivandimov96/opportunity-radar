@@ -52,8 +52,8 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   // The "Suggest" button sits inside the subject field (off here: no model key in the test environment);
   // suggestions from an earlier press are listed under the field, and clicking one puts it in the field.
   await expect(page.getByRole("button", { name: "Suggest" })).toBeDisabled();
-  await page.getByRole("button", { name: "estimates that follow up?" }).click();
-  await expect(subject).toHaveValue("estimates that follow up?");
+  await page.getByRole("button", { name: "Estimates that follow up?" }).click();
+  await expect(subject).toHaveValue("Estimates that follow up?");
   await expect(page.getByText(/not saved yet/)).toBeVisible();
   await subject.fill("Edited subject line");
   await page.getByRole("button", { name: "Approve", exact: true }).click();

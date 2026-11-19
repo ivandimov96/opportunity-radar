@@ -86,14 +86,19 @@ src/lib/jobs/       queue, worker, scheduler, job handlers
      raised as questions.
    - The writer produces subject, body and the list of statements it makes about
      the business with the evidence for each. The email is a short, friendly
-     note (70 to 120 words): something specific it noticed, one line on who is
-     writing, the idea in everyday words with at most one example, and an easy
-     invitation to a short call or a reply. The parts of the solution are given
-     to the writer as background only; it is told not to list them.
+     note of four parts (40 to 60 words): the greeting by the company's own
+     name (`company-name.ts`), one sentence on something specific it noticed,
+     who is writing with the idea as a gain, and one closing question that
+     takes a word to answer (may I send a short mock-up?). One idea only; a
+     different idea from the research is kept for the follow-up. No call is
+     proposed in a first email. The parts of the
+     solution are given to the writer as background only; it is told not to
+     list them.
    - **Fixed checks** read the text: length, stock phrases, placeholders,
      statements of absence, numbers and product names that are not in the
-     evidence, links, a missing invitation, a subject or opening repeated within
-     the batch.
+     evidence, links, a first email without a question (held back) or with
+     several questions, a proposed call or a long opening sentence (remarks), a
+     subject or opening repeated within the batch.
    - An **independent claim check** (a second call that did not write the email)
      lists every statement about the business and marks it supported, phrased as
      a question, or unsupported.

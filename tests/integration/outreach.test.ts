@@ -24,11 +24,11 @@ import { ensureProspect } from "@/lib/pipeline/prospects";
 
 const BODY = `Hi Northside Air team,
 
-I was reading about your Comfort Club and noticed that every system replacement starts with a free in-home estimate. That is a nice touch, on top of the tune-ups your members get twice a year.
+I was reading about your Comfort Club and noticed that every system replacement starts with a free in-home estimate.
 
-I'm Ivan, and I build small software tools for service businesses. It made me wonder how those estimate visits get booked today. If it is a lot of back-and-forth, a small scheduling flow could let people pick a visit time themselves, alongside the tools you already run.
+I'm Ivan, and I build small software tools for service businesses. It made me wonder whether people could pick a visit time themselves, alongside the tools you already run.
 
-Would a short call next week be useful? If it is not a priority, no problem at all.`;
+Shall I send over a short mock-up of how that could look?`;
 const CLAIMS = [{ text: "every system replacement starts with a free in-home estimate", fact_keys: ["o1"] }];
 const usage = (cost: number) => ({ input: 10, output: 10, cacheRead: 0, cacheWrite: 0, costUsd: cost });
 const written = (subject: string, body = BODY) => ({ data: { subject, body, claims: CLAIMS }, model: "writer-model", usage: usage(0.02) });
@@ -78,7 +78,7 @@ describe("outreach engine", () => {
     await enqueueOutreach(id);
     expect(await drainQueue(["generate_outreach"])).toBe(1);
     const [d] = await draftOf(id);
-    expect(d).toMatchObject({ status: "ready", step: 0, toEmail: "office@northside.example", subject: "Booking your in-home estimates", model: "writer-model", promptVersion: "outreach-7" });
+    expect(d).toMatchObject({ status: "ready", step: 0, toEmail: "office@northside.example", subject: "Booking your in-home estimates", model: "writer-model", promptVersion: "outreach-10" });
     expect(d.costUsd).toBeCloseTo(0.025);
     expect(d.validation).toMatchObject({ passed: true, checkedBy: "check-model" });
     expect(d.validation?.issues).toEqual([{ severity: "warn", code: "tone", message: "Tone: slightly formal" }]);
@@ -99,7 +99,11 @@ describe("outreach engine", () => {
     // The idea reaches the writer in plain words; its parts are background, not a list to recite.
     expect(w.user).toContain("In plain words: Every replacement starts with a home visit; people could pick the time themselves.");
     expect(w.user).toMatch(/Background for you only, not for the email[\s\S]*Slot picker/);
-    expect(w.system).toMatch(/70 to 120 words/);
+    expect(w.system).toMatch(/40 to 60 words/);
+    // Four short parts: one sentence on what was noticed, one idea as a gain, one small ask (a mock-up, no call).
+    expect(w.system).toMatch(/ONE sentence \(18 words at most\)[\s\S]*Only the gain[\s\S]*End with exactly ONE question[\s\S]*Do not propose a call or a meeting[\s\S]*One idea only/);
+    expect(w.user).toContain("Booking link: (not used in a first email: include no links)");
+    expect(w.user).not.toContain("A question worth asking them");
     expect(w.system).toMatch(/The subject decides whether the email is opened/);
     expect(w.user).not.toContain("A SECOND IDEA"); // this business has no alternative idea
     // The checker saw the email and the same evidence, not the writer's claims.
@@ -232,12 +236,15 @@ describe("outreach engine", () => {
     const draftId = newId();
     await db.insert(outreachDrafts).values({ id: draftId, businessId: id, step: 0, style: "personal", toEmail: "office@idea.example", subject: "S", body: BODY, claims: [], warnings: [], status: "ready" }).run();
 
-    // While it is an alternative, the email mentions it in one line: the writer is handed it as a second idea.
+    // A first email raises one idea only: the alternative is kept for the follow-up.
     const calls = model({ outreach: [written("Idea for your estimate visits")], check: [checked()] });
     await enqueueOutreach(id);
     await drainQueue();
     const w2 = calls.find((c) => c.stage === "outreach")!;
-    expect(w2.user).toMatch(/A SECOND IDEA \(one short line near the end at most[\s\S]*Every job on one board/);
+    expect(w2.user).not.toContain("A SECOND IDEA");
+    const { buildOutreachInput } = await import("@/lib/ai/outreach");
+    const followUpInput = buildOutreachInput({ business: { id, name: "Idea Air" }, greeting: "Hi Idea Air team,", sender: { name: "Ivan", company: "", offer: "", bookingLink: "", voiceSamples: "" }, opportunity: { title: "T", problemHypothesis: "P", proposedSolution: "S", whyRelevant: null, components: [], validationQuestions: [] }, also: { inPlainWords: "Every job on one board." }, pack: { verified: [], notSeen: [], haystack: "" } as never, step: 1, firstEmail: { subject: "S", body: BODY }, others: [] });
+    expect(followUpInput).toMatch(/A SECOND IDEA \(it can be the new angle of this follow-up[\s\S]*Every job on one board/);
 
     expect(await chooseIdea(id, altId)).toEqual({ ok: true, title: "Every job on one board", withdrawn: 1 });
     const roles = Object.fromEntries((await db.select().from(opportunities).where(eq(opportunities.businessId, id)).all()).map((o) => [o.title, o.role]));
@@ -312,18 +319,19 @@ describe("outreach engine", () => {
     });
 
     expect(await suggestSubjectsFor(draftId)).toEqual({ ok: true, count: 2 });
-    expect((await subjectIdeasFor(draftId))!.options).toEqual(["a thought on your estimates", "estimate visits, booked faster?"]);
+    // Offered with a capital first letter, whatever the model returned.
+    expect((await subjectIdeasFor(draftId))!.options).toEqual(["A thought on your estimates", "Estimate visits, booked faster?"]);
     expect(calls[0].system).toMatch(/alternative subject lines/);
     expect(calls[0].user).toContain("- Booking your in-home estimates"); // the current subject is named as already tried
     expect(calls[0].user).toContain("I was reading about your Comfort Club"); // the email itself is given
 
     // Picking one is an ordinary edit of the subject: the body stays, the fixed checks run again.
-    expect(await saveDraftEdit(draftId, "estimate visits, booked faster?", BODY)).toEqual({ ok: true });
+    expect(await saveDraftEdit(draftId, "Estimate visits, booked faster?", BODY)).toEqual({ ok: true });
     const after = (await db.select().from(outreachDrafts).where(eq(outreachDrafts.id, draftId)).get())!;
-    expect(after).toMatchObject({ subject: "estimate visits, booked faster?", body: BODY, status: "ready", editedByUser: true });
+    expect(after).toMatchObject({ subject: "Estimate visits, booked faster?", body: BODY, status: "ready", editedByUser: true });
 
     // A second request is told what was already suggested, so it brings new ones.
     await suggestSubjectsFor(draftId);
-    expect(calls[1].user).toContain("- a thought on your estimates");
+    expect(calls[1].user).toContain("- A thought on your estimates");
   });
 });

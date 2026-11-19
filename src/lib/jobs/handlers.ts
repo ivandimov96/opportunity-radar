@@ -11,6 +11,7 @@ import { getConfig } from "@/lib/config";
 import { runDiscovery, type RunOutcome } from "@/lib/discovery/engine";
 import { investigateWithModel, AiRefusalError, AiSpendLimitError, AiUnavailableError } from "@/lib/ai";
 import { greetingFor, writeOutreachEmail } from "@/lib/ai/outreach";
+import { companyNameFor } from "@/lib/outreach/company-name";
 import { buildEvidencePack } from "@/lib/outreach/evidence";
 import { batchPeers } from "@/lib/outreach/drafts";
 import { contactBlockers, OUTBOUND_COMMITTED } from "@/lib/outreach/eligibility";
@@ -486,7 +487,7 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
   if (step === 1 && !first) throw new NonRetryableError("A follow-up needs a first email that was sent");
   if (step === 1 && committed.some((d) => d.step === 1)) throw new NonRetryableError("A follow-up was already sent to this business");
 
-  // One alternative from the research, preferably of a different kind than the main idea, to mention in a single line.
+  // One alternative from the research, preferably of a different kind than the main idea: the follow-up may raise it.
   const alternatives = await db.select().from(opportunities).where(and(eq(opportunities.businessId, businessId), eq(opportunities.role, "secondary"), eq(opportunities.source, "ai"))).orderBy(desc(opportunities.attractivenessScore)).all();
   const alternative = alternatives.find((a) => a.id !== opp.id && a.scope && a.scope !== opp.scope) ?? alternatives.find((a) => a.id !== opp.id && a.category !== opp.category) ?? null;
   const settings = await getSettings();
@@ -494,12 +495,15 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
   const [factRows, obsRows] = await Promise.all([db.select().from(facts).where(eq(facts.businessId, businessId)).all(), db.select().from(observations).where(eq(observations.businessId, businessId)).all()]);
   const pack = buildEvidencePack(factRows, obsRows, opp);
   const others = await batchPeers(campaign.id, businessId, step);
+  // The company's own name: a map listing may carry a branch or be a search phrase (see company-name.ts).
+  const pageRows = await db.select({ text: pages.text, title: pages.title }).from(pages).where(eq(pages.businessId, businessId)).all();
+  const companyName = companyNameFor(biz.name, biz.website, pageRows.map((p) => p.text ?? ""), pageRows.map((p) => p.title ?? ""));
   progress({ message: step === 1 ? "Writing the follow-up" : "Writing the email" });
   let out: Awaited<ReturnType<typeof writeOutreachEmail>>;
   try {
     out = await writeOutreachEmail({
-      business: { id: biz.id, name: biz.name, city: biz.city, region: biz.region, category: biz.category },
-      greeting: greetingFor(biz.name),
+      business: { id: biz.id, name: companyName, city: biz.city, region: biz.region, category: biz.category },
+      greeting: greetingFor(companyName),
       sender: { name: settings.senderName, company: settings.senderCompany, offer: settings.offer, bookingLink: settings.bookingLink, voiceSamples: settings.voiceSamples },
       // The plain-words pitch is only trusted from the model: the fixed rule patterns phrase theirs around what was not found.
       opportunity: { title: opp.title, problemHypothesis: opp.problemHypothesis, proposedSolution: opp.proposedSolution, whyRelevant: opp.whyRelevant, pitch: opp.source === "ai" ? opp.salesAngle : null, expectedValue: opp.expectedValue, scope: opp.scope, components: (opp.components ?? []).map((c) => ({ name: c.name, description: c.description })), validationQuestions: opp.validationQuestions },

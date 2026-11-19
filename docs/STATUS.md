@@ -1,5 +1,21 @@
 # Implementation status
 
+## 2026-11-19: smaller ask, shorter opening, varied main idea (decision D42)
+
+- No reply to the first eight emails after one working day. Three changes chosen by the founder,
+  made without any model call and not yet seen in a live email: one closing question offering a
+  short mock-up in place of the call (outreach-8), a one-sentence opening and 60 to 90 words, and
+  the enquiry-form idea no longer the default main idea (research-6).
+- First live run in a second business type (forklift training providers, Manchester): 15 found,
+  3 researched, all 3 qualified with reminder ideas (not the enquiry form). The founder found the
+  emails still too detailed: decision D43 (40 to 60 words, one idea, the company's own name in the
+  greeting, alternative idea moved to the follow-up; outreach-9).
+- Second live run (sign makers, Leeds, 3 found): two emails of about 50 words in the D43 shape;
+  the founder approved the shape and asked for stronger subjects (D44, outreach-10, not yet seen
+  live). Two of the three were franchises of chains that the chain filter did not catch.
+- The Businesses table opens with the most recently found first.
+- 213 unit and integration tests pass.
+
 ## 2026-11-18: interface reorganised (decision D37), mailbox connected, data reset
 
 - Interface: dashboard leads with what is waiting, funnel in one strip, this month's use; sidebar

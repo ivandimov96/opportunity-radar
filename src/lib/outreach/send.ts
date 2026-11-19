@@ -33,6 +33,14 @@ export interface SendPlanOptions {
   jitter?: (i: number) => number;
 }
 
+/** The pause between two emails in words, exactly as set: "50 seconds", "2 minutes", "1 min 30 s". */
+export function spacingLabel(seconds: number): string {
+  if (seconds < 60) return `${seconds} seconds`;
+  const m = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${m} min ${rest} s` : `${m} minute${m === 1 ? "" : "s"}`;
+}
+
 /** When each of `n` emails goes out: paced, inside the sending hours, never more than the daily cap on any day. */
 export function planSendTimes(now: Date, n: number, o: SendPlanOptions): Date[] {
   const used: Record<string, number> = { ...(o.usedByDay ?? {}) };

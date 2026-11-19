@@ -51,7 +51,7 @@ const VIEWS: { key: QuickKey; label: string; always?: boolean }[] = [
 export default async function BusinessesPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;
   const cfg = getConfig();
-  const t = parseTableParams(sp, { defaultSort: "priority", sortable: [...BUSINESS_SORTS], pageSize: 50, dateFields: BUSINESS_DATE_FIELDS.map((d) => d.key) });
+  const t = parseTableParams(sp, { defaultSort: "discovered", sortable: [...BUSINESS_SORTS], pageSize: 50, dateFields: BUSINESS_DATE_FIELDS.map((d) => d.key) });
   // The period: the last 7 days unless the URL says otherwise (see src/lib/date-range.ts).
   const period = resolveRange(sp);
   const { fromIso, toIso } = rangeBounds(period);

@@ -61,7 +61,10 @@ const SUBJECT_ADWORD_RE = /\b(free|offers?|discounts?|deals?|save|savings|guaran
 /** A subject dressed up as a reply or a forward: misleading, and against the rules for commercial email. */
 const SUBJECT_FAKE_THREAD_RE = /^\s*(re|fw|fwd)\s*:/i;
 const CRITICISM_RE = /\b(outdated|old-fashioned|clunky|unprofessional|poorly|sloppy|amateurish|behind the times|badly)\b/i;
-const INVITATION_RE = /\b(call|chat|meeting|meet|conversation|talk|coffee|zoom|video)\b/i;
+/** A call or meeting proposed in the text. In a first email the only ask is one question that takes a word to answer. */
+const CALL_OFFER_RE = /\b(?:\d+|ten|fifteen|twenty|thirty)[- ]minute (?:call|chat|meeting|conversation)\b|\b(?:a|quick|short|brief) (?:(?:quick|short|brief|video|phone|zoom) )?(?:call|chat|meeting|zoom)\b|\b(?:hop|jump|get) on a\b|\bbook a (?:time|slot)\b/i;
+/** The opening sentence of a first email: one specific thing, not a tour of their website. */
+export const OPENING_MAX_WORDS = 20;
 const URL_RE = /(?:https?:\/\/|www\.)[^\s<>)"']+/gi;
 const EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i;
 const NUMBER_RE = /\d[\d.,:/-]*\d|\d/g;
@@ -79,12 +82,13 @@ function knownTools(): string[] {
 
 /**
  * Words in the body. A first email is a short, friendly note: long enough to
- * say one specific thing, short enough to be read on a phone. Outside the soft
- * range is a remark; outside the hard range holds the email back.
+ * say one specific thing, short enough to be read at a glance on a phone.
+ * Outside the soft range is a remark; outside the hard range holds the email
+ * back.
  */
 export const EMAIL_LENGTH = {
-  first: { hardMin: 45, softMin: 65, softMax: 135, hardMax: 160 },
-  followUp: { hardMin: 25, softMin: 35, softMax: 90, hardMax: 110 },
+  first: { hardMin: 25, softMin: 35, softMax: 65, hardMax: 85 },
+  followUp: { hardMin: 20, softMin: 25, softMax: 60, hardMax: 80 },
 } as const;
 
 export function wordCount(body: string): number {
@@ -143,6 +147,12 @@ export function stripSignoff(body: string, senderName?: string | null): string {
   return lines.join("\n").trim();
 }
 
+/** A subject starts with a capital letter: "an idea for your proofs" → "An idea for your proofs". Nothing else is changed. */
+export function capitalizeSubject(subject: string): string {
+  const s = subject.trim();
+  return s.replace(/^(["“'‘]*)([a-zà-ÿ])/, (_, lead: string, ch: string) => lead + ch.toUpperCase());
+}
+
 /** Would this subject pass the fixed checks without a remark? Used to filter suggested subjects before they are offered. */
 export function subjectIsClean(subject: string, others: { subject: string }[] = []): boolean {
   const s = subject.trim();
@@ -170,6 +180,7 @@ export function checkEmailText(email: EmailText, ctx: CheckContext): DraftIssue[
       if (ad) block("subject_adword", `The subject contains "${ad[0]}", which reads like an advert and can land the email in spam.`);
       if (SUBJECT_FAKE_THREAD_RE.test(subject)) block("subject_fake_thread", "The subject pretends to be a reply or a forward.");
     }
+    if (ctx.step === 0 && capitalizeSubject(subject) !== subject) warn("subject_lowercase", "The subject does not start with a capital letter.");
     if (/!/.test(subject)) warn("subject_exclamation", "The subject contains an exclamation mark.");
     if ((subject.match(/\?/g) ?? []).length > 1) warn("subject_questions", "The subject contains more than one question mark.");
     if (subject.length > 6 && subject === subject.toUpperCase() && /[A-Z]/.test(subject)) warn("subject_caps", "The subject is in capitals.");
@@ -198,7 +209,16 @@ export function checkEmailText(email: EmailText, ctx: CheckContext): DraftIssue[
   const crit = CRITICISM_RE.exec(body);
   if (crit) warn("criticism", `May read as criticism ("${crit[0]}").`);
   if ((body.match(/!/g) ?? []).length > 1) warn("exclamation", "Contains more than one exclamation mark.");
-  if (ctx.step === 0 && !INVITATION_RE.test(body)) block("no_invitation", "There is no invitation to a short call or meeting.");
+  if (ctx.step === 0) {
+    // One small ask: a single question that can be answered in a word, and no call to agree to.
+    const questions = (body.match(/\?/g) ?? []).length;
+    if (questions === 0) block("no_question", "The email does not end with a question. One easy question gives them something to answer.");
+    else if (questions > 1) warn("several_questions", `The email asks ${questions} questions. One easy question gets more answers.`);
+    const call = CALL_OFFER_RE.exec(body);
+    if (call) warn("call_offer", `Proposes a call ("${call[0]}"). In a first email, a question that takes one word to answer is easier to say yes to.`);
+    const openingWords = wordCount(openingLine(body));
+    if (openingWords > OPENING_MAX_WORDS) warn("long_opening", `The opening sentence is long (${openingWords} words). One short, specific line is enough.`);
+  }
   if (!/^(hi|hello|dear|good (morning|afternoon))\b/i.test(body.trim())) warn("greeting", "The email does not start with a greeting.");
 
   // Links and addresses: only the operator's booking link may appear.

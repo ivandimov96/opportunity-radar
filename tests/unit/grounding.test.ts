@@ -158,7 +158,8 @@ describe("what the research may propose", () => {
     expect(Object.keys(SOLUTION_GUIDE).sort()).toEqual(OPPORTUNITY_CATEGORY_KEYS.filter((k) => k !== "other").sort());
     expect(system).toContain("job_tracking (Job and production tracking)");
     expect(system).toMatch(/internal: a tool for the people who work there/);
-    expect(system).toMatch(/Do not default to improving the enquiry form/);
+    // The enquiry-form idea is not the default main idea.
+    expect(system).toMatch(/It may be the primary only when a page itself states the trouble[\s\S]*the form idea is at most a secondary/);
     expect(system).toMatch(/up to two secondary opportunities that are genuinely different/);
   });
 });

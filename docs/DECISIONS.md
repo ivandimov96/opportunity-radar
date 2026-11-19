@@ -500,3 +500,45 @@ last 7 days as the default.
   subjects for the email as written (`suggestSubjects`); only suggestions that pass the fixed
   subject checks and were not tried before are offered, and choosing one changes the subject only.
 
+## D42 — A smaller ask, a shorter opening, and a main idea that varies (2026-11-19)
+The first eight real emails all had the same shape: two sentences repeating the company's website
+back to it, an idea that in seven of eight cases was "a better enquiry form", a question, and an
+offer of a 15-minute call. The founder chose three changes; no model was called to make them.
+- One small ask (outreach-8): a first email ends with exactly one question, the offer to send a
+  short mock-up of the idea for their company. No call, no second question, nothing after it. The
+  founder makes the mock-up when someone says yes. Fixed checks: a first email without a question
+  is held back; several questions or a proposed call are remarks. A follow-up may still offer a
+  call and use the booking link.
+- Shorter: the opening is one sentence about one thing (20 words at most; a remark above 22), and
+  the body is 60 to 90 words, up to 100 with the one-line second idea (remarks outside 55 to 100,
+  held back outside 40 to 125).
+- Varied ideas (research-6): collecting more details in the enquiry or quote form may be the main
+  idea only when a page itself states the trouble, or when no internal or new-for-customers idea
+  meets the bar; otherwise it is at most an alternative. This applies to research run from now on;
+  businesses already researched keep their ideas (the operator can still pick the alternative with
+  "Raise this idea instead").
+
+## D43 — Shorter still, one idea per email, and the company's own name (2026-11-19)
+The first three emails in the D42 shape (forklift training providers, Manchester) were 90 to 106
+words; the founder found them too detailed and left the shape to us.
+- Four parts, 40 to 60 words (outreach-9): greeting, one sentence on one thing noticed (18 words
+  at most), who is writing plus the idea as a gain only (no how, no options, no examples), and the
+  mock-up question (15 words at most). Fixed checks: remarks outside 35 to 65 words, held back
+  outside 25 to 85; opening sentence remark above 20 words.
+- One idea per email. The one-line mention of a second idea (D39) is dropped from the first email:
+  it added a second topic and a dozen words. The alternative idea is handed to the follow-up
+  instead, where it can be the new angle. Follow-ups are 30 to 55 words.
+- The company's own name (`src/lib/outreach/company-name.ts`): a map listing may carry a branch
+  ("… - Leeds North") or be a search phrase ("Forklift Training"). The branch is dropped;
+  and when the listing name does not match the web address but the site states a registered
+  company name that does, that name is used. Decided in code from stored pages, no model call.
+  Rejected: a new research field for the name, which would have meant paying to research again.
+
+## D44 — Subjects: clear at a glance, about their gain, capital first letter (2026-11-19)
+The founder liked the short emails and asked for subjects that catch the eye and start with a
+capital letter. Subject rules (shared by the writer and "Suggest", outreach-10): 2 to 5 words,
+sentence case with a capital first letter, clear to someone who has not read the email (no
+compressed phrases such as "proof to fitted"), about them and what they would gain, as a short
+honest question or a plain statement. The capital is not left to the model: `capitalizeSubject`
+applies it to every written and suggested subject, and a subject typed in lower case by the
+operator gets a remark. Advert words, fake "Re:" and duplicates within a batch stay blocked.

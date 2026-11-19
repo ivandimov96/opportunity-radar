@@ -10,7 +10,7 @@ import type { DraftIssue, DraftValidation } from "@/db/schema";
 import { getConfig } from "@/lib/config";
 import { nowIso } from "@/lib/ids";
 import { renderEvidencePack, type EvidencePack } from "@/lib/outreach/evidence";
-import { checkEmailText, hasBlock, introLine, openingLine, stripSignoff, subjectIsClean, type EmailText } from "@/lib/outreach/validate";
+import { capitalizeSubject, checkEmailText, hasBlock, introLine, openingLine, stripSignoff, subjectIsClean, type EmailText } from "@/lib/outreach/validate";
 import { callStructured } from "./client";
 import { CHECK_SYSTEM, FOLLOWUP_SYSTEM, OUTREACH_SYSTEM, SUBJECTS_SYSTEM } from "./prompts";
 import { EmailCheckSchema, OutreachSchema, SubjectsSchema } from "./schemas";
@@ -33,7 +33,7 @@ export interface OutreachContext {
     components: { name: string; description: string }[];
     validationQuestions: string[];
   };
-  /** A different idea from the research, mentioned in one short line so the reader sees there is more on offer. */
+  /** A different idea from the research. The first email raises one idea only; this one can be the new angle of the follow-up. */
   also?: { inPlainWords: string; scope?: string | null } | null;
   pack: EvidencePack;
   /** 0 = first email, 1 = follow-up in the same thread. */
@@ -48,17 +48,19 @@ export interface OutreachContext {
 /** How the writer should carry each kind of idea: the less a website can show, the more the email asks. */
 const SCOPE_NOTE: Record<string, string> = {
   existing: "It improves something their website shows they already offer. You may refer to that thing as it is described in the evidence.",
-  new_for_customers: "It is something new for their customers that their website does not show. They may already have it out of sight: offer it as a thought and ask, never say or imply they are missing it.",
-  internal: "It is a tool for the people who work there. You cannot see from outside how they run this today, so say that lightly and ask how they handle it; base the idea only on what the evidence says about the work they do.",
+  new_for_customers: "It is something new for their customers that their website does not show. They may already have it out of sight: offer it as a thought, never say or imply they are missing it.",
+  internal: "It is a tool for the people who work there. You cannot see from outside how they run this today, so say that lightly and offer the idea as a guess; base it only on what the evidence says about the work they do.",
 };
 
 /**
  * The first line of every email: the company, never a person. A name found on
  * a website may be out of date, misspelled or simply not the one who reads the
- * inbox, and a wrong name is worse than none.
+ * inbox, and a wrong name is worse than none. Only a legal form (Ltd, LLC,
+ * Inc) is dropped: "Co." stays, because it is part of how a company is called
+ * ("The Harbour Sign Co.").
  */
 export function greetingFor(businessName: string): string {
-  const name = businessName.replace(/\s*(,?\s*(LLC|L\.L\.C\.|Inc\.?|L\.P\.|LP|LLP|PLC|Co\.?|Corp\.?|Ltd\.?|Limited))+$/i, "").trim();
+  const name = businessName.replace(/\s*(,?\s*(LLC|L\.L\.C\.|Inc\.?|L\.P\.|LP|LLP|PLC|Corp\.?|Ltd\.?|Limited))+$/i, "").trim();
   return name && name.length <= 60 ? `Hi ${name} team,` : "Hello,";
 }
 
@@ -72,7 +74,7 @@ export function buildOutreachInput(ctx: OutreachContext, problems: string[] = []
 Greeting to use as the first line: ${ctx.greeting}
 
 Sender: ${ctx.sender.name || "the owner"}${ctx.sender.company ? ` of ${ctx.sender.company}` : ""}. What the sender does: ${ctx.sender.offer || "custom software, integrations and automation"}.
-Booking link: ${ctx.sender.bookingLink || "(none: include no links)"}
+Booking link: ${ctx.step === 1 ? ctx.sender.bookingLink || "(none: include no links)" : "(not used in a first email: include no links)"}
 ${ctx.sender.voiceSamples.trim() ? `\nVoice samples written by the sender (match rhythm and word choice only):\n<voice>\n${ctx.sender.voiceSamples.trim().slice(0, 4000)}\n</voice>\n` : ""}
 <website_content>
 ${renderEvidencePack(ctx.pack)}
@@ -85,9 +87,8 @@ What it is called internally: ${o.title}
 What might be going on (a guess, never to be stated as a fact): ${o.problemHypothesis}
 What it would be worth to them: ${o.expectedValue?.trim() || "n/a"}
 Why it fits this business: ${o.whyRelevant ?? "n/a"}
-A question worth asking them: ${o.validationQuestions.slice(0, 2).join(" | ") || "n/a"}
-
-${ctx.also?.inPlainWords.trim() ? `A SECOND IDEA (one short line near the end at most, as another thought you would be glad to share; no detail, no statement about their business):
+${ctx.step === 1 ? `A question worth asking them: ${o.validationQuestions.slice(0, 2).join(" | ") || "n/a"}\n` : ""}
+${ctx.step === 1 && ctx.also?.inPlainWords.trim() ? `A SECOND IDEA (it can be the new angle of this follow-up, in one or two plain sentences; no statement about their business beyond the evidence):
 ${ctx.also.inPlainWords.trim()}
 
 ` : ""}Background for you only, not for the email (do not list these parts; pick at most one as an example):
@@ -161,7 +162,7 @@ Write five alternative subjects.`,
   const seen = new Set([input.subject, ...input.tried].map((s) => s.trim().toLowerCase()));
   const subjects: string[] = [];
   for (const raw of res.data.subjects) {
-    const s = raw.trim().replace(/^["“]|["”]$/g, "");
+    const s = capitalizeSubject(raw.trim().replace(/^["“]|["”]$/g, ""));
     if (!subjectIsClean(s, input.others) || seen.has(s.toLowerCase())) continue;
     seen.add(s.toLowerCase());
     subjects.push(s);
@@ -181,7 +182,7 @@ export async function writeOutreachEmail(ctx: OutreachContext): Promise<Outreach
     costUsd += res.usage.costUsd;
     const email: EmailText = {
       // A follow-up continues the thread, so it keeps the first email's subject.
-      subject: ctx.step === 1 && ctx.firstEmail ? ctx.firstEmail.subject : res.data.subject.trim(),
+      subject: ctx.step === 1 && ctx.firstEmail ? ctx.firstEmail.subject : capitalizeSubject(res.data.subject),
       body: stripSignoff(res.data.body, ctx.sender.name),
       claims: res.data.claims.map((c) => ({ text: c.text, factKeys: [...new Set(c.fact_keys)] })),
     };

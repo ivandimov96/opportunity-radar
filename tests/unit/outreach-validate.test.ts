@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildEvidencePack, renderEvidencePack } from "@/lib/outreach/evidence";
-import { EMAIL_LENGTH, checkEmailText, hasBlock, introLine, openingLine, similarity, stripSignoff, wordCount } from "@/lib/outreach/validate";
+import { EMAIL_LENGTH, capitalizeSubject, checkEmailText, hasBlock, introLine, openingLine, similarity, stripSignoff, wordCount } from "@/lib/outreach/validate";
 import { composeEmailBody, signatureBlock } from "@/lib/outreach/drafts";
 import { greetingFor } from "@/lib/ai/outreach";
 
@@ -21,12 +21,12 @@ const pack = buildEvidencePack(facts, observations, { supportingFactKeys: ["o1",
 
 const body = `Hi Northside Air team,
 
-I was reading about your Comfort Club and noticed that every system replacement starts with a free in-home estimate. That is a nice touch, on top of the tune-ups your members get twice a year.
+I was reading about your Comfort Club and noticed that every system replacement starts with a free in-home estimate.
 
-I'm Ivan, and I build small software tools for service businesses. It made me wonder how those estimate visits get booked today. If it is a lot of back-and-forth, a small scheduling flow could let people pick a visit time themselves, alongside the tools you already run.
+I'm Ivan, and I build small software tools for service businesses. It made me wonder whether people could pick a visit time themselves, alongside the tools you already run.
 
-Would a short call next week be useful? If it is not a priority, no problem at all.`;
-const email = { subject: "Booking your in-home estimates", body, claims: [{ text: "every system replacement starts with a free in-home estimate", factKeys: ["o1"] }, { text: "the tune-ups your members get twice a year", factKeys: ["maintenance_plans"] }] };
+Shall I send over a short mock-up of how that could look?`;
+const email = { subject: "Booking your in-home estimates", body, claims: [{ text: "every system replacement starts with a free in-home estimate", factKeys: ["o1"] }] };
 const ctx = { pack, bookingLink: "https://cal.example/ivan", step: 0, others: [] as { subject: string; body: string; label: string }[] };
 const codes = (b: string, extra: Partial<typeof ctx> = {}, e: Partial<typeof email> = {}) => checkEmailText({ ...email, ...e, body: b }, { ...ctx, ...extra }).map((i) => `${i.severity}:${i.code}`);
 
@@ -49,19 +49,27 @@ describe("fixed email checks", () => {
     expect(wordCount(body)).toBeGreaterThanOrEqual(EMAIL_LENGTH.first.softMin);
     expect(wordCount(body)).toBeLessThanOrEqual(EMAIL_LENGTH.first.softMax);
   });
-  it("blocks statements of absence, stock phrases, placeholders and a missing invitation", () => {
+  it("blocks statements of absence, stock phrases, placeholders and an email without a question", () => {
     expect(codes(body.replace("It made me wonder", "You don't have online booking. It made me wonder"))).toContain("block:absence_stated");
     expect(codes(body.replace("I was reading", "I hope this email finds you well. I was reading"))).toContain("block:stock_phrase");
     expect(codes(body.replace("Northside Air team", "[Company] team"))).toContain("block:placeholder");
-    expect(codes(body.replace("Would a short call next week be useful? ", ""))).toContain("block:no_invitation");
+    expect(codes(body.replace("Shall I send over a short mock-up of how that could look?", "I could send over a short mock-up."))).toContain("block:no_question");
     expect(codes(body.replace("It made me wonder", "I didn't see a booking tool. It made me wonder"))).toContain("warn:not_seen");
   });
-  it("blocks numbers and product names that are not in the research, but allows the call length and verified ones", () => {
-    expect(codes(body.replace("a small scheduling flow", "a small scheduling flow that saves 30% of calls"))).toContain("block:number_not_in_evidence");
-    expect(codes(body.replace("a short call", "a 15-minute call"))).not.toContain("block:number_not_in_evidence");
-    expect(codes(body.replace("your Comfort Club", "your Comfort Club (running since 1998)"))).toEqual([]);
+  it("blocks numbers and product names that are not in the research, but allows a length in minutes and verified ones", () => {
+    expect(codes(body.replace("pick a visit time themselves", "pick a time themselves and save 30% of calls"))).toContain("block:number_not_in_evidence");
+    expect(codes(body.replace("a short mock-up", "a 2-minute mock-up"))).not.toContain("block:number_not_in_evidence");
+    expect(codes(body.replace("I was reading about your Comfort Club", "Reading about your Comfort Club (since 1998),"))).toEqual([]);
     expect(codes(body.replace("the tools you already run", "ServiceTitan"))).toContain("block:tool_not_verified");
     expect(codes(body.replace("the tools you already run", "Housecall Pro"))).not.toContain("block:tool_not_verified");
+  });
+  it("asks for one small thing: remarks on a second question, a proposed call and a long opening", () => {
+    expect(codes(body.replace("already run.", "already run?"))).toEqual(["warn:several_questions"]);
+    expect(codes(body.replace("Shall I send over a short mock-up of how that could look?", "Would a 15-minute call next week be useful?"))).toEqual(["warn:call_offer"]);
+    expect(codes(body.replace("Shall I send over a short mock-up of how that could look?", "Shall I send a mock-up, or have a quick chat?"))).toEqual(["warn:call_offer"]);
+    expect(codes(body.replace("starts with a free in-home estimate.", "starts with a free in-home estimate, which is a lovely way to begin.").replace(", alongside the tools you already run", ""))).toEqual(["warn:long_opening"]);
+    // A follow-up may offer a call and need not end on a question.
+    expect(codes("Hi Northside Air team,\n\nOne more thought on the in-home estimates: customers could pick the visit slot themselves. Happy to have a short call about it, and if this isn't a priority, no worries at all.", { step: 1 }, { claims: [] })).toEqual([]);
   });
   it("allows only the booking link and no email addresses", () => {
     expect(codes(`${body} https://cal.example/ivan`)).toEqual([]);
@@ -78,8 +86,14 @@ describe("fixed email checks", () => {
   });
   it("holds back subjects that read like an advert or fake a reply, and remarks on long ones", () => {
     const subj = (subject: string) => checkEmailText({ ...email, subject }, ctx).map((i) => `${i.severity}:${i.code}`);
-    expect(subj("an idea for your estimates")).toEqual([]);
-    expect(subj("sketches to quotes, faster?")).toEqual([]);
+    expect(subj("An idea for your estimates")).toEqual([]);
+    expect(subj("Fewer calls about estimates?")).toEqual([]);
+    // A subject starts with a capital letter: written that way by code, remarked on when typed otherwise.
+    expect(subj("an idea for your estimates")).toEqual(["warn:subject_lowercase"]);
+    expect(capitalizeSubject("an idea for your estimates")).toBe("An idea for your estimates");
+    expect(capitalizeSubject(" “your proofs, approved faster?”")).toBe("“Your proofs, approved faster?”");
+    expect(capitalizeSubject("Northgate's delivery notes")).toBe("Northgate's delivery notes");
+    expect(capitalizeSubject("3 ideas for your proofs")).toBe("3 ideas for your proofs"); // starts with a figure: left alone
     expect(subj("Free estimates at Northside Air")).toContain("block:subject_adword");
     expect(subj("Save 20% on scheduling")).toContain("block:subject_adword");
     expect(subj("Re: your estimates")).toContain("block:subject_fake_thread");
@@ -92,7 +106,7 @@ describe("fixed email checks", () => {
     expect(codes(body)).not.toContain("block:size_remark"); // "small software tools" describes the tool, not them
     // Their own words may be echoed.
     const own = buildEvidencePack([...facts, { key: "years_in_business", status: "verified", value: "Since 1998", evidenceQuote: "We are a small family business", sourceUrl: "https://x.example/" }], observations, { supportingFactKeys: ["o1"] });
-    expect(codes(body.replace("That is a nice touch", "A small family business with that kind of care is a nice touch"), { pack: own })).not.toContain("block:size_remark");
+    expect(codes(body.replace("It made me wonder", "A small family business with that kind of care made me wonder"), { pack: own })).not.toContain("block:size_remark");
   });
   it("notices a sentence repeated word for word in another email of the batch, such as the same self-introduction", () => {
     expect(introLine(body)).toBe("I'm Ivan, and I build small software tools for service businesses.");
@@ -124,6 +138,7 @@ describe("email text helpers", () => {
     expect(greetingFor("Riverbend Mechanical Services LLC")).toBe("Hi Riverbend Mechanical Services team,");
     expect(greetingFor("J. T. Harbour Steel Ltd.")).toBe("Hi J. T. Harbour Steel team,");
     expect(greetingFor("Northgate Metalworks Limited")).toBe("Hi Northgate Metalworks team,");
+    expect(greetingFor("The Harbour Sign Co.")).toBe("Hi The Harbour Sign Co. team,"); // "Co." is part of the name, not a legal form
     expect(greetingFor("Allstar Electrical, Plumbing and Air Conditioning Services")).toBe("Hi Allstar Electrical, Plumbing and Air Conditioning Services team,");
     expect(greetingFor("An Extraordinarily Long Registered Company Name That Nobody Would Ever Say Aloud")).toBe("Hello,");
   });
