@@ -91,7 +91,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
           )}
 
           <Card
-            title={draft.step > 0 ? "The follow-up exactly as it will be sent" : "The email exactly as it will be sent"}
+            title={`The ${draft.step > 0 ? "follow-up" : "email"} ${draft.status === "sent" || draft.status === "bounced" ? "as it was sent" : "exactly as it will be sent"}`}
             description={
               <>
                 To <strong>{b.email ?? "no address yet"}</strong>
@@ -105,8 +105,10 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
               <input type="hidden" name="nextId" value={d.next ?? ""} />
               <EmailFields subject={draft.subject ?? ""} body={draft.body} readOnly={!editable} minWords={minWords} maxWords={maxWords} suggestAction={draft.step === 0 ? suggestSubjectsAction : undefined} suggestions={ideas?.options ?? []} canSuggest={cfg.ai.enabled} />
               <div>
-                <div className="label">Signature (added automatically{settings.senderName ? "" : "; add your name and address"}; change it under <Link href={settingsHref("sender")}>Settings</Link>)</div>
-                <pre className="text-xs text-ink-muted whitespace-pre-wrap rounded-lg bg-surface-2 border border-line px-3 py-2 font-[inherit]">{signatureBlock(settings)}</pre>
+                <div className="label">
+                  Your signature <span className="font-normal text-ink-faint">added under the email automatically{settings.senderName ? "" : "; add your name and address"} · <Link href={settingsHref("sender")}>change it</Link></span>
+                </div>
+                <pre className="letter-text text-ink-muted whitespace-pre-wrap rounded-[var(--radius-sm)] bg-surface-2 border border-line px-3 py-2.5">{signatureBlock(settings)}</pre>
               </div>
               {editable && (
                 <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -180,14 +182,54 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
             </Card>
           )}
 
+          <Card title="What the email says about them" description="Each statement and the research behind it." padded={false}>
+            {draft.claims.length === 0 ? (
+              <p className="px-5 py-4 text-sm text-ink-faint">No statement about the business is listed for this email.</p>
+            ) : (
+              <ul className="divide-y divide-line">
+                {draft.claims.map((c, n) => {
+                  const refs = c.factKeys.map((k) => byRef.get(k)).filter((x): x is NonNullable<typeof x> => Boolean(x));
+                  const gaps = c.factKeys.map((k) => notSeen.get(k)).filter((x): x is NonNullable<typeof x> => Boolean(x));
+                  return (
+                    <li key={n} className="px-5 py-3 text-sm">
+                      <div>“{c.text}”</div>
+                      {refs.map((e) => (
+                        <div key={e.ref} className="mt-1.5 text-xs text-ink-muted border-l-2 border-ok/50 pl-2">
+                          <span className="text-ok font-medium">Verified.</span> {e.text}
+                          {e.quote && <span className="block text-ink-faint">Their words: “{e.quote.slice(0, 220)}”</span>}
+                          {e.sourceUrl && (
+                            <a href={e.sourceUrl} target="_blank" rel="noreferrer" className="text-xs">
+                              source
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                      {gaps.map((e) => (
+                        <div key={e.ref} className="mt-1.5 text-xs text-ink-muted border-l-2 border-warn/50 pl-2">
+                          <span className="text-warn font-medium">Not seen on their site</span> ({e.label}): may only be asked, never stated.
+                        </div>
+                      ))}
+                      {!refs.length && !gaps.length && <div className="mt-1.5 text-xs text-bad">Nothing in the research supports this.</div>}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            {draft.validation?.statements && (
+              <p className="px-5 py-3 border-t border-line text-xs text-ink-faint">
+                Independent check: {draft.validation.statements.filter((s) => s.verdict === "supported").length} supported, {draft.validation.statements.filter((s) => s.verdict === "hypothesis").length} phrased as a question or possibility, {draft.validation.statements.filter((s) => s.verdict === "unsupported").length} unsupported.
+              </p>
+            )}
+            {draft.editedByUser && !draft.validation?.statements && <p className="px-5 py-3 border-t border-line text-xs text-ink-faint">You edited this email, so the independent check of the earlier text no longer applies. The fixed checks ran on your version.</p>}
+          </Card>
           {(d.events.length > 0 || d.inbound.length > 0) && (
             <Card title="What happened to this email" padded={false}>
               <ol className="divide-y divide-line">
                 {d.events.map((e) => (
                   <li key={e.id} className="px-5 py-2.5 flex items-baseline gap-3 text-sm">
-                    <span className="text-xs text-ink-faint w-32 shrink-0 tabular-nums">{when(e.createdAt)}</span>
-                    <span className="font-medium">{EVENT_LABEL[e.type] ?? e.type}</span>
-                    <span className="text-xs text-ink-muted truncate">{typeof e.detail?.message === "string" ? e.detail.message : typeof e.detail?.response === "string" ? e.detail.response : typeof e.detail?.scheduledAt === "string" ? `for ${when(e.detail.scheduledAt)}` : ""}</span>
+                    <span className="text-xs text-ink-faint w-32 shrink-0 tabular-nums whitespace-nowrap">{when(e.createdAt)}</span>
+                    <span className="font-semibold whitespace-nowrap">{EVENT_LABEL[e.type] ?? e.type}</span>
+                    <span className="text-xs text-ink-muted truncate">{typeof e.detail?.message === "string" ? e.detail.message : typeof e.detail?.response === "string" ? "accepted by the mail server" : typeof e.detail?.scheduledAt === "string" ? `for ${when(e.detail.scheduledAt)}` : ""}</span>
                   </li>
                 ))}
                 {d.inbound.map((m) => (
@@ -240,64 +282,30 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
 
           {opp && (
             <Card title="The idea behind this email" description={opp.source === "ai" ? "One consolidated opportunity from the research." : "Grouped from fixed rule patterns; no model reviewed it."}>
-              <div className="text-sm font-semibold">{opp.title}</div>
-              {opp.whyRelevant && <p className="text-sm text-ink-muted mt-1">{opp.whyRelevant}</p>}
-              <p className="text-sm mt-2">{opp.proposedSolution}</p>
-              {(opp.components ?? []).length > 0 && (
-                <ul className="mt-2 space-y-1.5">
-                  {(opp.components ?? []).map((c) => (
-                    <li key={c.name} className="text-sm">
-                      <span className="font-medium">{c.name}.</span> <span className="text-ink-muted">{c.description}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <p className="text-xs text-ink-faint mt-3">
-                A hypothesis to explore with them, not a fact: {opp.problemHypothesis}
-              </p>
+              <div className="text-[0.95rem] font-semibold">{opp.title}</div>
+              <p className="text-sm text-ink-muted mt-1.5">{(opp.source === "ai" && opp.salesAngle) || opp.whyRelevant || opp.proposedSolution}</p>
+              <details className="mt-3 border-t border-line">
+                <summary className="flex items-center gap-2 pt-3 cursor-pointer select-none text-sm font-semibold hover:text-accent-text">
+                  <Icon name="chevronRight" className="chevron w-4 h-4 shrink-0 text-ink-faint transition-transform" /> More about the idea
+                </summary>
+                <div className="pt-3 space-y-2.5 text-sm">
+                  {opp.whyRelevant && <p className="text-ink-muted">{opp.whyRelevant}</p>}
+                  <p>{opp.proposedSolution}</p>
+                  {(opp.components ?? []).length > 0 && (
+                    <ul className="space-y-1.5">
+                      {(opp.components ?? []).map((c) => (
+                        <li key={c.name}>
+                          <span className="font-semibold">{c.name}.</span> <span className="text-ink-muted">{c.description}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <p className="text-xs text-ink-faint">A hypothesis to explore with them, not a fact: {opp.problemHypothesis}</p>
+                </div>
+              </details>
             </Card>
           )}
 
-          <Card title="What the email says about them" description="Each statement and the research behind it." padded={false}>
-            {draft.claims.length === 0 ? (
-              <p className="px-5 py-4 text-sm text-ink-faint">No statement about the business is listed for this email.</p>
-            ) : (
-              <ul className="divide-y divide-line">
-                {draft.claims.map((c, n) => {
-                  const refs = c.factKeys.map((k) => byRef.get(k)).filter((x): x is NonNullable<typeof x> => Boolean(x));
-                  const gaps = c.factKeys.map((k) => notSeen.get(k)).filter((x): x is NonNullable<typeof x> => Boolean(x));
-                  return (
-                    <li key={n} className="px-5 py-3 text-sm">
-                      <div>“{c.text}”</div>
-                      {refs.map((e) => (
-                        <div key={e.ref} className="mt-1.5 text-xs text-ink-muted border-l-2 border-ok/50 pl-2">
-                          <span className="text-ok font-medium">Verified.</span> {e.text}
-                          {e.quote && <span className="block text-ink-faint">Their words: “{e.quote.slice(0, 220)}”</span>}
-                          {e.sourceUrl && (
-                            <a href={e.sourceUrl} target="_blank" rel="noreferrer" className="text-xs">
-                              source
-                            </a>
-                          )}
-                        </div>
-                      ))}
-                      {gaps.map((e) => (
-                        <div key={e.ref} className="mt-1.5 text-xs text-ink-muted border-l-2 border-warn/50 pl-2">
-                          <span className="text-warn font-medium">Not seen on their site</span> ({e.label}): may only be asked, never stated.
-                        </div>
-                      ))}
-                      {!refs.length && !gaps.length && <div className="mt-1.5 text-xs text-bad">Nothing in the research supports this.</div>}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {draft.validation?.statements && (
-              <p className="px-5 py-3 border-t border-line text-xs text-ink-faint">
-                Independent check: {draft.validation.statements.filter((s) => s.verdict === "supported").length} supported, {draft.validation.statements.filter((s) => s.verdict === "hypothesis").length} phrased as a question or possibility, {draft.validation.statements.filter((s) => s.verdict === "unsupported").length} unsupported.
-              </p>
-            )}
-            {draft.editedByUser && !draft.validation?.statements && <p className="px-5 py-3 border-t border-line text-xs text-ink-faint">You edited this email, so the independent check of the earlier text no longer applies. The fixed checks ran on your version.</p>}
-          </Card>
         </aside>
       </div>
     </>
