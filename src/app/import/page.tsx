@@ -78,7 +78,7 @@ export default async function ImportPage({ searchParams }: { searchParams: Promi
               ))}
             </tbody>
           </table>
-          <pre className="mt-3 text-[11px] bg-surface-2 border border-line rounded-[var(--radius-sm)] p-3 overflow-auto">{`name,website,phone,city,state\n"Acme Auto Repair",acmeauto.com,(512) 555-0100,Austin,TX`}</pre>
+          <pre className="mt-3 text-xs bg-surface-2 border border-line rounded-[var(--radius-sm)] p-3 overflow-auto">{`name,website,phone,city,state\n"Acme Auto Repair",acmeauto.com,(512) 555-0100,Austin,TX`}</pre>
         </Card>
       </div>
     </>

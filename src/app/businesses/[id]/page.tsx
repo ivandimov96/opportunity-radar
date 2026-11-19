@@ -666,7 +666,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                     <a href={`mailto:${b.email}`} className="truncate block" title={b.email}>
                       {b.email}
                     </a>
-                    <span className="text-[11px] text-ink-faint block">
+                    <span className="text-xs text-ink-faint block">
                       {b.emailSource === "site" ? (
                         b.emailSourceUrl ? (
                           <a href={b.emailSourceUrl} target="_blank" rel="noreferrer">
@@ -686,9 +686,9 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                 ) : (
                   <span className="text-warn">none found</span>
                 )}
-                {b.contactName && <span className="text-[11px] text-ink-muted block">Contact named on the site: {b.contactName}</span>}
+                {b.contactName && <span className="text-xs text-ink-muted block">Contact named on the site: {b.contactName}</span>}
                 <details className="mt-1">
-                  <summary className="text-[11px] text-ink-faint cursor-pointer select-none">{b.email ? "Change" : "Add an address"}</summary>
+                  <summary className="text-xs text-ink-faint cursor-pointer select-none">{b.email ? "Change" : "Add an address"}</summary>
                   <form action={setBusinessEmailAction} className="flex gap-1.5 mt-1.5">
                     <input type="hidden" name="businessId" value={b.id} />
                     <input className="input h-8 text-xs" type="email" name="email" defaultValue={b.email ?? ""} placeholder="name@their-domain.com" required aria-label="Email address" />
@@ -721,7 +721,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
               return (
                 <>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-[11px] uppercase tracking-wide text-ink-faint">Stage</span>
+                    <span className="text-xs uppercase tracking-wide text-ink-faint">Stage</span>
                     <Badge tone={stageTone(stage)} dot>
                       {stageLabel(stage)}
                     </Badge>
@@ -745,7 +745,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                   </form>
 
                   <div className="mt-4 pt-4 border-t border-line">
-                    <div className="text-[11px] uppercase tracking-wide text-ink-faint mb-1.5">Next action</div>
+                    <div className="text-xs uppercase tracking-wide text-ink-faint mb-1.5">Next action</div>
                     {d.prospect?.nextAction ? (
                       <div className={`rounded-[var(--radius-sm)] border px-3 py-2.5 ${overdue ? "border-bad/40 bg-bad/5" : "border-accent/30 bg-accent-soft/40"}`}>
                         <div className="text-sm font-medium text-ink">{d.prospect.nextAction}</div>
@@ -877,7 +877,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                 ))}
               </ul>
             </div>
-            <div className="mt-3 pt-3 border-t border-line text-[11px] text-ink-faint flex flex-wrap gap-1.5 items-center">
+            <div className="mt-3 pt-3 border-t border-line text-xs text-ink-faint flex flex-wrap gap-1.5 items-center">
               <StatusPill status={b.status} />
               {b.statusMessage && <span>{b.statusMessage}</span>}
             </div>

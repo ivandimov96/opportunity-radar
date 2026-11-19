@@ -16,14 +16,15 @@ import { getConfig } from "@/lib/config";
 import { describeRange, rangeBounds, rangeParams, resolveRange } from "@/lib/date-range";
 import { listPlaybooks } from "@/lib/industries";
 import { type PipelineStage } from "@/lib/pipeline/stages";
-import { HISTORY_KINDS, boardTotals, machineStageCounts, pipelineBoard, pipelineHistory, type HistoryKind } from "@/lib/queries";
+import { HISTORY_KINDS, boardTotals, pipelineBoard, pipelineHistory, type HistoryKind } from "@/lib/queries";
 import { parseTableParams } from "@/lib/table";
 import { PipelineBoard, type BoardItem } from "./board";
 
 export const metadata = { title: "Pipeline" };
 
 /** Cards shown per column before "N more": enough to work with, few enough to scan. */
-const CARDS_PER_COLUMN = 12;
+/** Every business on the board is shown; only a very long stage is cut, with a link to the rest. */
+const CARDS_PER_COLUMN = 100;
 const HISTORY_PAGE_SIZE = 40;
 
 export default async function PipelinePage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
@@ -46,7 +47,7 @@ export default async function PipelinePage({ searchParams }: { searchParams: Pro
   };
   const keep = Object.fromEntries(Object.entries(sp).filter(([k, v]) => v && !["range", "from", "to", "page", "ok", "error"].includes(k))) as Record<string, string>;
 
-  const [machine, totals] = await Promise.all([machineStageCounts(), boardTotals()]);
+  const totals = await boardTotals();
   const board = view === "board" ? await pipelineBoard({ q: t.q || undefined, industry: sp.industry || undefined, ...bounds }) : null;
   const history = view === "history" ? await pipelineHistory({ ...bounds, kind, q: t.q || undefined, page: t.page, pageSize: HISTORY_PAGE_SIZE }) : null;
 
@@ -73,7 +74,7 @@ export default async function PipelinePage({ searchParams }: { searchParams: Pro
 
   return (
     <>
-      <PageHeader title="Pipeline" subtitle="Qualified businesses arrive on their own and move to Contacted and Replied on their own. From there, drag each card to where the conversation stands." actions={<DateRangePicker basePath="/pipeline" params={keep} value={period.key} from={period.from} to={period.to} />} />
+      <PageHeader title="Pipeline" subtitle="Where each conversation stands. Cards move on their own until a company replies; after that, drag them." actions={<DateRangePicker basePath="/pipeline" params={keep} value={period.key} from={period.from} to={period.to} />} />
 
       <Tabs
         items={[
@@ -84,19 +85,7 @@ export default async function PipelinePage({ searchParams }: { searchParams: Pro
 
       {view === "board" && (
         <>
-          {/* The stages the system handles can hold hundreds of businesses: counters, not columns. */}
-          <div className="flex flex-wrap items-center gap-2 mb-4 text-xs" aria-label="Before the board">
-            <Link href="/businesses?stage=discovered&range=all" className="chip">
-              Discovered <span className="tabular-nums rounded-full px-1.5 bg-surface-3 text-ink-faint">{machine.discovered}</span>
-            </Link>
-            <Link href="/businesses?stage=researching&range=all" className={`chip ${machine.researching ? "" : "opacity-60"}`}>
-              Researching <span className="tabular-nums rounded-full px-1.5 bg-surface-3 text-ink-faint">{machine.researching}</span>
-            </Link>
-            <span className="text-ink-faint">
-              {[machine.notResearched ? `${machine.notResearched} not researched yet` : null, machine.needsReview ? `${machine.needsReview} need your review` : null, machine.noContact ? `${machine.noContact} without a public email` : null, machine.notAFit ? `${machine.notAFit} not a fit` : null].filter(Boolean).join(" · ") || "Nothing is waiting before the board."}
-            </span>
-          </div>
-          {(all.length > CARDS_PER_COLUMN || t.q || sp.industry) && (
+          {(all.length > 12 || t.q || sp.industry) && (
             <FilterBar basePath="/pipeline" sp={sp} params={t} placeholder="Search the board by name, city or domain" hidden={["range", "from", "to"]}>
               <select className="select w-auto" name="industry" defaultValue={sp.industry ?? ""}>
                 <option value="">Any industry</option>
@@ -129,7 +118,7 @@ export default async function PipelinePage({ searchParams }: { searchParams: Pro
       )}
 
       {view === "history" && history && (
-        <Card padded={false} title={`What happened, ${describeRange(period)}`} description="Every step of the process across all businesses: found and researched, emails written and sent, replies, stage moves by the system or by you, and your notes. Newest first.">
+        <Card padded={false} title={`What happened, ${describeRange(period)}`} description="Newest first. Pick a kind below to narrow it, or a period at the top right.">
           {history.counts.all === 0 ? (
             <EmptyState compact icon="note" title="Nothing happened in this period" description="Choose a longer period at the top right, for example “This month” or “All time”." />
           ) : (

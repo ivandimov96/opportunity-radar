@@ -83,3 +83,16 @@ ScoreRing, ScoreBar, EmptyState, Callout, PageHeader, Tabs, KeyValue, Flash.
 - Collapsible blocks are native `<details>`; the arrow turns when open.
 - Every confirmation uses the one dialog (`ConfirmButton`): question as title,
   consequence below, Cancel and a named action; red for deleting or stopping.
+
+## Look (decision D45)
+
+- Palette "airmail" as tokens in `src/app/globals.css` (light and dark): paper, sheet, ink, airmail
+  blue (`--accent`, every action and link), postmark green (`--ok`), and airmail red (`--stamp`),
+  which is used only by `.airmail`, the striped band on top of the sidebar.
+- Two typefaces from the system, nothing downloaded: Avenir Next for the interface, Charter for
+  page titles (`h1`) and the email text (`.letter-text`).
+- Sizes: `html` is 106.25%, body text about 15px, the smallest text 12px. Buttons 2.4rem high
+  (small 2rem, large 2.85rem). Labels and table headings in sentence case.
+- One decoration only (the airmail band). Cards are flat with a hairline border; shadows are kept
+  for things that float (dialog, dragged card).
+

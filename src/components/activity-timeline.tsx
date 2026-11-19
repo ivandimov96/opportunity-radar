@@ -1,7 +1,9 @@
 /**
- * A business's activity log as a timeline: grouped by day, one icon per kind
- * of event, stage changes and validation signals rendered structurally (pills)
- * instead of as the raw sentence that was logged. Server component.
+ * An activity log, grouped by day. One event is one line: the time, an icon
+ * for the kind of event, the business (when the log spans several) and what
+ * happened, with stage changes and validation signals shown as pills instead
+ * of the raw sentence that was logged. On a phone the business and what
+ * happened stack. Server component.
  */
 import Link from "next/link";
 import { Badge, Icon, fmtDate, type Tone } from "@/components/ui";
@@ -82,13 +84,13 @@ function Body({ a }: { a: ActivityRow }) {
     const reason = a.content.replace(/^Stage (?:changed|set) to \w+:?\s*/, "");
     return (
       <>
-        <div className="flex items-center gap-1.5 flex-wrap text-xs">
+        <div className="flex items-center gap-x-1.5 gap-y-1 flex-wrap text-sm">
           {from && <Badge tone="neutral">{stageLabel(from)}</Badge>}
-          {from && <Icon name="arrowRight" className="w-3 h-3 text-ink-faint shrink-0" />}
+          {from && <Icon name="arrowRight" className="w-3.5 h-3.5 text-ink-faint shrink-0" />}
           <Badge tone={stageTone(to)}>{to ? stageLabel(to) : "—"}</Badge>
-          {m.automatic === true && <span className="text-[11px] text-ink-faint">automatic</span>}
+          {m.automatic === true && <span className="text-xs text-ink-faint">automatic</span>}
+          {reason && <span className="text-sm text-ink-muted basis-full md:basis-auto md:ml-1">{reason}</span>}
         </div>
-        {reason && <div className="text-[12px] text-ink-muted mt-1">{reason}</div>}
       </>
     );
   }
@@ -110,7 +112,7 @@ function Body({ a }: { a: ActivityRow }) {
       </>
     );
   }
-  return <div className="text-sm text-ink">{a.content}</div>;
+  return <div className="text-sm text-ink-muted">{a.content}</div>;
 }
 
 export interface TimelinePagination {
@@ -130,7 +132,7 @@ export function kindCounts(countsByType: Record<string, number>): Record<Activit
  * `activities` is the page to show (already filtered to `kind` and paginated by the caller);
  * `counts` feeds the filter chips and `pagination` the footer. Without them the list is shown as is.
  */
-export function ActivityTimeline<K extends string = ActivityKind>({ activities, kind, kindHref, counts, pagination, kinds }: { activities: ActivityRow[]; kind?: K; kindHref?: (k: K) => string; counts?: Record<K, number>; pagination?: TimelinePagination; kinds?: readonly { key: K; label: string }[] }) {
+export function ActivityTimeline<K extends string = ActivityKind>({ activities, kind, kindHref, counts, pagination, kinds, compact = false }: { activities: ActivityRow[]; kind?: K; kindHref?: (k: K) => string; counts?: Record<K, number>; pagination?: TimelinePagination; kinds?: readonly { key: K; label: string }[]; /** For a narrow place: the business above what happened, never side by side. */ compact?: boolean }) {
   const chips = (kinds ?? ACTIVITY_KINDS) as readonly { key: K; label: string }[];
   const current = kind ?? chips[0].key;
   const shown = activities;
@@ -138,9 +140,9 @@ export function ActivityTimeline<K extends string = ActivityKind>({ activities, 
   return (
     <div>
       {kindHref && (
-        <nav className="flex gap-1 flex-wrap px-4 py-2 border-b border-line" aria-label="Activity filter">
+        <nav className="flex gap-1.5 flex-wrap px-4 py-3 border-b border-line" aria-label="Activity filter">
           {chips.map((k) => (
-            <Link key={k.key} href={kindHref(k.key)} aria-current={current === k.key ? "true" : undefined} className={`px-2.5 py-1 rounded-full text-xs hover:no-underline transition-colors ${current === k.key ? "bg-accent-soft text-accent-text font-medium" : "text-ink-muted hover:bg-surface-3 hover:text-ink"}`}>
+            <Link key={k.key} href={kindHref(k.key)} aria-current={current === k.key ? "true" : undefined} className={`chip ${current === k.key ? "chip-active" : ""}`}>
               {k.label} {counts && <span className="tabular-nums opacity-70">{counts[k.key]}</span>}
             </Link>
           ))}
@@ -151,32 +153,29 @@ export function ActivityTimeline<K extends string = ActivityKind>({ activities, 
       ) : (
         groupByDay(shown).map((g) => (
           <section key={g.day} aria-label={g.day}>
-            <h3 className="px-4 py-1.5 text-[11px] font-semibold text-ink-muted bg-surface-3/60 border-y border-line first:border-t-0">
-              {g.day} <span className="font-normal text-ink-faint">· {g.rows.length}</span>
+            <h3 className="px-4 py-2 text-sm font-semibold text-ink bg-surface-3/60 border-y border-line first:border-t-0">
+              {g.day} <span className="font-normal text-ink-faint">· {g.rows.length} {g.rows.length === 1 ? "event" : "events"}</span>
             </h3>
-            <ol className="px-4">
-              {g.rows.map((a, i) => {
+            <ol>
+              {g.rows.map((a) => {
                 const st = STYLE[a.type] ?? STYLE.system;
-                const last = i === g.rows.length - 1;
                 return (
-                  <li key={a.id} className="grid grid-cols-[3.25rem_1.75rem_1fr] gap-x-3">
-                    <time dateTime={a.createdAt} title={fmtDate(a.createdAt)} className="text-[11px] text-ink-faint tabular-nums pt-2.5 text-right">
+                  <li key={a.id} className="grid grid-cols-[1.75rem_minmax(0,1fr)] md:grid-cols-[4.5rem_1.75rem_minmax(0,1fr)] items-start gap-x-3 px-4 py-2.5 border-b border-line last:border-b-0">
+                    <time dateTime={a.createdAt} title={fmtDate(a.createdAt)} className="order-last col-start-2 md:order-none md:col-start-auto text-xs text-ink-faint tabular-nums whitespace-nowrap pt-1 md:pt-1.5">
                       {fmtTime(a.createdAt)}
                     </time>
-                    <div className="relative flex justify-center">
-                      {!last && <span className="absolute top-8 bottom-0 w-px bg-line" aria-hidden />}
-                      <span className={`mt-1.5 w-7 h-7 rounded-full grid place-items-center shrink-0 ${st.tone}`} title={st.label}>
-                        <Icon name={st.icon} className="w-3.5 h-3.5" />
-                      </span>
-                    </div>
-                    <div className={`min-w-0 py-2 ${last ? "" : "pb-3"}`}>
-                      <div className="text-[10.5px] uppercase tracking-wide text-ink-faint mb-0.5">{st.label}</div>
+                    <span className={`w-7 h-7 rounded-full grid place-items-center shrink-0 ${st.tone}`} title={st.label}>
+                      <Icon name={st.icon} className="w-3.5 h-3.5" />
+                    </span>
+                    <div className={`min-w-0 pt-0.5 ${a.business && !compact ? "md:grid md:grid-cols-[minmax(0,16rem)_minmax(0,1fr)] md:gap-x-4 md:items-baseline" : ""}`}>
                       {a.business && (
-                        <Link href={`/businesses/${a.business.id}`} className="block text-sm font-medium text-ink truncate">
+                        <Link href={`/businesses/${a.business.id}`} className={`block text-sm font-semibold text-ink truncate mb-1 ${compact ? "" : "md:mb-0"}`}>
                           {a.business.name}
                         </Link>
                       )}
-                      <Body a={a} />
+                      <div className="min-w-0 break-words">
+                        <Body a={a} />
+                      </div>
                     </div>
                   </li>
                 );

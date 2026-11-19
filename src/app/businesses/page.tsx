@@ -4,7 +4,7 @@ import { Badge, Card, Flash, Icon, PageHeader, ScoreRing, StatusPill, fmtRelativ
 import { stageTone } from "@/components/activity-timeline";
 import { Pagination, SortHeader, TableEmpty } from "@/components/table";
 import { parseTableParams } from "@/lib/table";
-import { DEFAULT_RANGE, rangeBounds, rangeParams, resolveRange } from "@/lib/date-range";
+import { DEFAULT_RANGE, describeRange, rangeBounds, rangeParams, resolveRange } from "@/lib/date-range";
 import { DateRangePicker } from "@/components/date-range";
 import { ConfirmButton } from "@/components/confirm-button";
 import { listPlaybooks } from "@/lib/industries";
@@ -97,7 +97,7 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
     <>
       <PageHeader
         title="Businesses"
-        subtitle="Every business found, once. The strongest ideas come first."
+        subtitle="Every business found, newest first. Click a column heading to sort."
         actions={
           <>
             <Link href="/searches" className="btn btn-ghost" title="Every search you have run, with its results">
@@ -123,17 +123,17 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
         {Object.entries(rangeParams(period)).map(([k, v]) => (
           <input key={k} type="hidden" name={k} value={v} />
         ))}
-        <div className="flex gap-2 p-3">
-          <div className="relative flex-1 min-w-0">
-            <Icon name="search" className="w-4 h-4 absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-faint" />
-            <input className="input pl-8" name="q" placeholder="Search name, city, domain, email or phone" defaultValue={t.q} aria-label="Search" />
+        {/* Search and the period on one line. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 p-4">
+          <div className="relative flex-1 min-w-[14rem]">
+            <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
+            <input className="input pl-9" name="q" placeholder="Search name, city, domain, email or phone" defaultValue={t.q} aria-label="Search" />
           </div>
           <button className="btn shrink-0">Search</button>
-        </div>
-        <div className="px-3 pb-3">
+          <span className="hidden lg:block w-px self-stretch bg-line" aria-hidden />
           <DateRangePicker basePath={base} params={Object.fromEntries(Object.entries(sp).filter(([k, v]) => v && !["range", "from", "to", "page", "ok", "error"].includes(k))) as Record<string, string>} value={period.key} from={period.from} to={period.to} fields={BUSINESS_DATE_FIELDS} field={dateField} />
         </div>
-        <div className="flex flex-wrap items-center gap-1.5 px-3 pb-3" aria-label="Views">
+        <div className="flex flex-wrap items-center gap-2 px-4 pb-4" aria-label="Views">
           {VIEWS.map((q) => {
             const on = (f.quick ?? "") === q.key;
             const n = counts[q.key ?? ""] ?? 0;
@@ -141,16 +141,16 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
             return (
               <Link key={q.key} href={qs({ quick: q.key || undefined })} aria-current={on ? "page" : undefined} className={`chip ${on ? "chip-active" : n === 0 ? "opacity-60" : ""}`}>
                 {q.label}
-                <span className={`tabular-nums rounded-full px-1.5 text-[11px] ${on ? "bg-accent/15" : "bg-surface-3 text-ink-faint"}`}>{n}</span>
+                <span className={`tabular-nums rounded-full px-1.5 text-xs ${on ? "bg-accent/15" : "bg-surface-3 text-ink-faint"}`}>{n}</span>
               </Link>
             );
           })}
         </div>
         <details className="border-t border-line" open={advancedActive}>
-          <summary className="flex flex-wrap items-center gap-2 px-3 py-2 cursor-pointer list-none select-none">
-            <span className="btn btn-sm btn-ghost">
-              <Icon name="chevronDown" className="w-3.5 h-3.5" /> Filters
-              {activePills.length > 0 && <span className="ml-1 text-[11px] rounded-full px-1.5 bg-accent-soft text-accent-text">{activePills.length}</span>}
+          <summary className="flex flex-wrap items-center gap-2 px-4 py-2.5 cursor-pointer list-none select-none">
+            <span className="btn btn-sm">
+              <Icon name="chevronDown" className="w-3.5 h-3.5" /> More filters
+              {activePills.length > 0 && <span className="ml-1 text-xs rounded-full px-1.5 bg-accent-soft text-accent-text">{activePills.length}</span>}
             </span>
             {activePills.map((pill) => (
               <Link key={pill.key} href={qs(pill.clear)} className="inline-flex items-center gap-1 rounded-full bg-surface-3 px-2.5 h-7 text-xs text-ink hover:no-underline hover:bg-surface-2" title={`Remove: ${pill.label}`}>
@@ -158,14 +158,13 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
                 <Icon name="x" className="w-3 h-3 text-ink-faint" />
               </Link>
             ))}
-            {activePills.length === 0 && <span className="text-xs text-ink-faint">Narrow by industry, stage, research, verdict, website or priority.</span>}
             {(activePills.length > 0 || t.q || f.quick || period.key !== DEFAULT_RANGE) && (
-              <Link href={base} className="ml-auto text-xs">
-                Reset
+              <Link href={base} className="ml-auto btn btn-sm btn-ghost">
+                Reset everything
               </Link>
             )}
           </summary>
-          <div className="px-3 pb-3 pt-1 border-t border-line">
+          <div className="px-4 pb-4 pt-3 border-t border-line">
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
               <label className="block">
                 <span className="label">Industry</span>
@@ -239,19 +238,22 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
           <TableEmpty icon="building" title="No businesses match" description={period.key === "all" ? "Adjust the filters, run a new search, or import a CSV." : "Nothing in this period. Choose a longer one (for example “All time”), adjust the filters, or run a new search."} action={<Link href="/searches/new" className="btn btn-primary">New search</Link>} />
         ) : (
           <>
-            {investigable.length > 0 && (
-              <form action={investigateManyAction} className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-line bg-surface-2 text-xs text-ink-muted">
-                {investigable.map((r) => (
-                  <input key={r.business.id} type="hidden" name="businessId" value={r.business.id} />
-                ))}
-                <span className="flex-1 min-w-[200px]">
-                  {investigable.length} on this page {investigable.length === 1 ? "is" : "are"} not researched yet.
-                </span>
-                <button className="btn btn-sm" disabled={!cfg.firecrawl.enabled} title={cfg.firecrawl.enabled ? "Uses website research credits and the AI budget" : "Website research needs FIRECRAWL_API_KEY"}>
-                  <Icon name="sparkles" /> Research {investigable.length} shown
-                </button>
-              </form>
-            )}
+            <div className="flex flex-wrap items-center gap-3 px-5 py-3.5 border-b border-line">
+              <h2 className="text-base font-semibold leading-6">
+                {total} {total === 1 ? "business" : "businesses"}
+              </h2>
+              <span className="text-sm text-ink-muted">{VIEWS.find((v) => (v.key ?? "") === (f.quick ?? ""))?.label ?? "All"}{period.key === "all" ? ", all time" : `, ${describeRange(period)}`}</span>
+              {investigable.length > 0 && (
+                <form action={investigateManyAction} className="ml-auto">
+                  {investigable.map((r) => (
+                    <input key={r.business.id} type="hidden" name="businessId" value={r.business.id} />
+                  ))}
+                  <button className="btn btn-sm" disabled={!cfg.firecrawl.enabled} title={cfg.firecrawl.enabled ? "Uses website research credits and the AI budget" : "Website research needs FIRECRAWL_API_KEY"}>
+                    <Icon name="sparkles" /> Research {investigable.length} shown
+                  </button>
+                </form>
+              )}
+            </div>
             {f.quick === "not_a_fit" && rows.length > 0 && (
               <form action={removeBusinessAction} className="flex flex-wrap items-center gap-3 px-4 py-2.5 border-b border-line bg-surface-2 text-xs text-ink-muted">
                 {rows.map((r) => (
@@ -300,7 +302,7 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
                         </td>
                         <td className="whitespace-nowrap">
                           <StatusPill status={b.verdict ?? b.status} />
-                          {stale && <div className="text-[11px] text-warn mt-0.5" title={b.investigatedAt ?? undefined}>researched {researchAgeDays(b.investigatedAt)} d ago</div>}
+                          {stale && <div className="text-xs text-warn mt-0.5" title={b.investigatedAt ?? undefined}>researched {researchAgeDays(b.investigatedAt)} d ago</div>}
                         </td>
                         <td className="max-w-[380px]">
                           <div className="text-xs text-ink-muted line-clamp-2">{b.summary ?? b.statusMessage ?? wf.next.description}</div>
@@ -318,7 +320,7 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
                         </td>
                         <td className="max-w-[240px]">
                           <Badge tone={stageTone(r.stage ?? "discovered")}>{stageLabel(r.stage ?? "discovered")}</Badge>
-                          <div className="text-[11px] text-ink-faint truncate mt-0.5">
+                          <div className="text-xs text-ink-faint truncate mt-0.5">
                             → {r.nextAction ?? wf.next.title}
                             {r.nextAction && r.nextActionAt ? ` · ${fmtRelative(r.nextActionAt)}` : ""}
                           </div>

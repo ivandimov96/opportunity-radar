@@ -274,7 +274,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
                           <span className="text-ok font-medium">Verified.</span> {e.text}
                           {e.quote && <span className="block text-ink-faint">Their words: “{e.quote.slice(0, 220)}”</span>}
                           {e.sourceUrl && (
-                            <a href={e.sourceUrl} target="_blank" rel="noreferrer" className="text-[11px]">
+                            <a href={e.sourceUrl} target="_blank" rel="noreferrer" className="text-xs">
                               source
                             </a>
                           )}

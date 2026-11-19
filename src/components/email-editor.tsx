@@ -35,7 +35,7 @@ export function EmailFields({ subject, body, readOnly = false, minWords, maxWord
         </div>
         {suggest && suggestions.length > 0 && (
           <div className="mt-2" aria-label="Suggested subjects">
-            <div className="text-[11px] text-ink-faint mb-1">Other subjects. Click one to put it in the field, then save.</div>
+            <div className="text-xs text-ink-faint mb-1">Other subjects. Click one to put it in the field, then save.</div>
             <div className="flex flex-wrap gap-1.5">
               {suggestions.map((option) => (
                 <button key={option} type="button" onClick={() => setS(option)} aria-pressed={s === option} className={`chip h-auto min-h-7 py-1 text-left whitespace-normal ${s === option ? "chip-active" : ""}`}>
@@ -51,12 +51,12 @@ export function EmailFields({ subject, body, readOnly = false, minWords, maxWord
           <label className="label" htmlFor="email-body">
             Email
           </label>
-          <span className={`text-[11px] tabular-nums mb-1 ${off ? "text-warn" : "text-ink-faint"}`}>
+          <span className={`text-xs tabular-nums mb-1 ${off ? "text-warn" : "text-ink-faint"}`}>
             {words} words{off ? ` (aim for ${minWords}-${maxWords})` : ""}
             {dirty && !readOnly ? " · not saved yet" : ""}
           </span>
         </div>
-        <textarea id="email-body" className="textarea font-[inherit] leading-relaxed" name="body" rows={Math.min(22, Math.max(10, b.split("\n").length + 4))} value={b} onChange={(e) => setB(e.target.value)} readOnly={readOnly} />
+        <textarea id="email-body" className="textarea letter-text" name="body" rows={Math.min(22, Math.max(10, b.split("\n").length + 4))} value={b} onChange={(e) => setB(e.target.value)} readOnly={readOnly} />
       </div>
     </div>
   );

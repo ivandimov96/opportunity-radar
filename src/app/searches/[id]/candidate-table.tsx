@@ -63,7 +63,7 @@ function NameCell({ r }: { r: CandidateRow }) {
   return (
     <>
       <div className="flex items-center gap-1.5 flex-wrap min-w-0">
-        <span className="text-[11px] text-ink-faint tabular-nums shrink-0">{r.rank}.</span>
+        <span className="text-xs text-ink-faint tabular-nums shrink-0">{r.rank}.</span>
         {r.businessId ? (
           <Link href={`/businesses/${r.businessId}`} className="row-link truncate max-w-full">
             {r.name}
@@ -109,7 +109,7 @@ function Status({ r }: { r: CandidateRow }) {
   return (
     <div className="flex flex-col gap-1 items-start">
       <StatusPill status={r.business.verdict ?? r.business.status} />
-      {r.savedVia && r.savedVia !== "new" && <span className="text-[11px] text-ink-faint">matched an existing record ({r.savedVia.replace(/_/g, " ")})</span>}
+      {r.savedVia && r.savedVia !== "new" && <span className="text-xs text-ink-faint">matched an existing record ({r.savedVia.replace(/_/g, " ")})</span>}
     </div>
   );
 }
@@ -214,7 +214,7 @@ export function CandidateTable({ rows, searchId, basePath, sp, params, providerL
                 <td className="hidden lg:table-cell align-middle">
                   <div className="flex items-center gap-2 flex-wrap">
                     {sources(r)}
-                    <span className="text-[11px] text-ink-faint whitespace-nowrap" title={`Found ${fmtRelative(r.createdAt)}${d.refreshed ? ` · source record read ${fmtRelative(d.refreshed)}` : ""}`}>
+                    <span className="text-xs text-ink-faint whitespace-nowrap" title={`Found ${fmtRelative(r.createdAt)}${d.refreshed ? ` · source record read ${fmtRelative(d.refreshed)}` : ""}`}>
                       {fmtRelative(r.createdAt)}
                     </span>
                   </div>

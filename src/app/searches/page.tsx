@@ -77,14 +77,14 @@ export default async function SearchesPage({ searchParams }: { searchParams: Pro
                     </td>
                     <td className="text-ink-muted">
                       {getPlaybook(r.industry).label}
-                      <div className="text-[11px] text-ink-faint max-w-[260px] truncate" title={describeFilters(r).join(" · ")}>
+                      <div className="text-xs text-ink-faint max-w-[260px] truncate" title={describeFilters(r).join(" · ")}>
                         {describeFilters(r).join(" · ")}
                       </div>
                     </td>
                     <td className="text-ink-muted">
                       {[r.city, r.region, r.country].filter(Boolean).join(", ")}
                       {r.stats?.area ? (
-                        <div className="text-[11px] text-ink-faint max-w-[220px] truncate" title={r.stats.area}>
+                        <div className="text-xs text-ink-faint max-w-[220px] truncate" title={r.stats.area}>
                           {r.stats.area}
                         </div>
                       ) : null}

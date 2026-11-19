@@ -12,19 +12,21 @@
  * otherwise a refresh triggered by one save would undo the next drop. A failed
  * save puts the board back to the last server state and shows why.
  *
- * Layout: the six stages a person works with are shown as two rows of three
- * columns, "Reaching out" and "In conversation", so a card has room for the
- * whole name on a laptop; the columns stack on a phone, where an empty one
- * takes a single line. The two outcomes (won, lost) are compact drop rows
- * underneath. "Discovered" and "Researching" are handled by the system and
+ * Layout: a strip on top names every stage with its count, in the order a
+ * conversation moves, so the whole pipeline reads in one line. Below it the
+ * six working stages are full columns in two rows of three ("Reaching out",
+ * "In conversation"), wide enough for a whole company name, and the two
+ * outcomes (won, lost) are drop rows underneath. Every business on the board
+ * is shown: a long column scrolls inside itself. On a phone one stage is shown
+ * at a time, chosen from the strip; a card moved with its "Move to" menu takes
+ * the view along. "Discovered" and "Researching" are handled by the system and
  * shown as counters above the board, not here. Nothing on a card appears or
- * moves on hover: on a laptop a card is moved by dragging it; on a phone it
- * also carries a "Move to" menu.
+ * moves on hover.
  */
 import Link from "next/link";
 import { useEffect, useId, useRef, useState } from "react";
 import { DndContext, DragOverlay, KeyboardSensor, MouseSensor, TouchSensor, closestCorners, pointerWithin, useDroppable, useSensor, useSensors, type CollisionDetection, type DragEndEvent, type DragOverEvent, type DragStartEvent, type UniqueIdentifier } from "@dnd-kit/core";
-import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { SortableContext, arrayMove, rectSortingStrategy, sortableKeyboardCoordinates, useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { moveOnBoardAction } from "@/app/actions";
 import { Badge, Icon, ScoreRing, fmtRelative } from "@/components/ui";
@@ -52,7 +54,11 @@ const GROUPS: { title: string; hint: string; stages: PipelineStage[] }[] = [
   { title: "Reaching out", hint: "Qualified, the email written, the email sent", stages: ["qualified", "ready_to_contact", "contacted"] },
   { title: "In conversation", hint: "They answered: from the first reply to a proposal", stages: ["replied", "meeting_scheduled", "proposal_sent"] },
 ];
+/** Every stage of the board, in the order a conversation moves; the two outcomes come last. */
+const BOARD: PipelineStage[] = ["qualified", "ready_to_contact", "contacted", "replied", "meeting_scheduled", "proposal_sent", "won", "lost"];
 const CLOSED: PipelineStage[] = ["won", "lost"];
+/** The dot in front of a stage name: where the conversation is. */
+const DOT: Record<string, string> = { qualified: "bg-ink-faint", ready_to_contact: "bg-ink-faint", contacted: "bg-accent", replied: "bg-ok", meeting_scheduled: "bg-ok", proposal_sent: "bg-ok", won: "bg-ok", lost: "bg-bad" };
 /** Stages offered in a card's "Move to" control: the board's own, plus "Discovered" to take a card off the board. */
 const MOVE_TARGETS = PIPELINE_STAGES.filter((s) => s.key !== "researching");
 const STAGES = new Set<string>(PIPELINE_STAGES.map((s) => s.key));
@@ -82,11 +88,13 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
   const more = (stage: PipelineStage) => hidden[stage] ?? 0;
   const moreLink = (stage: PipelineStage) =>
     more(stage) > 0 ? (
-      <Link href={`/businesses?stage=${stage}${moreQuery ? `&${moreQuery}` : ""}`} className="block text-center text-[11px] text-accent-text py-1.5 rounded-[var(--radius-sm)] hover:bg-surface hover:no-underline">
+      <Link href={`/businesses?stage=${stage}${moreQuery ? `&${moreQuery}` : ""}`} className="block text-center text-sm text-accent-text py-2 rounded-[var(--radius-sm)] hover:bg-surface hover:no-underline">
         {more(stage)} more in the list
       </Link>
     ) : null;
   const [items, setItems] = useState(initial);
+  /** The one stage shown on a phone: to start with, the first that holds cards. */
+  const [shown, setShown] = useState<PipelineStage>(() => BOARD.find((st) => initial.some((i) => i.stage === st)) ?? "qualified");
   const [active, setActive] = useState<BoardItem | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(0);
@@ -146,6 +154,7 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
     const next = [...itemsRef.current.filter((i) => i.id !== id), { ...item, stage }];
     itemsRef.current = next;
     setItems(next);
+    if (BOARD.includes(stage)) setShown(stage); // on a phone, follow the card to where it went
     save(id, stage, item.name);
   };
 
@@ -214,7 +223,7 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
     setItems(back);
   };
 
-  const card = (it: BoardItem, compact = false) => <SortableCard key={it.id} it={it} compact={compact} onMove={(s) => moveTo(it.id, s)} />;
+  const card = (it: BoardItem) => <SortableCard key={it.id} it={it} compact={false} onMove={(s) => moveTo(it.id, s)} />;
 
   return (
     <DndContext id={dndId} sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={onDragCancel}>
@@ -227,26 +236,43 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
             </button>
           </div>
         )}
+        {/* The whole pipeline in one line. On a phone it also picks the one stage that is shown. */}
+        <nav aria-label="Stages" className="-mx-1 px-1 flex items-center gap-1.5 overflow-x-auto no-scrollbar md:flex-wrap md:overflow-visible">
+          {BOARD.map((stage, i) => {
+            const count = byStage(items, stage).length + more(stage);
+            return (
+              <span key={stage} className="flex items-center gap-1.5 shrink-0">
+                {i > 0 && <Icon name="chevronRight" className={`w-3.5 h-3.5 text-ink-faint hidden md:block ${stage === "won" ? "md:ml-3" : ""} ${CLOSED.includes(stage) ? "md:invisible" : ""}`} />}
+                <button type="button" onClick={() => { setShown(stage); document.querySelector(`section[data-stage="${stage}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" }); }} aria-pressed={shown === stage} className={`chip gap-2 ${shown === stage ? "max-md:bg-accent-soft max-md:text-accent-text max-md:border-transparent" : ""} ${count ? "text-ink" : ""}`}>
+                  <span className={`w-2 h-2 rounded-full ${count ? DOT[stage] : "bg-line-strong"}`} aria-hidden />
+                  {label(stage)} <span className={`tabular-nums ${count ? "font-bold" : "opacity-60"}`}>{count}</span>
+                </button>
+              </span>
+            );
+          })}
+        </nav>
         {GROUPS.map((group) => (
-          <div key={group.title} role="group" aria-label={group.title}>
-            <div className="flex flex-wrap items-baseline gap-x-2 px-1 mb-2">
-              <h2 className="text-sm font-semibold text-ink">{group.title}</h2>
-              <span className="text-xs text-ink-faint">{group.hint}</span>
+          <div key={group.title} className={group.stages.includes(shown) ? "" : "hidden md:block"}>
+            <div className="hidden md:flex flex-wrap items-baseline gap-x-2 px-1 mb-2">
+              <h2 className="text-base font-semibold text-ink">{group.title}</h2>
+              <span className="text-sm text-ink-faint">{group.hint}</span>
             </div>
-            <div className="grid gap-3 md:grid-cols-3">
+            <div className="grid gap-3 md:grid-cols-3 md:items-start">
               {group.stages.map((stage) => {
                 const list = byStage(items, stage);
                 const count = list.length + more(stage);
                 return (
-                  <section key={stage} className="flex flex-col min-w-0" aria-label={label(stage)} data-stage={stage}>
-                    <Column stage={stage} list={list} active={active} className="flex-1 p-2">
-                      <div className="flex items-center justify-between gap-2 px-1 pb-2">
-                        <h3 className="text-xs font-semibold text-ink-muted truncate">{label(stage)}</h3>
-                        <span className={`text-[11px] tabular-nums rounded-full px-1.5 shrink-0 ${count ? "bg-surface text-ink-muted border border-line" : "text-ink-faint"}`}>{count}</span>
+                  <section key={stage} aria-label={label(stage)} data-stage={stage} className={`min-w-0 ${shown === stage ? "" : "hidden md:block"}`}>
+                    <Column stage={stage} list={list} active={active} className="p-2">
+                      <div className="flex items-center gap-2 px-1 pb-2">
+                        <span className={`w-2 h-2 rounded-full shrink-0 ${count ? DOT[stage] : "bg-line-strong"}`} aria-hidden />
+                        <h3 className="text-sm font-semibold text-ink truncate">{label(stage)}</h3>
+                        <span className={`ml-auto text-xs tabular-nums rounded-full px-2 py-0.5 ${count ? "bg-surface text-ink border border-line font-semibold" : "text-ink-faint"}`}>{count}</span>
                       </div>
-                      <div className="space-y-2">
+                      {/* Every card is here; a long stage scrolls inside its column. */}
+                      <div className="space-y-2 md:max-h-[34rem] md:overflow-y-auto scrollbar-thin md:pr-0.5">
                         {list.map((it) => card(it))}
-                        {list.length === 0 && <div className="text-xs text-ink-faint text-center rounded-[var(--radius-sm)] border border-dashed border-line-strong/70 py-3 md:py-6">{active ? "Drop here" : "Nothing here"}</div>}
+                        {list.length === 0 && <div className="text-sm text-ink-faint text-center rounded-[var(--radius-sm)] border border-dashed border-line-strong/70 py-5">{active ? "Drop here" : "Nothing in this stage"}</div>}
                         {moreLink(stage)}
                       </div>
                     </Column>
@@ -256,20 +282,22 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
             </div>
           </div>
         ))}
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className={`grid gap-3 md:grid-cols-2 ${CLOSED.includes(shown) ? "" : "hidden md:grid"}`}>
           {CLOSED.map((stage) => {
             const list = byStage(items, stage);
+            const count = list.length + more(stage);
             return (
-              <section key={stage} aria-label={label(stage)} data-stage={stage} className="min-w-0">
-                <Column stage={stage} list={list} active={active} grid className="p-2">
-                  <div className="flex items-center justify-between gap-2 px-1 pb-1.5">
-                    <h2 className="text-xs font-semibold text-ink-muted">{label(stage)}</h2>
-                    <span className="text-[11px] text-ink-faint tabular-nums">{list.length + more(stage)}</span>
+              <section key={stage} aria-label={label(stage)} data-stage={stage} className={`min-w-0 ${shown === stage ? "" : "hidden md:block"}`}>
+                <Column stage={stage} list={list} active={active} className="p-2">
+                  <div className="flex items-center gap-2 px-1 pb-2">
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${count ? DOT[stage] : "bg-line-strong"}`} aria-hidden />
+                    <h2 className="text-sm font-semibold text-ink">{label(stage)}</h2>
+                    <span className="ml-auto text-xs text-ink-faint tabular-nums">{count}</span>
                   </div>
                   {list.length === 0 ? (
-                    <div className="text-xs text-ink-faint px-1 py-1">{active ? "Drop here" : `Drag a business here to mark it ${label(stage).toLowerCase()}.`}</div>
+                    <div className="text-sm text-ink-faint px-1 py-2">{active ? "Drop here" : `Drag a business here to mark it ${label(stage).toLowerCase()}.`}</div>
                   ) : (
-                    <div className="grid gap-2 sm:grid-cols-2">{list.map((it) => card(it, true))}</div>
+                    <div className="grid gap-2 sm:grid-cols-2">{list.map((it) => card(it))}</div>
                   )}
                   {moreLink(stage)}
                 </Column>
@@ -278,18 +306,18 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
           })}
         </div>
       </div>
-      <DragOverlay dropAnimation={{ duration: 150 }}>{active ? <CardBody it={active} compact={CLOSED.includes(active.stage)} overlay /> : null}</DragOverlay>
+      <DragOverlay dropAnimation={{ duration: 150 }}>{active ? <CardBody it={active} overlay /> : null}</DragOverlay>
     </DndContext>
   );
 }
 
-function Column({ stage, list, active, grid = false, className, children }: { stage: PipelineStage; list: BoardItem[]; active: BoardItem | null; grid?: boolean; className: string; children: React.ReactNode }) {
+function Column({ stage, list, active, className, children }: { stage: PipelineStage; list: BoardItem[]; active: BoardItem | null; className: string; children: React.ReactNode }) {
   const { setNodeRef, isOver } = useDroppable({ id: colId(stage) });
   // Highlight the column the dragged card currently belongs to (it moves on hover), or the one hovered when empty.
   const highlight = isOver || (active !== null && list.some((i) => i.id === active.id));
   return (
-    <SortableContext items={list.map((i) => i.id)} strategy={grid ? rectSortingStrategy : verticalListSortingStrategy}>
-      <div ref={setNodeRef} data-column={stage} className={`rounded-[var(--radius)] border transition-colors ${className} ${highlight ? "border-accent bg-accent-soft/40" : grid ? "border-line bg-surface-3/40" : "border-line bg-surface-3/50"}`}>
+    <SortableContext items={list.map((i) => i.id)} strategy={rectSortingStrategy}>
+      <div ref={setNodeRef} data-column={stage} className={`rounded-[var(--radius)] border transition-colors ${className} ${highlight ? "border-accent bg-accent-soft/50" : "border-line bg-surface-3/50"}`}>
         {children}
       </div>
     </SortableContext>
@@ -352,7 +380,7 @@ function CardBody({ it, compact = false, overlay = false, onMove }: { it: BoardI
       <div className={`${shell} px-3 py-2 flex items-center gap-2`}>
         <div className="min-w-0 flex-1">
           {name}
-          <div className="text-[11px] text-ink-faint truncate">{[it.city, it.domain].filter(Boolean).join(" · ") || "no city or website"}</div>
+          <div className="text-xs text-ink-faint truncate">{[it.city, it.domain].filter(Boolean).join(" · ") || "no city or website"}</div>
         </div>
         {onMove && <MoveMenu it={it} onMove={onMove} />}
       </div>
@@ -392,7 +420,7 @@ function CardBody({ it, compact = false, overlay = false, onMove }: { it: BoardI
         </div>
       )}
       <div className="flex items-center justify-between gap-2 mt-2.5 pt-2 border-t border-line">
-        <span className="text-[11px] text-ink-faint truncate" title={it.movedAt ? new Date(it.movedAt).toLocaleString() : undefined}>
+        <span className="text-xs text-ink-faint truncate" title={it.movedAt ? new Date(it.movedAt).toLocaleString() : undefined}>
           {it.movedAt ? `moved ${fmtRelative(it.movedAt)}` : "\u00a0"}
         </span>
         {onMove && <MoveMenu it={it} onMove={onMove} />}

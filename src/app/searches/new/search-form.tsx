@@ -374,7 +374,7 @@ function ProviderRow({ p, checked, usable, planned, onToggle, note }: { p: Provi
         <span className="font-medium flex items-center gap-2 flex-wrap">
           {p.label}
           {planned ? <Badge tone="accent">New</Badge> : p.status === "active" ? <Badge tone="ok" dot>Active</Badge> : null}
-          {planned && <span className="text-[11px] font-normal text-ink-faint">coming later · not selectable</span>}
+          {planned && <span className="text-xs font-normal text-ink-faint">coming later · not selectable</span>}
         </span>
         <span className="block text-xs text-ink-muted">{planned ? note : p.description}</span>
         {!planned && note && <span className="block text-xs text-warn mt-0.5">{note}</span>}

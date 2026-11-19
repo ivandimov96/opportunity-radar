@@ -13,13 +13,13 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   const nav = page.getByRole("navigation").first();
   for (const name of ["Dashboard", "Businesses", "Outreach", "Pipeline", "Settings"]) await expect(nav.getByRole("link", { name, exact: true })).toBeVisible();
   await expect(nav.getByRole("link", { name: "Patterns" })).toHaveCount(0);
-  await expect(page.getByRole("link", { name: /1 email to review/ })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /1 email to review/ })).toBeVisible(); // the next step, with one button
   await expect(page.getByRole("heading", { name: "Finish setting up" })).toBeVisible(); // no keys in the test environment
-  await expect(page.getByLabel("From found to won").getByRole("link", { name: /Found 4/ })).toBeVisible();
+  await expect(page.getByLabel("From found to won").getByRole("link", { name: /Found\s*4/ })).toBeVisible();
   await expect(page.getByText("Progress, last 7 days")).toBeVisible(); // the default period
   await page.getByLabel("Date range").selectOption("yesterday");
   await expect(page).toHaveURL(/range=yesterday/);
-  await expect(page.getByLabel("From found to won").getByRole("link", { name: /Found 0/ })).toBeVisible(); // nothing was found yesterday
+  await expect(page.getByLabel("From found to won").getByRole("link", { name: /Found\s*0/ })).toBeVisible(); // nothing was found yesterday
   await page.goto("/");
 
   // A search's results are still one click from Businesses.
@@ -30,9 +30,9 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
 
   // Outreach: one email is ready; nothing is approved, so nothing can be sent yet.
   await page.goto("/");
-  await page.getByRole("link", { name: /1 email to review/ }).click();
+  await page.getByLabel("Waiting for you").getByRole("link", { name: /^Review/ }).click();
   await expect(page).toHaveURL(/\/outreach\?tab=ready/);
-  await expect(page.getByText("Send approved emails (0)")).toBeVisible();
+  await expect(page.getByText(/Send approved emails/)).toHaveCount(0); // nothing is approved yet, so there is nothing to send
   const row = page.locator("tr", { hasText: "Barton Creek Auto Care" });
   await expect(row).toContainText("service@barton-creek-auto-care.example");
   await expect(row).toContainText("Ready to review");
@@ -88,7 +88,7 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await page.locator('#sender input[name="postalAddress"]').fill("1 Main St, Austin, TX 78701");
   await page.locator("#sender").getByRole("button", { name: "Save" }).click();
   await expect(page.getByText("Saved.")).toBeVisible();
-  await expect(page.locator("#sender pre")).toContainText("Ivan Dimov");
+  await expect(page.locator("#signature pre")).toContainText("Ivan Dimov");
   await page.goto("/settings?tab=mailbox");
   await page.locator('#sending input[name="sendWindowStart"]').fill("0");
   await page.locator('#sending input[name="sendWindowEnd"]').fill("24");
@@ -119,10 +119,11 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await expect(page.getByText("No email is approved yet.")).toBeVisible(); // nothing is left to send twice
 
   // Pipeline: sending moved the business to "Contacted"; machine stages are counters, not columns.
-  await page.setViewportSize({ width: 1280, height: 1100 }); // the two rows of the board and the outcomes, all in view for the drags below
+  await page.setViewportSize({ width: 1280, height: 1100 }); // every stage of the board in view for the drags below
   await page.goto("/pipeline");
-  await expect(page.getByRole("link", { name: /^Discovered \d+$/ })).toBeVisible();
-  for (const group of ["Reaching out", "In conversation"]) await expect(page.getByRole("group", { name: group })).toBeVisible();
+  // A strip names every stage with its count; below it each stage is a column.
+  await expect(page.getByRole("navigation", { name: "Stages" })).toBeVisible();
+  for (const stage of ["qualified", "contacted", "replied", "won", "lost"]) await expect(page.locator(`section[data-stage="${stage}"]`)).toBeVisible();
   await expect(page.locator('section[data-stage="discovered"]')).toHaveCount(0);
   const card = page.locator("article[data-business]", { hasText: "Barton Creek Auto Care" });
   const inStage = (stage: string) => page.locator(`section[data-stage="${stage}"]`).locator(card);
@@ -220,7 +221,7 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await expect(page.getByText(/Northside Transmission & Brake was removed and will be left out of future searches/)).toBeVisible();
   await expect(page.getByRole("link", { name: "Northside Transmission & Brake" })).toHaveCount(0);
   await page.goto("/settings?tab=do-not-contact");
-  const removedRow = page.locator("#removed li", { hasText: "Northside Transmission & Brake" });
+  const removedRow = page.locator("#removed tbody tr", { hasText: "Northside Transmission & Brake" });
   await expect(removedRow).toContainText("northside-transmission.example");
   await expect(removedRow.getByRole("button", { name: "Allow again" })).toBeVisible();
   // A business that was emailed keeps its record: no remove button there.
@@ -304,10 +305,10 @@ test("mobile layout exposes navigation and the primary action", async ({ page })
   await page.getByRole("button", { name: "Close menu" }).click();
   const width = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(width).toBeLessThanOrEqual(390);
-  // The board stacks its columns on a phone and never scrolls sideways; a card can be moved without dragging.
+  // On a phone the board shows one stage at a time and never scrolls sideways; a card can be moved without dragging.
   await page.goto("/pipeline?range=all");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
-  await expect(page.getByRole("group", { name: "Reaching out" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Stages" })).toBeVisible();
   // On a phone each card has a "Move to" menu, since dragging is awkward on a touch screen.
   const phoneCard = page.locator("article[data-business]", { hasText: "Barton Creek Auto Care" });
   await phoneCard.getByLabel(/Move Barton Creek Auto Care/).selectOption("meeting_scheduled");

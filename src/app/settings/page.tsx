@@ -16,12 +16,20 @@ import { addSuppressionAction, allowBusinessAgainAction, removeSuppressionAction
 
 export const metadata = { title: "Settings" };
 
-export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ ok?: string; error?: string; tab?: string }> }) {
+export default async function SettingsPage({ searchParams }: { searchParams: Promise<{ ok?: string; error?: string; tab?: string; rq?: string; rp?: string }> }) {
   const sp = await searchParams;
   const tab: SettingsTab = SETTINGS_TABS.some((t) => t.key === sp.tab) ? (sp.tab as SettingsTab) : "sender";
   const cfg = getConfig();
   const [s, usage, aiLimit, credits, serperUsed, suppressions, lastSync] = await Promise.all([getSettings(), usageSummary(), monthlyAiBudgetUsd(), creditsUsedThisMonth(), usageTotal("serper"), listSuppressions(200), getState<{ at: string; replies: number; bounces: number; fetched: number }>("mail.lastSync")]);
   const removed = tab === "do-not-contact" ? await listRemoved() : [];
+  /** The removed list can grow long: it has its own search and pages. */
+  const REMOVED_PER_PAGE = 20;
+  const removedQuery = (sp.rq ?? "").trim().slice(0, 80);
+  const removedNeedle = removedQuery.toLowerCase();
+  const removedShown = removedNeedle ? removed.filter((r) => [r.name, r.city, r.websiteDomain].some((v) => (v ?? "").toLowerCase().includes(removedNeedle))) : removed;
+  const removedPages = Math.max(1, Math.ceil(removedShown.length / REMOVED_PER_PAGE));
+  const removedPage = Math.min(removedPages, Math.max(1, Number(sp.rp) || 1));
+  const removedHref = (page: number) => `/settings?tab=do-not-contact${removedQuery ? `&rq=${encodeURIComponent(removedQuery)}` : ""}${page > 1 ? `&rp=${page}` : ""}#removed`;
   const integ = integrationStatus();
   const worker = workerStatus();
   const missing = missingSenderDetails(s);
@@ -62,7 +70,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <Tabs items={SETTINGS_TABS.map((t) => ({ href: `/settings?tab=${t.key}`, label: t.label, count: tabBadge[t.key] || null, active: tab === t.key }))} />
 
       {tab === "sender" && (
-        <div className="max-w-3xl space-y-5">
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
           <Card id="sender" className="scroll-mt-4" title="You, the sender" description="Appended to every email by the system. The writer never invents who you are.">
             {missing.length > 0 && (
               <div className="mb-4">
@@ -86,20 +94,19 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                 </label>
                 <textarea className="textarea" id="voiceSamples" name="voiceSamples" rows={5} defaultValue={s.voiceSamples} placeholder="Paste two or three emails you wrote yourself. The writer picks up your rhythm and word choice, not the content." />
               </div>
-              <div className="sm:col-span-2 flex items-start justify-between gap-4 flex-wrap">
+              <div className="sm:col-span-2">
                 <button className="btn btn-primary">Save</button>
-                <div className="text-xs text-ink-muted max-w-sm">
-                  <div className="label">Signature preview</div>
-                  <pre className="whitespace-pre-wrap rounded-lg bg-surface-2 border border-line px-3 py-2 font-[inherit]">{signatureBlock(s)}</pre>
-                </div>
               </div>
             </form>
+          </Card>
+          <Card id="signature" title="Your signature" description="Added under every email, exactly like this.">
+            <pre className="letter-text whitespace-pre-wrap text-ink">{signatureBlock(s)}</pre>
           </Card>
         </div>
       )}
 
       {tab === "mailbox" && (
-        <div className="max-w-3xl space-y-5">
+        <div className="grid lg:grid-cols-2 gap-5 items-stretch">
           <Card id="mailbox" className="scroll-mt-4" title="Mailbox" description="Emails go out from your own address and replies are read from its inbox.">
             {cfg.mail.enabled ? (
               <>
@@ -143,7 +150,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
             <form action={saveSettingsAction} className="grid sm:grid-cols-2 gap-4">
               <input type="hidden" name="section" value="sending" />
               <Field label="Emails per day, at most" name="dailySendCap" type="number" value={s.dailySendCap} hint="Keep it low from a personal mailbox: 20 is a sensible ceiling." />
-              <Field label="Pause between two emails (seconds)" name="sendSpacingSeconds" type="number" value={s.sendSpacingSeconds} />
+              <Field label="Pause between emails (seconds)" name="sendSpacingSeconds" type="number" value={s.sendSpacingSeconds} />
               <Field label="Send from (hour, 0-23)" name="sendWindowStart" type="number" value={s.sendWindowStart} />
               <Field label="Send until (hour, 1-24)" name="sendWindowEnd" type="number" value={s.sendWindowEnd} hint="This computer's local time." />
               <Field label="Countries you may email" name="allowedCountries" value={s.allowedCountries.join(", ")} hint="Two-letter codes, comma separated. Empty = any. Rules for unsolicited business email differ by country; add one only after checking its rules." />
@@ -157,7 +164,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       )}
 
       {tab === "automation" && (
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start max-w-5xl">
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
           <Card id="automation" className="scroll-mt-4" title="Automation and budgets" description="What runs without you. Sending is never automatic.">
             <form action={saveSettingsAction} className="grid sm:grid-cols-2 gap-4">
               <input type="hidden" name="section" value="automation" />
@@ -223,7 +230,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       )}
 
       {tab === "do-not-contact" && (
-        <div className="max-w-3xl space-y-5">
+        <div className="space-y-5">
           <Card id="do-not-contact" className="scroll-mt-4" title="Do-not-contact list" description="Opt-outs and dead addresses land here on their own and are never emailed again. You can add addresses or whole domains." padded={false}>
             <form action={addSuppressionAction} className="flex flex-wrap gap-2 p-5 border-b border-line bg-surface-2">
               <input className="input flex-1 min-w-[220px]" name="value" placeholder="person@company.com or company.com" required />
@@ -251,34 +258,89 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               </ul>
             )}
           </Card>
-          <Card id="removed" className="scroll-mt-4" title="Removed businesses" description="Businesses you removed. Their research is gone; they are remembered here so a search or an import never adds them again." padded={false}>
+          {/* This list grows with every business that is not a fit: a table with a search, the full width. */}
+          <Card id="removed" className="scroll-mt-4" padded={false}>
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3.5 border-b border-line">
+              <h2 className="text-base font-semibold leading-6">
+                {removed.length} removed {removed.length === 1 ? "business" : "businesses"}
+              </h2>
+              <span className="text-sm text-ink-muted flex-1 min-w-[12rem]">Left out of every future search and import.</span>
+              {removed.length > 0 && (
+                <form action="/settings" method="get" className="flex items-center gap-2 w-full sm:w-auto">
+                  <input type="hidden" name="tab" value="do-not-contact" />
+                  <input className="input sm:w-64" name="rq" defaultValue={removedQuery} placeholder="Search name, city or website" aria-label="Search removed businesses" />
+                  <button className="btn btn-sm">Search</button>
+                  {removedQuery && (
+                    <Link href="/settings?tab=do-not-contact#removed" className="btn btn-sm btn-ghost">
+                      Clear
+                    </Link>
+                  )}
+                </form>
+              )}
+            </div>
             {removed.length === 0 ? (
-              <p className="px-5 py-4 text-sm text-ink-faint">Nothing has been removed. Use “Remove” on a business page, or “Remove shown” on the Not a fit view.</p>
+              <p className="px-5 py-4 text-sm text-ink-faint">Nothing has been removed. Use the remove button on a row of the Businesses table, or “Remove” on a business page.</p>
+            ) : removedShown.length === 0 ? (
+              <p className="px-5 py-4 text-sm text-ink-faint">No removed business matches “{removedQuery}”.</p>
             ) : (
-              <ul className="divide-y divide-line">
-                {removed.map((r) => (
-                  <li key={r.id} className="px-5 py-2.5 flex items-center gap-3 text-sm">
-                    <span className="min-w-0 flex-1">
-                      <span className="font-medium">{r.name}</span>
-                      <span className="block text-xs text-ink-faint truncate">{[r.city, r.websiteDomain, r.verdict ? verdictLabel(r.verdict) : null].filter(Boolean).join(" · ")}</span>
+              <>
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Business</th>
+                      <th>City</th>
+                      <th>Website</th>
+                      <th>What research said</th>
+                      <th>Removed</th>
+                      <th></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {removedShown.slice((removedPage - 1) * REMOVED_PER_PAGE, removedPage * REMOVED_PER_PAGE).map((r) => (
+                      <tr key={r.id}>
+                        <td className="font-semibold text-ink">{r.name}</td>
+                        <td className="text-ink-muted">{r.city ?? ""}</td>
+                        <td className="text-ink-muted">{r.websiteDomain ?? ""}</td>
+                        <td>{r.verdict ? <Badge tone="neutral">{verdictLabel(r.verdict)}</Badge> : <span className="text-ink-faint">not researched</span>}</td>
+                        <td className="text-ink-muted whitespace-nowrap">{new Date(r.removedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</td>
+                        <td className="md:text-right">
+                          <form action={allowBusinessAgainAction}>
+                            <input type="hidden" name="id" value={r.id} />
+                            <ConfirmButton confirmLabel="Allow again" className="btn btn-sm" message={`Allow ${r.name} again? The next search that finds it will add it back as a new business.`}>
+                              Allow again
+                            </ConfirmButton>
+                          </form>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {removedPages > 1 && (
+                  <nav className="flex items-center justify-between gap-3 px-5 py-3 border-t border-line text-sm text-ink-muted" aria-label="Removed businesses pages">
+                    <span>
+                      {(removedPage - 1) * REMOVED_PER_PAGE + 1}–{Math.min(removedShown.length, removedPage * REMOVED_PER_PAGE)} of {removedShown.length}
                     </span>
-                    <span className="text-xs text-ink-faint shrink-0">{new Date(r.removedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
-                    <form action={allowBusinessAgainAction}>
-                      <input type="hidden" name="id" value={r.id} />
-                      <ConfirmButton confirmLabel="Allow again" className="btn btn-ghost btn-sm" message={`Allow ${r.name} again? The next search that finds it will add it back as a new business.`}>
-                        Allow again
-                      </ConfirmButton>
-                    </form>
-                  </li>
-                ))}
-              </ul>
+                    <div className="flex items-center gap-1">
+                      <Link aria-disabled={removedPage <= 1} className={`btn btn-sm btn-ghost ${removedPage <= 1 ? "pointer-events-none opacity-40" : ""}`} href={removedHref(removedPage - 1)}>
+                        Previous
+                      </Link>
+                      <span className="tabular-nums px-1">
+                        page {removedPage} / {removedPages}
+                      </span>
+                      <Link aria-disabled={removedPage >= removedPages} className={`btn btn-sm btn-ghost ${removedPage >= removedPages ? "pointer-events-none opacity-40" : ""}`} href={removedHref(removedPage + 1)}>
+                        Next
+                      </Link>
+                    </div>
+                  </nav>
+                )}
+              </>
             )}
           </Card>
         </div>
       )}
 
       {tab === "system" && (
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start max-w-5xl">
+        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
           <Card id="connections" title="Connections" description="Keys live in the .env file on this computer, never here." padded={false}>
             <ul className="divide-y divide-line">
               {[integ.googleMaps, integ.websiteResearch, integ.ai, integ.webSearch, integ.storage].map((i) => (

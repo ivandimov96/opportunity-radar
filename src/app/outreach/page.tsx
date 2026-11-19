@@ -3,7 +3,7 @@ import { AutoRefresh } from "@/components/auto-refresh";
 import { ConfirmButton } from "@/components/confirm-button";
 import { Badge, Callout, Card, EmptyState, Flash, Icon, PageHeader, ScoreRing, StatusPill, Tabs, fmtRelative } from "@/components/ui";
 import { getConfig } from "@/lib/config";
-import { campaignHistory, outreachOverview, OUTREACH_TABS, type OutreachTab } from "@/lib/outreach/queries";
+import { outreachOverview, OUTREACH_TABS, type OutreachTab } from "@/lib/outreach/queries";
 import { openingLine } from "@/lib/outreach/validate";
 import { getSettings, missingSenderDetails } from "@/lib/settings";
 import { settingsHref } from "@/lib/settings-nav";
@@ -17,7 +17,7 @@ const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString("en-US"
 export default async function OutreachPage({ searchParams }: { searchParams: Promise<{ tab?: string; ok?: string; error?: string }> }) {
   const sp = await searchParams;
   const cfg = getConfig();
-  const [o, settings, history] = await Promise.all([outreachOverview(), getSettings(), campaignHistory(8)]);
+  const [o, settings] = await Promise.all([outreachOverview(), getSettings()]);
   const c = o.counts;
   const requested = OUTREACH_TABS.some((t) => t.key === sp.tab) ? (sp.tab as OutreachTab) : null;
   const tab: OutreachTab = requested ?? (c.ready + c.approved > 0 ? "ready" : c.review > 0 ? "review" : c.inFlight + c.sent + c.failed > 0 ? "sent" : "ready");
@@ -25,6 +25,8 @@ export default async function OutreachPage({ searchParams }: { searchParams: Pro
   const here = `/outreach?tab=${tab}`;
   const missing = missingSenderDetails(settings);
   const tabCount: Record<OutreachTab, number> = { ready: c.ready + c.approved, review: c.review, blocked: c.blocked, excluded: c.excluded, sent: o.byTab.sent.length };
+  /** When the most recent email of the Sent list went out. */
+  const lastSent = o.byTab.sent.map((r) => r.draft.sentAt).filter((v): v is string => Boolean(v)).sort().at(-1) ?? null;
   const StatusForm = ({ id, op, children, className = "btn btn-sm" }: { id: string; op: string; children: React.ReactNode; className?: string }) => (
     <form action={draftStatusAction}>
       <input type="hidden" name="draftId" value={id} />
@@ -54,11 +56,7 @@ export default async function OutreachPage({ searchParams }: { searchParams: Pro
               <Link href="/outreach/send" className="btn btn-primary btn-lg">
                 <Icon name="mail" /> Send approved emails ({c.approved})
               </Link>
-            ) : (
-              <span className="btn btn-primary btn-lg" aria-disabled="true" title="Approve at least one email first">
-                <Icon name="mail" /> Send approved emails (0)
-              </span>
-            )}
+            ) : null}
           </>
         }
       />
@@ -87,32 +85,47 @@ export default async function OutreachPage({ searchParams }: { searchParams: Pro
 
       <Tabs items={OUTREACH_TABS.map((t) => ({ href: `/outreach?tab=${t.key}`, label: t.label, count: tabCount[t.key], active: tab === t.key }))} />
 
-      {tab === "sent" && (
-        <div className="flex flex-wrap items-center gap-2 mb-3">
-          {cfg.mail.enabled && (
-            <form action={syncMailboxAction}>
-              <input type="hidden" name="returnTo" value={here} />
-              <button className="btn btn-sm">
-                <Icon name="refresh" /> Check the inbox for replies
-              </button>
-            </form>
-          )}
-          {c.inFlight > 0 &&
-            [...new Set(o.byTab.sent.filter((r) => r.draft.status === "queued").map((r) => r.draft.campaignId))].filter(Boolean).map((id) => (
-              <form key={id} action={cancelQueuedAction}>
-                <input type="hidden" name="campaignId" value={id!} />
-                <ConfirmButton confirmLabel="Stop sending" danger className="btn btn-sm btn-danger" message="Stop the emails that have not gone out yet? They return to Ready, still approved. Emails already sent stay sent.">
-                  <Icon name="x" /> Stop sending
-                </ConfirmButton>
-              </form>
-            ))}
-          <span className="text-xs text-ink-faint">
-            {history.length > 0 && `Batches: ${history.slice(0, 4).map((h) => `${h.name} (${h.counts.sent ?? 0} sent${h.counts.bounced ? `, ${h.counts.bounced} bounced` : ""}${h.counts.queued ? `, ${h.counts.queued} queued` : ""})`).join(" · ")}`}
-          </span>
-        </div>
-      )}
-
       <Card padded={false}>
+        {/* What this list is, how many, and what can be done with all of it. */}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-5 py-3.5 border-b border-line">
+          <h2 className="text-base font-semibold leading-6">
+            {rows.length} {rows.length === 1 ? "email" : "emails"}
+          </h2>
+          <span className="text-sm text-ink-muted flex-1 min-w-[12rem]">
+            {tab === "ready"
+              ? "Written and checked. Read each one, then approve it."
+              : tab === "review"
+                ? "A check found something. Open the email to see what and fix it."
+                : tab === "blocked"
+                  ? "Qualified, but there is no address that may be used."
+                  : tab === "excluded"
+                    ? "Left out by you. They are not sent."
+                    : lastSent
+                      ? `The last one went out ${fmtRelative(lastSent)}. Replies appear on the Dashboard as they arrive.`
+                      : "Replies appear on the Dashboard as they arrive."}
+          </span>
+          {tab === "sent" && (
+            <div className="flex flex-wrap items-center gap-2">
+              {cfg.mail.enabled && (
+                <form action={syncMailboxAction}>
+                  <input type="hidden" name="returnTo" value={here} />
+                  <button className="btn btn-sm">
+                    <Icon name="refresh" /> Check the inbox for replies
+                  </button>
+                </form>
+              )}
+              {c.inFlight > 0 &&
+                [...new Set(o.byTab.sent.filter((r) => r.draft.status === "queued").map((r) => r.draft.campaignId))].filter(Boolean).map((id) => (
+                  <form key={id} action={cancelQueuedAction}>
+                    <input type="hidden" name="campaignId" value={id!} />
+                    <ConfirmButton confirmLabel="Stop sending" danger className="btn btn-sm btn-danger" message="Stop the emails that have not gone out yet? They return to Ready, still approved. Emails already sent stay sent.">
+                      <Icon name="x" /> Stop sending
+                    </ConfirmButton>
+                  </form>
+                ))}
+            </div>
+          )}
+        </div>
         {rows.length === 0 && !(tab === "blocked" && o.unreachable.length) ? (
           <EmptyState
             icon="mail"
@@ -138,7 +151,7 @@ export default async function OutreachPage({ searchParams }: { searchParams: Pro
                   const blocks = (d.validation?.issues ?? []).filter((i) => i.severity === "block");
                   return (
                     <tr key={d.id} data-draft={d.id} data-status={d.status}>
-                      <td className="max-w-[220px]">
+                      <td className="md:max-w-[300px]">
                         <Link href={`/outreach/${d.id}`} className="row-link">
                           {b.name}
                         </Link>
@@ -158,8 +171,8 @@ export default async function OutreachPage({ searchParams }: { searchParams: Pro
                       <td>{b.priority != null ? <ScoreRing value={b.priority} size={34} /> : <span className="text-xs text-ink-faint">—</span>}</td>
                       <td className="whitespace-nowrap">
                         <StatusPill status={d.status} label={d.status === "queued" ? `Queued · ${when(d.scheduledAt)}` : d.status === "failed" ? "Not sent" : undefined} />
-                        {d.validation?.overridden && <div className="text-[11px] text-warn mt-0.5">approved despite a failed check</div>}
-                        {d.status === "sent" && <div className="text-[11px] text-ink-faint mt-0.5">{when(d.sentAt)}</div>}
+                        {d.validation?.overridden && <div className="text-xs text-warn mt-0.5">approved despite a failed check</div>}
+                        {d.status === "sent" && <div className="text-xs text-ink-faint mt-0.5">{when(d.sentAt)}</div>}
                       </td>
                       <td>
                         <div className="flex items-center justify-end gap-1.5">

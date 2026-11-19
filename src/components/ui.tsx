@@ -16,7 +16,7 @@ const dotClass: Record<Tone, string> = { neutral: "bg-ink-faint", ok: "bg-ok", w
 
 export function Badge({ tone = "neutral", children, title, dot, className = "" }: { tone?: Tone; children: ReactNode; title?: string; dot?: boolean; className?: string }) {
   return (
-    <span title={title} className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium leading-4 whitespace-nowrap ${toneClass[tone]} ${className}`}>
+    <span title={title} className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 font-sans text-xs font-semibold leading-5 tracking-normal whitespace-nowrap ${toneClass[tone]} ${className}`}>
       {dot && <span className={`w-1.5 h-1.5 rounded-full ${dotClass[tone]}`} />}
       {children}
     </span>
@@ -61,8 +61,8 @@ export function Card({ title, description, children, actions, className = "", pa
       {(title || actions) && (
         <header className="flex items-start justify-between gap-3 px-5 py-3.5 border-b border-line">
           <div className="min-w-0">
-            <h2 className="text-[0.9rem] font-semibold leading-5">{title}</h2>
-            {description && <p className="text-xs text-ink-muted mt-0.5">{description}</p>}
+            <h2 className="text-base font-semibold leading-6">{title}</h2>
+            {description && <p className="text-sm text-ink-muted mt-0.5">{description}</p>}
           </div>
           {actions && <div className="flex items-center gap-2 shrink-0">{actions}</div>}
         </header>
@@ -112,7 +112,7 @@ export function Meter({ label, used, limit, unit, hint }: { label: string; used:
       <div className="h-1.5 rounded-full bg-surface-3 mt-1.5 overflow-hidden" role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={limit} aria-valuenow={Math.min(used, limit)}>
         <div className={`h-full rounded-full ${pct > 85 ? "bg-bad" : pct > 60 ? "bg-warn" : "bg-ok"}`} style={{ width: `${used > 0 ? Math.max(2, pct) : 0}%` }} />
       </div>
-      {hint && <div className="text-[11px] text-ink-faint mt-1">{hint}</div>}
+      {hint && <div className="text-xs text-ink-faint mt-1">{hint}</div>}
     </div>
   );
 }
@@ -139,7 +139,7 @@ export function ScoreRing({ value, label, size = 56, tone, sub }: { value: numbe
         </text>
       </svg>
       {label && (
-        <div className="text-[10px] uppercase tracking-wide text-ink-muted font-medium leading-none">
+        <div className="text-[11px] uppercase tracking-wide text-ink-muted font-medium leading-none">
           {label}
           {sub && <span className="block normal-case tracking-normal text-ink-faint mt-0.5">{sub}</span>}
         </div>
@@ -153,7 +153,7 @@ export function ScoreBar({ value, label, tone }: { value: number; label?: string
   return (
     <div className="min-w-[96px]">
       {label && (
-        <div className="flex justify-between text-[10px] uppercase tracking-wide text-ink-muted font-medium">
+        <div className="flex justify-between text-[11px] uppercase tracking-wide text-ink-muted font-medium">
           <span>{label}</span>
           <span className="text-ink tabular-nums">{value}</span>
         </div>
@@ -177,10 +177,10 @@ export interface Step {
 /** Horizontal workflow stepper. `compact` renders dots only (for table rows). */
 export function Stepper({ steps, compact = false }: { steps: Step[]; compact?: boolean }) {
   const cls: Record<StepState, string> = {
-    done: "bg-ok text-white border-ok",
+    done: "bg-ok text-accent-fg border-ok",
     active: "bg-accent text-accent-fg border-accent pulse",
     todo: "bg-surface border-line-strong text-ink-faint",
-    failed: "bg-bad text-white border-bad",
+    failed: "bg-bad text-accent-fg border-bad",
     skipped: "bg-surface-3 border-line text-ink-faint",
   };
   if (compact) {
@@ -196,7 +196,7 @@ export function Stepper({ steps, compact = false }: { steps: Step[]; compact?: b
     <ol className="grid" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>
       {steps.map((s, i) => {
         const node = (
-          <span className={`relative z-10 w-7 h-7 rounded-full border-2 grid place-items-center text-[11px] font-semibold shrink-0 ${cls[s.state]}`}>
+          <span className={`relative z-10 w-7 h-7 rounded-full border-2 grid place-items-center text-xs font-semibold shrink-0 ${cls[s.state]}`}>
             {s.state === "done" ? <Icon name="check" className="w-3.5 h-3.5" /> : s.state === "failed" ? <Icon name="x" className="w-3.5 h-3.5" /> : i + 1}
           </span>
         );
@@ -206,7 +206,7 @@ export function Stepper({ steps, compact = false }: { steps: Step[]; compact?: b
             {i > 0 && <span className={`absolute top-[13px] h-0.5 left-[-50%] right-1/2 ${steps[i - 1].state === "done" ? "bg-ok" : "bg-line"}`} aria-hidden />}
             {s.href ? <Link href={s.href} className="hover:no-underline">{node}</Link> : node}
             <div className={`mt-1.5 text-xs font-medium leading-tight ${s.state === "todo" || s.state === "skipped" ? "text-ink-faint" : "text-ink"}`}>{s.label}</div>
-            {s.hint && <div className="text-[11px] text-ink-faint leading-tight mt-0.5">{s.hint}</div>}
+            {s.hint && <div className="text-xs text-ink-faint leading-tight mt-0.5">{s.hint}</div>}
           </li>
         );
       })}
@@ -262,9 +262,9 @@ export function PageHeader({ eyebrow, title, subtitle, actions, crumbs }: { eyeb
       )}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          {eyebrow && <div className="text-[11px] font-semibold uppercase tracking-wider text-accent-text mb-1">{eyebrow}</div>}
-          <h1 className="text-xl md:text-2xl font-semibold leading-tight">{title}</h1>
-          {subtitle && <div className="text-sm text-ink-muted mt-1 max-w-3xl">{subtitle}</div>}
+          {eyebrow && <div className="text-sm font-semibold text-accent-text mb-1">{eyebrow}</div>}
+          <h1 className="text-[1.6rem] md:text-[1.9rem] leading-tight">{title}</h1>
+          {subtitle && <div className="text-[0.95rem] text-ink-muted mt-1.5 max-w-3xl">{subtitle}</div>}
         </div>
         {actions && <div className="flex items-center gap-2 flex-wrap">{actions}</div>}
       </div>
@@ -280,7 +280,7 @@ export function Tabs({ items }: { items: { href: string; label: string; count?: 
       {items.map((t) => (
         <Link key={t.href} href={t.href} className={`px-3 py-2.5 text-sm whitespace-nowrap hover:no-underline border-b-2 transition-colors ${t.active ? "border-accent text-ink font-semibold" : "border-transparent text-ink-muted hover:text-ink hover:border-line-strong"}`}>
           {t.label}
-          {t.count != null && <span className={`ml-1.5 text-[11px] rounded-full px-1.5 py-0.5 ${t.active ? "bg-accent-soft text-accent-text" : "bg-surface-3 text-ink-faint"}`}>{t.count}</span>}
+          {t.count != null && <span className={`ml-1.5 text-xs rounded-full px-1.5 py-0.5 ${t.active ? "bg-accent-soft text-accent-text" : "bg-surface-3 text-ink-faint"}`}>{t.count}</span>}
         </Link>
       ))}
     </nav>

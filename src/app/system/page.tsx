@@ -79,7 +79,7 @@ export default async function SystemPage() {
                         </td>
                         <td>
                           <StatusPill status={j.status} />
-                          {j.status === "running" && j.progress?.message && <div className="text-[11px] text-ink-faint mt-0.5 max-w-[200px] truncate">{j.progress.message}</div>}
+                          {j.status === "running" && j.progress?.message && <div className="text-xs text-ink-faint mt-0.5 max-w-[200px] truncate">{j.progress.message}</div>}
                         </td>
                         <td className="text-xs tabular-nums">
                           {j.attempts} / {j.maxAttempts}
@@ -145,7 +145,7 @@ export default async function SystemPage() {
                     <div className="text-xs text-ink-muted mt-0.5">
                       {h.found} candidates · avg {fmtSec(h.avgMs)} · last {fmtRelative(h.lastAt)}
                     </div>
-                    {h.lastError && <div className="text-[11px] text-bad mt-0.5 line-clamp-2">{h.lastError}</div>}
+                    {h.lastError && <div className="text-xs text-bad mt-0.5 line-clamp-2">{h.lastError}</div>}
                   </li>
                 ))}
               </ul>

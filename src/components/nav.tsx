@@ -39,11 +39,13 @@ export function AppShell({ counts, setup = [], serverless = false, children }: {
 
   const sidebar = (
     <div className="flex flex-col h-full">
-      <div className="px-4 pt-4 pb-2 flex items-center gap-2.5">
+      {/* The airmail edge: this is a desk for letters that travel. */}
+      <div className="airmail shrink-0" aria-hidden />
+      <div className="px-4 pt-4 pb-3 flex items-center gap-2.5">
         <span className="w-8 h-8 rounded-lg bg-accent text-accent-fg grid place-items-center shrink-0">
           <Icon name="target" className="w-4.5 h-4.5" />
         </span>
-        <Link href="/" className="font-semibold text-ink hover:no-underline leading-tight whitespace-nowrap min-w-0 truncate">
+        <Link href="/" className="font-serif text-[1.05rem] font-semibold text-ink hover:no-underline leading-tight whitespace-nowrap min-w-0 truncate">
           Opportunity Radar
         </Link>
         <button className="ml-auto lg:hidden btn btn-ghost btn-sm" onClick={() => setOpen(false)} aria-label="Close menu">
@@ -55,12 +57,12 @@ export function AppShell({ counts, setup = [], serverless = false, children }: {
           const active = isActive(it.href, it.also);
           const n = it.count ? (counts?.[it.count] ?? 0) : 0;
           return (
-            <Link key={it.href} href={it.href} title={it.hint} aria-current={active ? "page" : undefined} className={`relative flex items-center gap-2.5 rounded-lg px-2.5 h-9 text-[13.5px] hover:no-underline transition-colors ${active ? "bg-accent-soft text-accent-text font-medium" : "text-ink-muted hover:bg-surface-3 hover:text-ink"}`}>
+            <Link key={it.href} href={it.href} title={it.hint} aria-current={active ? "page" : undefined} className={`relative flex items-center gap-3 rounded-lg px-3 h-10 text-[0.92rem] hover:no-underline transition-colors ${active ? "bg-accent-soft text-accent-text font-semibold" : "text-ink-muted font-medium hover:bg-surface-3 hover:text-ink"}`}>
               {active && <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-r bg-accent" aria-hidden />}
-              <Icon name={it.icon} className={`w-4 h-4 shrink-0 ${active ? "text-accent" : "text-ink-faint"}`} />
+              <Icon name={it.icon} className={`w-[1.1rem] h-[1.1rem] shrink-0 ${active ? "text-accent" : "text-ink-faint"}`} />
               <span className="truncate">{it.label}</span>
               {n > 0 && (
-                <span className="ml-auto rounded-full bg-accent text-accent-fg text-[11px] font-semibold leading-none px-1.5 py-1 tabular-nums" title={`${n} ${it.countHint}`} aria-hidden>
+                <span className="ml-auto rounded-full bg-accent text-accent-fg text-xs font-semibold leading-none px-1.5 py-1 tabular-nums" title={`${n} ${it.countHint}`} aria-hidden>
                   {n}
                 </span>
               )}
@@ -94,7 +96,7 @@ export function AppShell({ counts, setup = [], serverless = false, children }: {
         <button className="btn btn-ghost btn-sm" onClick={() => setOpen(true)} aria-label="Open menu">
           <Icon name="menu" className="w-5 h-5" />
         </button>
-        <Link href="/" className="font-semibold text-ink hover:no-underline">
+        <Link href="/" className="font-serif text-[1.05rem] font-semibold text-ink hover:no-underline">
           Opportunity Radar
         </Link>
         <Link href="/searches/new" className="ml-auto btn btn-primary btn-sm">

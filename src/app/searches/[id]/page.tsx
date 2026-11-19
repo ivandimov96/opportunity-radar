@@ -117,7 +117,7 @@ export default async function SearchDetail({ params, searchParams }: { params: P
             {!discovering && st?.durationMs != null && <span className="text-xs text-ink-faint">took {fmtSec(st.durationMs)}</span>}
             {!discovering && st?.cached === "all" && <Badge tone="info" title="Every grid cell of the area was already in the local copy: no source was read">from local cache</Badge>}
             {!discovering && st?.cached === "some" && <Badge tone="info" title="Part of the area came from the local copy; the rest was read from the sources">partly cached</Badge>}
-            {!discovering && st?.releases && Object.keys(st.releases).length > 0 && <span className="text-[11px] text-ink-faint">{Object.entries(st.releases).map(([k, r]) => `${PROVIDER_LABEL[k] ?? k} ${r}`).join(" · ")}</span>}
+            {!discovering && st?.releases && Object.keys(st.releases).length > 0 && <span className="text-xs text-ink-faint">{Object.entries(st.releases).map(([k, r]) => `${PROVIDER_LABEL[k] ?? k} ${r}`).join(" · ")}</span>}
           </div>
           <div className="text-xs text-ink-faint">{st?.area ? `Area: ${st.area}` : ""}</div>
         </div>
@@ -134,7 +134,7 @@ export default async function SearchDetail({ params, searchParams }: { params: P
               <span className="min-w-0">
                 <span className="block text-xs text-ink-muted">{s.label}</span>
                 <span className="block text-xl font-semibold tabular-nums leading-tight">{s.n}</span>
-                <span className="block text-[11px] text-ink-faint">{s.hint}</span>
+                <span className="block text-xs text-ink-faint">{s.hint}</span>
               </span>
             </li>
           ))}

@@ -542,3 +542,41 @@ compressed phrases such as "proof to fitted"), about them and what they would ga
 honest question or a plain statement. The capital is not left to the model: `capitalizeSubject`
 applies it to every written and suggested subject, and a subject typed in lower case by the
 operator gets a remark. Advert words, fake "Re:" and duplicates within a batch stay blocked.
+
+## D45 — A look of its own: airmail (2026-11-19)
+The founder asked for the whole design to be reworked for ease of use, using the frontend-design
+skill (installed under `.claude/skills/frontend-design`, Apache 2.0, read before use). The
+structure of the screens (D37 to D41) stays; the look and the sizes change, all through the shared
+stylesheet (`src/app/globals.css`) and the shared components, so every screen follows.
+- Subject: a one-person desk for letters that travel from Skopje to companies abroad. Palette
+  "airmail": cool letter paper, navy ink, airmail blue for every action, postmark green for done;
+  the red of an airmail edge appears only in the striped band at the top of the app. Light and
+  dark.
+- Type: Avenir Next (with system fallbacks) for everything operated, Charter for page titles and
+  for the email itself, which is shown and edited as a letter. No font is downloaded.
+- Easier to read and hit: the root size is 106% so text and controls grow together, the smallest
+  text is 12px and up, buttons and fields are taller, field labels and table headings are in
+  sentence case (no capitals), muted text has more contrast, cards are flat.
+- Rejected: the bold options the skill warns about as defaults (cream with a serif and terracotta,
+  near-black with one acid accent, newspaper columns) and any change to where things are.
+
+## D46 — Screens reorganised: full width, a header on every list, tables as cards on a phone (2026-11-19)
+Asked for page by page by the founder, each checked on screen at laptop and phone width.
+- Pipeline board: a strip names every stage with its count, in the order a conversation moves.
+  Below it the six working stages are full columns in two rows of three, with Won and Lost
+  underneath. Every card is shown (a long stage scrolls inside its column): the earlier limit of
+  twelve looked like lost businesses. On a phone one stage is shown at a time, chosen from the
+  strip. A layout that folded empty stages into narrow strips was tried and rejected by the
+  founder the same day. The counters for "Discovered" and "Researching" were removed.
+- History: one line per event (time, kind, business, what happened); also used on the dashboard
+  and on a business's Activity tab.
+- Dashboard: the next step as one sentence and one button; four figures; the path from found to
+  won with the share kept at every step and a separate bar per step; replies and planned actions
+  only when there are any; the latest events. Businesses that are found but not researched count
+  as a next step. No row leaves part of the width empty.
+- Businesses and Outreach: search and period on one line; the table has a header with the count,
+  what the list is and the action for all of it. The send button shows only when something is
+  approved.
+- Settings: every tab uses the full width; the signature is its own card; removed businesses are
+  a table with a search and pages of twenty.
+- Every table (`.table`) becomes a list of cards below 768px.
