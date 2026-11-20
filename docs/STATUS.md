@@ -17,6 +17,30 @@
 - The founder's database was emptied at their request (account, settings, usage records and the
   do-not-contact list kept).
 
+## 2026-11-20 (later): usage per workspace and plans (decision D57)
+
+Second step towards other customers: each workspace's searches, researched businesses,
+emails and search credits are counted per month, and a plan limits searches and research
+(trial 3 / 10, starter 20 / 100, growth 60 / 400, scale 200 / 1500: placeholder numbers).
+A full plan refuses in plain words before anything is queued or spent. Settings shows a
+customer their plan and the founder every account with its use, cost and plan. Migration
+0022. Five integration tests; both views clicked through on a private copy with a second
+account inserted by hand (there is still no way for a customer account to get in).
+
+## 2026-11-20 (late): a mailbox and settings per workspace (decision D56)
+
+First step towards other customers: each workspace connects its own mailbox in Settings
+(provider presets or its own mail server, app password stored encrypted, saved only after
+a successful sign-in) and has its own settings, so its emails carry its own name and
+signature. Migration 0020 (`mailboxes`; `settings` keyed by workspace, existing rows go to
+the first workspace). Checked with 6 new integration tests and a click-through on a private
+copy with the in-memory mailbox; a real mailbox has not been connected through the form yet.
+Extended the same evening to several mailboxes per workspace with add, remove and a default
+(migration 0021), including removing the server's own mailbox. 8 integration tests.
+"Sign in with Microsoft" is built behind `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET`; the
+founder registered the app in Entra and connected a real Microsoft mailbox the same evening.
+Open: Google sign-in, the rest of the scheduler per workspace, opening accounts.
+
 ## 2026-11-20 (night): lists, scrolling and the search page
 
 - Outreach: every tab and the "No address on record" list are in pages of 25; a row

@@ -107,14 +107,14 @@ function Part({ icon, tone, title, children, id }: { icon: React.ComponentProps<
   );
 }
 
-export function SearchForm(props: { playbooks: PlaybookOption[]; source: SourceState; countries: Country[]; initialRegions: Region[]; cost: SearchCostBasis; aiEnabled: boolean; firecrawlEnabled: boolean; defaults: RawSearchValues; allowedCountries: string[]; past: PastSearch[] }) {
+export function SearchForm(props: { profile: { /** The kinds of business the operator sells to. */ kinds: string[]; /** What the profile still lacks for searching, in plain words. */ missing: string[] }; playbooks: PlaybookOption[]; source: SourceState; countries: Country[]; initialRegions: Region[]; cost: SearchCostBasis; aiEnabled: boolean; firecrawlEnabled: boolean; defaults: RawSearchValues; allowedCountries: string[]; past: PastSearch[] }) {
   const [state, action, pending] = useActionState<CreateSearchState, FormData>(createSearch, null);
   // Remount the fields whenever the server returns a new state so every input re-initializes from the submitted values.
   const key = state ? JSON.stringify(state.values) : "initial";
   return <SearchFields key={key} {...props} state={state} action={action} pending={pending} />;
 }
 
-function SearchFields({ playbooks, source, countries, initialRegions, cost, aiEnabled, firecrawlEnabled, defaults, allowedCountries, past, state, action, pending }: { playbooks: PlaybookOption[]; source: SourceState; countries: Country[]; initialRegions: Region[]; cost: SearchCostBasis; aiEnabled: boolean; firecrawlEnabled: boolean; defaults: RawSearchValues; allowedCountries: string[]; past: PastSearch[]; state: CreateSearchState; action: (fd: FormData) => void; pending: boolean }) {
+function SearchFields({ profile, playbooks, source, countries, initialRegions, cost, aiEnabled, firecrawlEnabled, defaults, allowedCountries, past, state, action, pending }: { profile: { /** The kinds of business the operator sells to. */ kinds: string[]; /** What the profile still lacks for searching, in plain words. */ missing: string[] }; playbooks: PlaybookOption[]; source: SourceState; countries: Country[]; initialRegions: Region[]; cost: SearchCostBasis; aiEnabled: boolean; firecrawlEnabled: boolean; defaults: RawSearchValues; allowedCountries: string[]; past: PastSearch[]; state: CreateSearchState; action: (fd: FormData) => void; pending: boolean }) {
   const v = state?.values ?? defaults;
   const errors = state?.errors ?? {};
   const [industry, setIndustry] = useState(v.industry);
@@ -262,6 +262,12 @@ function SearchFields({ playbooks, source, countries, initialRegions, cost, aiEn
             </Callout>
           )}
 
+          {profile.missing.length > 0 && (
+            <Callout tone="info" title="Your profile can fill this in for you" action={<Link href="/settings?tab=sender&step=audience" className="btn btn-sm">Complete it</Link>}>
+              Still missing under Your details: {profile.missing.join(", ")}. You can search without it.
+            </Callout>
+          )}
+
           <Part icon="search" tone="var(--accent)" title="What kind of business">
             <Field label="Kind of business" htmlFor="businessType" error={errors.customCategory ?? errors.industry}>
               <div className="relative">
@@ -301,6 +307,22 @@ function SearchFields({ playbooks, source, countries, initialRegions, cost, aiEn
                   {preset ? " (a ready-made type: narrow it with the sub-categories below)" : ", exactly as written"}.
                 </span>
               </p>
+            )}
+
+            {profile.kinds.length > 0 && (
+              <div className="mt-5 pt-5 border-t border-line">
+                <div className="label">From your profile</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {profile.kinds.map((kind) => {
+                    const on = !preset && customCategory.trim().toLowerCase() === kind.toLowerCase();
+                    return (
+                      <button key={kind} type="button" onClick={() => typeChanged(on ? "" : kind)} className={`chip ${on ? "chip-active" : ""}`}>
+                        {kind}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             )}
 
             <div className="mt-5 pt-5 border-t border-line">

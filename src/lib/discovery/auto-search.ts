@@ -6,6 +6,7 @@
  * research runs low. It never repeats a city for the same kind of business,
  * and every search is one page of listings, so its cost is known beforehand.
  */
+import { room } from "@/lib/usage";
 import { and, eq, gte, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { searches, type SearchFilters } from "@/db/schema";
@@ -65,6 +66,8 @@ export async function startAutoSearch(targets: SearchTarget[]): Promise<{ id: st
   const rows = await db.select({ country: searches.country, city: searches.city, filters: searches.filters }).from(searches).where(eq(searches.workspaceId, ws)).all();
   const next = pickNextSearch(targets, rows.map((r) => ({ what: r.filters?.customCategory ?? null, country: r.country, city: r.city })));
   if (!next) return null;
+  // The plan's monthly searches: the app does not start one on its own when none are left.
+  if ((await room("searches")).left < 1) return null;
   const { target, place } = next;
   const id = newId();
   const region = place.region ?? (target.region || null);

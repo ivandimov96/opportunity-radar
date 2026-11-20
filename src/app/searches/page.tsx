@@ -41,7 +41,7 @@ export default async function SearchesPage({ searchParams }: { searchParams: Pro
             <TableEmpty
               icon="search"
               title="No searches yet"
-              description="Start with an industry, a country, a region and a city. Google Maps finds the businesses; a CSV brings your own list."
+              description="Start with an industry, a country, a region and a city. The search finds the businesses; a CSV brings your own list."
               action={
                 <>
                   <Link href="/searches/new" className="btn btn-primary">

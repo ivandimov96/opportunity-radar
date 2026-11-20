@@ -10,7 +10,7 @@ import { openingLine } from "@/lib/outreach/validate";
 import { autopilotStatus, releaseTime } from "@/lib/outreach/autopilot";
 import { STEP, stepLabel } from "@/lib/outreach/steps";
 import { automaticSendHold } from "@/lib/outreach/eligibility";
-import { getSettings, missingSenderDetails } from "@/lib/settings";
+import { getSettings, missingSenderDetails, replyRulesOf } from "@/lib/settings";
 import { settingsHref } from "@/lib/settings-nav";
 import { verdictLabel } from "@/lib/pipeline/stages";
 import { approveAllReadyAction, cancelQueuedAction, draftStatusAction, markDraftSentAction, retryFailedAction, setBusinessEmailAction, syncMailboxAction } from "@/app/actions";
@@ -34,7 +34,9 @@ export default async function OutreachPage({ searchParams }: { searchParams: Pro
   const c = o.counts;
   const pilot = await autopilotStatus(settings);
   /** When a ready email of the open batch leaves on its own, or null when it waits for the operator. */
-  const goesOutAt = (d: { status: string; step: number; updatedAt: string; campaignId: string | null }) => (pilot.active && d.status === "ready" && d.campaignId === o.campaign.id && (d.step !== STEP.answer || settings.autoAnswer) ? releaseTime(d.updatedAt, settings) : null);
+  // Some kind of reply is set to be answered on its own.
+  const answersGoOut = Object.values(replyRulesOf(settings)).some((r) => r.action === "send");
+  const goesOutAt = (d: { status: string; step: number; updatedAt: string; campaignId: string | null }) => (pilot.active && d.status === "ready" && d.campaignId === o.campaign.id && (d.step !== STEP.answer || answersGoOut) ? releaseTime(d.updatedAt, settings) : null);
   const requested = OUTREACH_TABS.some((t) => t.key === sp.tab) ? (sp.tab as OutreachTab) : null;
   const tab: OutreachTab = requested ?? (c.ready + c.approved > 0 ? "ready" : c.review > 0 ? "review" : c.inFlight + c.sent + c.failed > 0 ? "sent" : "ready");
   const all = o.byTab[tab];

@@ -1,4 +1,7 @@
 import Link from "next/link";
+import { notFound } from "next/navigation";
+import { workspaceId } from "@/lib/workspace";
+import { FIRST_WORKSPACE_ID } from "@/db/schema";
 import { PROVIDER_LABEL } from "@/lib/discovery";
 import { recentJobs, sourceHealth } from "@/lib/queries";
 import { jobCounts } from "@/lib/jobs/queue";
@@ -14,6 +17,8 @@ import { cancelJobAction, retryJobAction } from "@/app/actions";
 const fmtSec = (ms?: number | null) => (ms == null ? "—" : `${(ms / 1000).toFixed(1)} s`);
 
 export default async function SystemPage() {
+  // The product's own workspace only: jobs, providers and credits are not a customer's business.
+  if ((await workspaceId()) !== FIRST_WORKSPACE_ID) notFound();
   const cfg = getConfig();
   const [jobsRows, counts, health, usage, account] = await Promise.all([recentJobs(60), jobCounts(), sourceHealth(), creditsUsedThisMonth(), creditUsage()]);
   const worker = workerStatus();

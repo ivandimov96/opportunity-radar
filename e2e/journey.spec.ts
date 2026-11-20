@@ -119,33 +119,44 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await page.goto("/settings?tab=mailbox");
   await expect(page.locator("#mailbox")).toContainText("Connected");
   await expect(page.locator("#mailbox")).toContainText("in-memory test mailbox");
-  await page.goto("/settings"); // opens on "You"
+  await page.goto("/settings"); // opens on the first tab that still needs something
+  await expect(page.getByRole("heading", { name: "Who is writing?" })).toBeVisible();
+  // Four plain tabs, all of them open; the ones the app still needs something from carry a dot.
+  await expect(page.getByLabel("Your details").getByRole("link")).toHaveText([/Profile/, /Offer/, /Customers/, /Extras/]);
+  await expect(page.getByLabel("Your details").getByLabel("needs your attention")).toHaveCount(3);
   await page.locator('#sender input[name="senderName"]').fill("Ivan Dimov");
   await page.locator('#sender input[name="senderCompany"]').fill("Dimov Software");
   await page.locator('#sender input[name="postalAddress"]').fill("1 Main St, Austin, TX 78701");
-  await page.locator("#sender").getByRole("button", { name: "Save" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByText("Saved.")).toBeVisible();
+  // Saving stays on the tab, and its dot is gone.
+  await expect(page.getByRole("heading", { name: "Who is writing?" })).toBeVisible();
+  await expect(page.getByLabel("Your details").getByLabel("needs your attention")).toHaveCount(2);
   await expect(page.locator("#signature pre")).toContainText("Ivan Dimov");
   // The signature can be edited: what is typed is used as written, and nothing is added after it.
   const sig = page.locator("#signature");
-  await expect(sig.locator("textarea[name=signature]")).toHaveValue(/Ivan Dimov\nDimov Software/);
-  await sig.getByRole("button", { name: "Save signature" }).click(); // saved unchanged: it stays automatic
-  await page.waitForURL(/#signature/); // the save has come back before the next step types
+  // It was saved along with the details, unchanged: it stays automatic, so there is nothing to go back to.
   await expect(sig.getByRole("button", { name: "Use my details" })).toHaveCount(0);
+  await sig.getByText("Write my own signature").click();
+  await expect(sig.locator("textarea[name=signature]")).toHaveValue(/Ivan Dimov\nDimov Software/);
   await sig.locator("textarea[name=signature]").fill("Ivan\nDimov Software, Austin");
-  await sig.getByRole("button", { name: "Save signature" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Saved.")).toBeVisible();
+  await page.goto("/settings?tab=sender&step=you");
   await expect(sig.locator("pre")).toContainText("Ivan\nDimov Software, Austin");
   await expect(sig.locator("pre")).toHaveText("Ivan\nDimov Software, Austin"); // exactly what was typed, nothing after it
   await expect(sig.getByRole("button", { name: "Use my details" })).toBeVisible();
   await expect(sig.locator("textarea")).toHaveCount(1); // one box: the signature itself
   // One button goes back to the signature built from the details.
   await sig.getByRole("button", { name: "Use my details" }).click();
+  await expect(page.getByText("Saved.")).toBeVisible();
+  await page.goto("/settings?tab=sender&step=you");
   await expect(sig.locator("pre")).toContainText("Ivan Dimov");
   await expect(sig.getByRole("button", { name: "Use my details" })).toHaveCount(0);
   await page.goto("/settings?tab=sending");
-  await page.locator('#sending input[name="sendWindowStart"]').fill("0");
-  await page.locator('#sending input[name="sendWindowEnd"]').fill("24");
-  await page.locator("#sending").getByRole("button", { name: "Save" }).click();
+  await page.locator('#sending select[name="sendWindowStart"]').selectOption("0");
+  await page.locator('#sending select[name="sendWindowEnd"]').selectOption("24");
+  await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByText("Saved.")).toBeVisible();
 
   // One button sends the batch: the summary names the recipient, then the email goes out and is recorded.
@@ -342,30 +353,69 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
 
   // Who presses Send: manual until the operator chooses otherwise; choosing it is not yet sending (too few emails sent by hand).
   // Settings is a menu of sections, each about one thing.
-  await expect(page.getByLabel("Settings sections").getByRole("link")).toHaveText(["Your details", "Mailbox", "Sending limits", "Automatic sending", "Finding and research", "Budget and usage", "Do not contact", /^Connections/]);
+  await expect(page.getByLabel("Settings sections").getByRole("link")).toHaveText(["Your details", "Mailbox", "Sending and follow-ups", "Automatic sending", "Do not contact", "Finding and research", "Plan and usage", /^Connections/]);
   await page.getByLabel("Settings sections").getByRole("link", { name: "Automatic sending" }).click();
   await expect(page.locator("#autopilot input[name=sendMode][value=manual]")).toBeChecked();
   await page.locator("#autopilot input[name=sendMode][value=hold]").check();
   await page.locator("#autopilot #holdHours").fill("6");
-  await page.locator("#autopilot").getByRole("button", { name: "Save" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.locator("#autopilot input[name=sendMode][value=hold]")).toBeChecked();
   await expect(page.locator("#autopilot #holdHours")).toHaveValue("6");
-  await expect(page.locator("#autopilot").getByText("Chosen, but not sending yet")).toBeVisible();
+  await expect(page.getByText("Automatic sending is not active yet")).toBeVisible();
   await page.goto("/outreach");
   await expect(page.getByText("Sending on its own is chosen, but not active yet")).toBeVisible();
   // Searching on its own needs a target; a line that names one is kept.
   await page.goto("/settings?tab=automation");
-  await page.locator("#automation #searchTargets").fill("sign makers | GB\nnonsense line");
-  await page.locator("#automation input[name=autoSearch]").check();
-  await page.locator("#automation").getByRole("button", { name: "Save" }).click();
-  await expect(page.locator("#automation #searchTargets")).toHaveValue("sign makers | GB");
-  await expect(page.locator("#automation input[name=autoSearch]")).toBeChecked();
+  const finding = page.locator("#automation");
+  // Nothing to look for yet: the page says so and points to the profile.
+  await expect(finding.getByText("Say who you sell to and where under Your details")).toBeVisible();
+  await finding.getByRole("link", { name: "Set it up" }).click();
+  // The link leads to the tab it names. "What you sell" is filled in first here.
+  await expect(page.getByRole("heading", { name: "Who do you sell to?" })).toBeVisible();
+  await page.getByLabel("Your details").getByRole("link", { name: /Offer/ }).click();
+  await expect(page.getByRole("heading", { name: "What do you sell?" })).toBeVisible();
+  await page.locator("#offer textarea[name=offer]").fill("I build booking tools for small businesses.");
+  await page.locator("#offer textarea[name=offerResult]").fill("Fewer missed calls and no-shows.");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Saved.")).toBeVisible();
+  await page.getByLabel("Your details").getByRole("link", { name: /Customers/ }).click();
+  await expect(page.getByRole("heading", { name: "Who do you sell to?" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Who do you sell to?" })).toBeVisible();
+  // Who you sell to: kinds of business (typed, Enter adds one without saving the page) and a place.
+  const audience = page.locator("#audience");
+  await expect(audience.getByText("Required").first()).toBeVisible();
+  await audience.locator("#targetKindsInput").fill("sign makers");
+  await audience.locator("#targetKindsInput").press("Enter");
+  await expect(page.getByRole("heading", { name: "Who do you sell to?" })).toBeVisible(); // Enter added the kind; it did not save the step
+  await audience.getByRole("button", { name: "Add a place" }).click();
+  await audience.getByLabel("Country, place 1").selectOption("GB");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Saved.")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Who do you sell to?" })).toBeVisible();
+  await expect(page.getByLabel("Your details").getByLabel("needs your attention")).toHaveCount(0);
+  await expect(audience.locator("input[name=targetKinds]")).toHaveValue("sign makers");
+  await expect(audience.locator("input[name=targetPlaces]")).toHaveValue("GB");
+  // The search form offers it with one click.
+  await page.goto("/searches/new");
+  await page.getByRole("button", { name: "sign makers", exact: true }).click();
+  await expect(page.locator("#businessType")).toHaveValue("sign makers");
+  // Finding and research reads the same profile; switching the automatic search on is its own decision.
+  await page.goto("/settings?tab=automation");
+  await expect(finding.getByText("sign makers")).toBeVisible();
+  await expect(finding.getByText("United Kingdom")).toBeVisible();
+  await finding.getByLabel("Find new businesses on its own").check({ force: true });
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Saved.")).toBeVisible();
+  await expect(finding.getByLabel("Find new businesses on its own")).toBeChecked();
+  // The other cards of the page were not switched off by that save.
+  await expect(page.locator("#research input[name=autoResearch]")).toBeChecked();
   // Back to manual, so nothing in this test database sends or searches on its own.
-  await page.locator("#automation input[name=autoSearch]").uncheck();
-  await page.locator("#automation").getByRole("button", { name: "Save" }).click();
+  await finding.getByLabel("Find new businesses on its own").uncheck({ force: true });
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(finding.getByLabel("Find new businesses on its own")).not.toBeChecked();
   await page.goto("/settings?tab=autopilot");
   await page.locator("#autopilot input[name=sendMode][value=manual]").check();
-  await page.locator("#autopilot").getByRole("button", { name: "Save" }).click();
+  await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.locator("#autopilot input[name=sendMode][value=manual]")).toBeChecked();
 });
 

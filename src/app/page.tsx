@@ -20,6 +20,9 @@ import type { IconName } from "@/components/icons";
 import { monthSpendUsd } from "@/lib/ai/usage";
 import { getConfig } from "@/lib/config";
 import { usageTotal } from "@/lib/discovery/usage";
+import { usageOf } from "@/lib/usage";
+import { workspaceId } from "@/lib/workspace";
+import { FIRST_WORKSPACE_ID } from "@/db/schema";
 import { stripQuoted } from "@/lib/mail/parse";
 import { dashboardData, funnelForPeriod } from "@/lib/outreach/queries";
 import { describeRange, rangeBounds, rangeParams, resolveRange } from "@/lib/date-range";
@@ -57,6 +60,8 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   const hour = new Date().getHours();
   const firstName = settings.senderName.trim().split(/\s+/)[0] || "";
   const greeting = `${hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening"}${firstName ? `, ${firstName}` : ""}`;
+  const platform = (await workspaceId()) === FIRST_WORKSPACE_ID;
+  const plan = await usageOf();
   const today = new Date().toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long" });
   const replyRate = allTime.contacted > 0 ? Math.round((allTime.replied / allTime.contacted) * 100) : null;
   /** The same period on the Businesses list, by the date that fits the step. */
@@ -225,9 +230,17 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
             [
               { icon: "mail", tone: "var(--accent)", label: "Sent today", value: String(sentNow), of: `of ${settings.dailySendCap}`, pct: (sentNow / Math.max(1, settings.dailySendCap)) * 100, limit: true, note: `${Math.max(0, settings.dailySendCap - sentNow)} left today`, href: "/outreach?tab=sent" },
               { icon: "note", tone: "var(--ok)", label: "Replies", value: String(allTime.replied), of: `of ${allTime.contacted} emailed`, pct: replyRate ?? 0, limit: false, note: replyRate != null ? `${replyRate}% reply rate` : "No emails out yet", href: "/pipeline" },
-              { icon: "sparkles", tone: "var(--info)", label: "AI spend", value: money(aiSpent), of: `of ${money(aiBudget, 0)}`, pct: (aiSpent / Math.max(0.01, aiBudget)) * 100, limit: true, note: `${money(Math.max(0, aiBudget - aiSpent))} left this month`, href: settingsHref("usage") },
-              { icon: "globe", tone: "var(--warn)", label: "Websites read", value: crawl.credits.toLocaleString(), of: `of ${cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET.toLocaleString()}`, pct: (crawl.credits / Math.max(1, cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET)) * 100, limit: true, note: `${Math.max(0, cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET - crawl.credits).toLocaleString()} left this month`, href: settingsHref("usage") },
-              { icon: "search", tone: "var(--stamp)", label: "Search credits", value: searchCredits.toLocaleString(), of: `of ${cfg.SERPER_CREDIT_BUDGET.toLocaleString()}`, pct: (searchCredits / Math.max(1, cfg.SERPER_CREDIT_BUDGET)) * 100, limit: true, note: `${Math.max(0, cfg.SERPER_CREDIT_BUDGET - searchCredits).toLocaleString()} left in total`, href: settingsHref("usage") },
+              // The product's own workspace watches what the providers cost; a customer watches their plan.
+              ...(platform
+                ? ([
+                  { icon: "sparkles", tone: "var(--info)", label: "AI spend", value: money(aiSpent), of: `of ${money(aiBudget, 0)}`, pct: (aiSpent / Math.max(0.01, aiBudget)) * 100, limit: true, note: `${money(Math.max(0, aiBudget - aiSpent))} left this month`, href: settingsHref("usage") },
+                  { icon: "globe", tone: "var(--warn)", label: "Websites read", value: crawl.credits.toLocaleString(), of: `of ${cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET.toLocaleString()}`, pct: (crawl.credits / Math.max(1, cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET)) * 100, limit: true, note: `${Math.max(0, cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET - crawl.credits).toLocaleString()} left this month`, href: settingsHref("usage") },
+                  { icon: "search", tone: "var(--stamp)", label: "Search credits", value: searchCredits.toLocaleString(), of: `of ${cfg.SERPER_CREDIT_BUDGET.toLocaleString()}`, pct: (searchCredits / Math.max(1, cfg.SERPER_CREDIT_BUDGET)) * 100, limit: true, note: `${Math.max(0, cfg.SERPER_CREDIT_BUDGET - searchCredits).toLocaleString()} left in total`, href: settingsHref("usage") },
+                  ] as const)
+                : ([
+                    { icon: "globe", tone: "var(--warn)", label: "Businesses researched", value: String(plan.research.used), of: plan.research.limit === null ? "this month" : `of ${plan.research.limit}`, pct: plan.research.limit ? (plan.research.used / plan.research.limit) * 100 : 0, limit: plan.research.limit !== null, note: plan.research.limit === null ? "No monthly limit" : `${Math.max(0, plan.research.limit - plan.research.used)} left until ${plan.resetsOn}`, href: settingsHref("usage") },
+                    { icon: "search", tone: "var(--stamp)", label: "Searches run", value: String(plan.searches.used), of: plan.searches.limit === null ? "this month" : `of ${plan.searches.limit}`, pct: plan.searches.limit ? (plan.searches.used / plan.searches.limit) * 100 : 0, limit: plan.searches.limit !== null, note: plan.searches.limit === null ? "No monthly limit" : `${Math.max(0, plan.searches.limit - plan.searches.used)} left until ${plan.resetsOn}`, href: settingsHref("usage") },
+                  ] as const)),
             ] as const
           ).map((t) => (
             <Link key={t.label} href={t.href} className="group min-w-0 px-5 py-4 border-line border-b xl:border-b-0 border-r last:border-r-0 hover:no-underline hover:bg-surface-2">

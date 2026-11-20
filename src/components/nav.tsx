@@ -37,6 +37,15 @@ const items: { href: string; label: string; icon: IconName; hint: string; also?:
   { href: "/settings", label: "Settings", icon: "settings", hint: "Sender, mailbox, limits and automation", also: ["/system"] },
 ];
 
+/** What to do about each thing that is still to set up, in the words of a to-do. */
+const SETUP_ACTION: Record<string, string> = {
+  Mailbox: "Connect your mailbox",
+  "Your sender details": "Finish your details",
+  "Business search key": "Set up business search",
+  "Website research key": "Set up website research",
+  "AI key": "Set up the AI",
+};
+
 export function AppShell({ user, counts, setup = [], serverless = false, children }: { user?: { name: string; email: string }; counts?: NavCounts; setup?: SetupGap[]; serverless?: boolean; children: React.ReactNode }) {
   const path = usePathname();
   const [open, setOpen] = useState(false);
@@ -72,37 +81,39 @@ export function AppShell({ user, counts, setup = [], serverless = false, childre
           );
         })}
       </nav>
-      {/* Whether everything it needs is connected, and where to fix it when it is not. */}
-      <div className="p-3 border-t border-line space-y-1">
+      {/* What is still to set up, as one line that says what to do; then whose account this is. */}
+      <div className="p-3 border-t border-line space-y-2">
+        {setup.length > 0 && (
+          <Link href={setup[0].href} className="group flex items-center gap-2.5 rounded-lg border border-line px-3 h-10 text-sm hover:no-underline hover:bg-surface-3" title={setup.map((g) => g.label).join(", ")}>
+            <span className="w-2 h-2 rounded-full bg-warn shrink-0" />
+            <span className="min-w-0 flex-1 truncate font-medium text-ink">{setup.length === 1 ? (SETUP_ACTION[setup[0].label] ?? `Set up: ${setup[0].label}`) : `${setup.length} things to set up`}</span>
+            <span className="text-ink-faint group-hover:text-ink shrink-0" aria-hidden>
+              →
+            </span>
+          </Link>
+        )}
         {user && (
-          <form action={logoutAction} className="flex items-center gap-2.5 px-3 py-2">
+          <form action={logoutAction} className="flex items-center gap-2.5 px-1.5 py-1">
             <span className="w-8 h-8 rounded-full bg-accent-soft text-accent-text grid place-items-center text-sm font-bold shrink-0" aria-hidden>
               {(user.name || user.email).trim().charAt(0).toUpperCase()}
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-ink truncate">{user.name || "Your account"}</span>
-              <span className="block text-xs text-ink-faint truncate">{user.email}</span>
+              <span className="block text-sm font-semibold text-ink truncate" title={user.name || undefined}>
+                {user.name || "Your account"}
+              </span>
+              <span className="block text-xs text-ink-faint truncate" title={user.email}>
+                {user.email}
+              </span>
             </span>
-            <button className="btn btn-ghost btn-sm shrink-0" title="Sign out">
-              Sign out
+            {/* An icon, so the name and address beside it have the room. */}
+            <button className="w-8 h-8 rounded-lg grid place-items-center text-ink-faint hover:text-ink hover:bg-surface-3 shrink-0" title="Sign out" aria-label="Sign out">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <path d="m16 17 5-5-5-5" />
+                <path d="M21 12H9" />
+              </svg>
             </button>
           </form>
-        )}
-        {setup.length === 0 ? (
-          <Link href="/settings?tab=system" className="flex items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm text-ink-muted hover:bg-surface-3 hover:text-ink hover:no-underline">
-            <span className="w-2 h-2 rounded-full bg-ok shrink-0" />
-            Everything is connected
-          </Link>
-        ) : (
-          <Link href={setup[0].href} className="flex items-start gap-2.5 rounded-lg px-3 py-2.5 text-sm bg-warn-soft hover:no-underline" title={setup.map((g) => g.label).join(", ")}>
-            <span className="w-2 h-2 rounded-full bg-warn shrink-0 mt-1.5" />
-            <span className="min-w-0">
-              <span className="block text-warn font-semibold">
-                {setup.length} thing{setup.length === 1 ? "" : "s"} to set up
-              </span>
-              <span className="block truncate text-ink-muted">{setup.map((g) => g.label).join(", ")}</span>
-            </span>
-          </Link>
         )}
       </div>
     </div>

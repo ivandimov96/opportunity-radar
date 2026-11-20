@@ -31,6 +31,9 @@
   --info: #0b6a94;
   --info-soft: #e5f3f9;
   --ring: rgba(29, 79, 163, 0.32);
+  --field: #ffffff;
+  --field-hover: #9aa3b5;
+  --field-shadow: inset 0 1px 2px rgba(22, 33, 58, 0.06);
   --shadow-sm: none;
   --shadow-md: 0 8px 24px -10px rgba(22, 33, 58, 0.22);
   --radius: 10px;
@@ -66,6 +69,9 @@
     --info: #56c1ee;
     --info-soft: #0f2a3a;
     --ring: rgba(141, 178, 245, 0.4);
+    --field: #0f1728;
+    --field-hover: #5b6c92;
+    --field-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
     --shadow-sm: none;
     --shadow-md: 0 8px 24px -10px rgba(0, 0, 0, 0.7);
     color-scheme: dark;
@@ -96,10 +102,10 @@
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
   --color-stamp: var(--stamp);
-  /* One family, Inter, for everything: interface, page titles and the email text. `--font-serif` is kept as a name
-     (titles and figures ask for it) and points at the same family, so nothing in the product is set in a serif. */
+  /* Two families: Inter for the interface and the email text, Manrope for titles and large figures.
+     `--font-serif` is the name titles and figures ask for; it is the title face (nothing is set in a serif). */
   --font-sans: var(--font-inter), "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-serif: var(--font-sans);
+  --font-serif: var(--font-display), "Manrope", var(--font-sans);
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -125,6 +131,9 @@ a:hover {
 }
 ::selection {
   background: var(--accent-soft);
+}
+h1, h2 {
+  font-family: var(--font-serif);
 }
 h1 {
   font-weight: 700;
@@ -266,17 +275,37 @@ details[open] > summary .chevron {
   padding: 0 1.3rem;
   font-size: 0.95rem;
 }
+/*
+ * Fields. Every input, dropdown and text area in the product is one of these three classes, so this is
+ * the one place that decides how a field looks:
+ *  - at rest it is clearly a field: its own background, a visible border, one height for inputs and dropdowns;
+ *  - under the mouse the border darkens: it answers before it is clicked;
+ *  - with the cursor in it, the border takes the accent colour and a soft ring surrounds it, so it is
+ *    never in doubt which field is being typed into;
+ *  - a field that is wrong, or cannot be used, says so by its colour.
+ */
 .input,
 .select,
 .textarea {
   width: 100%;
-  background: var(--surface);
+  background: var(--field);
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   padding: 0.5rem 0.75rem;
-  font-size: 0.88rem;
+  font-size: 0.9rem;
+  line-height: 1.4;
   color: var(--text);
-  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+  box-shadow: var(--field-shadow);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease;
+}
+.input,
+.select {
+  height: 2.5rem;
+}
+.textarea {
+  min-height: 4.5rem;
+  line-height: 1.55;
+  resize: vertical;
 }
 /* On a phone a field with text smaller than 16px makes the browser zoom in when it is tapped: keep fields at 16px there. */
 @media (max-width: 640px) {
@@ -289,37 +318,103 @@ details[open] > summary .chevron {
 .input::placeholder,
 .textarea::placeholder {
   color: var(--text-faint);
+  opacity: 1;
+}
+.input:hover:not(:disabled):not(:focus),
+.select:hover:not(:disabled):not(:focus),
+.textarea:hover:not(:disabled):not(:focus) {
+  border-color: var(--field-hover);
 }
 .input:focus,
 .select:focus,
 .textarea:focus {
   outline: none;
   border-color: var(--accent);
+  background-color: var(--surface);
   box-shadow: 0 0 0 3px var(--ring);
+}
+.input:disabled,
+.select:disabled,
+.textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  background-color: var(--surface-2);
+  box-shadow: none;
 }
 .input[readonly] {
   background: var(--surface-2);
   color: var(--text-muted);
+  box-shadow: none;
 }
-/* A dropdown says it is one: a clear arrow, a pointer, and a border that answers the mouse. */
+/* A field that was filled in wrongly. */
+.input[aria-invalid="true"],
+.select[aria-invalid="true"],
+.textarea[aria-invalid="true"] {
+  border-color: var(--bad);
+}
+.input[aria-invalid="true"]:focus,
+.select[aria-invalid="true"]:focus,
+.textarea[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 30%, transparent);
+}
+/* Numbers line up under each other, and the browser's own stepper arrows match the theme. */
+.input[type="number"] {
+  font-variant-numeric: tabular-nums;
+}
+/* What the browser fills in by itself keeps our colours instead of its yellow or white. */
+.input:-webkit-autofill,
+.input:-webkit-autofill:hover,
+.input:-webkit-autofill:focus,
+.textarea:-webkit-autofill {
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+  box-shadow: 0 0 0 1000px var(--field) inset;
+  transition: background-color 9999s ease-out;
+}
+.input:-webkit-autofill:focus {
+  box-shadow: 0 0 0 1000px var(--field) inset, 0 0 0 3px var(--ring);
+}
+/* A dropdown says it is one: a clear arrow, a pointer, and a list in the colours of the page. */
 .select {
   appearance: none;
   cursor: pointer;
   font-weight: 500;
-  min-height: 2.4rem;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7385' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%237b8598' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 0.65rem center;
-  padding-right: 2.2rem;
+  background-position: right 0.7rem center;
+  background-size: 1rem;
+  padding-right: 2.3rem;
   text-overflow: ellipsis;
 }
-.select:hover:not(:disabled) {
-  border-color: var(--accent);
+.select:hover:not(:disabled):not(:focus) {
   background-color: var(--surface-2);
 }
-.select:disabled {
+.select option,
+.select optgroup {
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 400;
+}
+/* Ticks and round choices take the accent colour everywhere, and answer the mouse. */
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+input[type="checkbox"]:not(.sr-only),
+input[type="radio"]:not(.sr-only) {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+input[type="checkbox"]:focus-visible,
+input[type="radio"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input[type="checkbox"]:disabled,
+input[type="radio"]:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
 }
 /* A line of text that opens something: an arrow in front that turns when it is open. */
 .disclosure {

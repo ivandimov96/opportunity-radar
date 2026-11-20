@@ -98,6 +98,12 @@ describe("answers and sequence steps", () => {
     expect(answerNeedsYou({ ...base, category: "wants_meeting", confidence: null })[0]).toMatch(/not sure/);
     expect(answerNeedsYou({ ...base, category: "wants_meeting", matchedBy: "address" })[0]).toMatch(/sender address only/);
     expect(answerNeedsYou({ ...base, category: "not_now", answersSent: 2 })[0]).toMatch(/2 answers have already gone out/);
+    // The operator's own rule for a kind of reply: told to send it, the standing "only you can" reason no longer holds it back...
+    expect(answerNeedsYou({ ...base, category: "interested", action: "send" })).toEqual([]);
+    expect(answerNeedsYou({ ...base, category: "wants_info", action: "review" })[0]).toMatch(/asked a question/);
+    // ...but an unsure reading or a long conversation still does.
+    expect(answerNeedsYou({ ...base, category: "interested", action: "send", confidence: 0.5 })[0]).toMatch(/not sure/);
+    expect(answerNeedsYou({ ...base, category: "interested", action: "send", answersSent: 2 })[0]).toMatch(/2 answers have already gone out/);
   });
 
   it("holds back an answer with a gap, a foreign link or no text", () => {

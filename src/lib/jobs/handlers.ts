@@ -25,6 +25,7 @@ import { crawlStaged, type CrawlResult, type StagedCrawlResult } from "@/lib/res
 import { detectFacts, isVendorEmail, type DetectedFact } from "@/lib/research/detect";
 import { isFirecrawlConfigured, scrapePage } from "@/lib/research/firecrawl";
 import { creditsUsedThisMonth, loadStoredPages } from "@/lib/research/stored";
+import { UsageLimitError, assertRoom, count as countUsage, countOrRefuse } from "@/lib/usage";
 import { footprintFacts } from "@/lib/research/footprint";
 import { findWebsite } from "@/lib/discovery/find-website";
 import { normalizeWebsite, websiteDomain } from "@/lib/discovery/normalize";
@@ -59,6 +60,16 @@ export async function handleDiscoverSearch(job: JobRow, progress: ProgressFn, si
   const searchId = String(job.payload.searchId);
   const search = await db.select().from(searches).where(and(eq(searches.id, searchId), eq(searches.workspaceId, await workspaceId()))).get();
   if (!search) throw new NonRetryableError(`Search ${searchId} not found`);
+  // A search counts against the plan when it starts (a retry of the same job is the same search).
+  if (job.attempts <= 1) {
+    try {
+      await countOrRefuse("searches");
+    } catch (err) {
+      if (!(err instanceof UsageLimitError)) throw err;
+      await db.update(searches).set({ status: "failed", error: err.message, updatedAt: nowIso() }).where(eq(searches.id, searchId)).run();
+      throw new NonRetryableError(err.message);
+    }
+  }
   await db.update(searches).set({ status: "running", updatedAt: nowIso(), error: null }).where(eq(searches.id, searchId)).run();
   const filters = filtersOf(search);
   const t0 = Date.now();
@@ -79,7 +90,11 @@ export async function handleDiscoverSearch(job: JobRow, progress: ProgressFn, si
   if (run.investigable.length && !isFirecrawlConfigured()) note(`${run.investigable.length} lead(s) qualify for investigation, but FIRECRAWL_API_KEY is not set; set it and use "Investigate all"`);
   else {
     for (const t of run.investigable.slice(0, filters.autoInvestigateLimit ?? run.investigable.length)) {
-      await enqueueInvestigation(t.id);
+      const full = await tryInvestigation(t.id);
+      if (full) {
+        note(full);
+        break;
+      }
       queued++;
     }
   }
@@ -103,8 +118,24 @@ export async function handleDiscoverSearch(job: JobRow, progress: ProgressFn, si
 /** auto = reuse stored pages when younger than RESEARCH_STALE_DAYS, else crawl; recrawl = always fetch again; reanalyze = stored pages only, no credits. */
 export type InvestigateMode = "auto" | "recrawl" | "reanalyze";
 
+/**
+ * As `enqueueInvestigation`, for the places that queue research on someone's behalf: a full plan is an answer,
+ * not an error. Returns null when it was queued, otherwise the reason nothing was.
+ */
+export async function tryInvestigation(businessId: string, mode: InvestigateMode = "auto"): Promise<string | null> {
+  try {
+    await enqueueInvestigation(businessId, mode);
+    return null;
+  } catch (err) {
+    if (err instanceof UsageLimitError) return err.message;
+    throw err;
+  }
+}
+
 export async function enqueueInvestigation(businessId: string, mode: InvestigateMode = "auto") {
   await assertBusinessInWorkspace(businessId);
+  // The plan's monthly research allowance: nothing is queued beyond it (the caller decides what to say).
+  await assertRoom("research");
   const db = await getDb();
   await db.update(businesses).set({ status: "queued", statusMessage: mode === "reanalyze" ? "Waiting to re-analyze stored pages" : "Waiting to be investigated", updatedAt: nowIso() }).where(eq(businesses.id, businessId)).run();
   return enqueueJob("investigate_business", { businessId, mode }, { idempotencyKey: `investigate:${businessId}` });
@@ -157,6 +188,16 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
   let biz = (await db.select().from(businesses).where(and(eq(businesses.id, businessId), eq(businesses.workspaceId, await workspaceId()))).get())!;
   if (!biz) throw new NonRetryableError(`Business ${businessId} not found`);
   await ensureProspect(businessId);
+  // Researching a business counts against the plan when it starts (a retry of the same job is the same research).
+  if (job.attempts <= 1) {
+    try {
+      await countOrRefuse("research");
+    } catch (err) {
+      if (!(err instanceof UsageLimitError)) throw err;
+      await db.update(businesses).set({ status: biz.investigatedAt ? "profiled" : "new", statusMessage: err.message, updatedAt: nowIso() }).where(eq(businesses.id, businessId)).run();
+      throw new NonRetryableError(err.message);
+    }
+  }
   const setStatus = (status: string, statusMessage: string | null, extra: Partial<typeof businesses.$inferInsert> = {}) => db.update(businesses).set({ status, statusMessage, updatedAt: nowIso(), ...extra }).where(eq(businesses.id, businessId)).run();
   const cfg = getConfig();
   const notes: string[] = [];
@@ -546,6 +587,7 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
     // The check-back is written: the date that asked for it is done with.
     ...(step === STEP.checkBack ? [db.update(prospects).set({ recontactAt: null, updatedAt: nowIso() }).where(eq(prospects.businessId, businessId))] : []),
   ]);
+  await countUsage("emails");
   await logActivity(businessId, "system", `${step === 0 ? "Outreach email" : stepLabel(step)} written for “${opp.title}” (${out.attempts} attempt(s), $${out.costUsd.toFixed(3)}): ${validation.passed ? "all checks passed, ready for review" : `needs review: ${issues.filter((i) => i.severity === "block").map((i) => i.message).join(" ")}`}`, { draftId: id, status });
   if (step === 0 && validation.passed) await advanceStageIfBehind(businessId, "ready_to_contact", "email written and checked");
 }

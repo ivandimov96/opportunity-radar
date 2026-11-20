@@ -9,7 +9,7 @@ import { and, eq, gt, lt } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db/client";
-import { FIRST_WORKSPACE_ID, sessions, users, workspaces } from "@/db/schema";
+import { FIRST_WORKSPACE_ID, sessions, users, workspaces, settings } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
 import { SESSION_COOKIE, WELCOME_COOKIE, WELCOME_SECONDS, makeToken, readToken, type Role } from "./token";
 
@@ -33,8 +33,15 @@ export interface SessionUser {
 export async function workspaceForNewUser(first: boolean, name: string): Promise<string> {
   const db = await getDb();
   const id = first ? FIRST_WORKSPACE_ID : newId();
-  await db.insert(workspaces).values({ id, name: name ? `${name}'s workspace` : "", createdAt: nowIso() }).onConflictDoNothing().run();
+  // The first workspace is the product's own (no plan limits); everyone after it starts on the trial.
+  await db.insert(workspaces).values({ id, name: name ? `${name}'s workspace` : "", plan: first ? "owner" : "trial", createdAt: nowIso() }).onConflictDoNothing().run();
   return id;
+}
+
+/** Marks a workspace as new: its owner is taken through the first-run setup before the app opens (see src/app/setup). */
+export async function markOnboardingPending(workspaceId: string): Promise<void> {
+  const db = await getDb();
+  await db.insert(settings).values({ workspaceId, key: "state:onboarding", value: "pending", updatedAt: nowIso() }).onConflictDoNothing().run();
 }
 
 export const normalizeEmail = (email: string) => email.trim().toLowerCase();
@@ -75,6 +82,9 @@ export async function createUser(input: { email: string; password: string; name?
   // An owner made on purpose after the first account (from the command line) shares the first workspace.
   const user: SessionUser = { id: newId(), email, name, role, workspaceId: await workspaceForNewUser(first || role === "owner", name) };
   await db.insert(users).values({ ...user, passwordHash: await hashPassword(input.password), createdAt: nowIso() }).run();
+  // Someone who signed up themselves is new to the product: their workspace starts with the first-run setup.
+  // (An account made from the command line or a test, with its role given, does not.)
+  if (!input.role) await markOnboardingPending(user.workspaceId);
   return { ok: true, user };
 }
 

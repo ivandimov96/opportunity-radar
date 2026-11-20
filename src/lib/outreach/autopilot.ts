@@ -13,7 +13,7 @@ import { and, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { businesses, inboundEmails, outreachDrafts } from "@/db/schema";
 import { mailboxFor } from "@/lib/mail";
-import { getSettings, type AppSettings, type SendMode } from "@/lib/settings";
+import { getSettings, replyRulesOf, type AppSettings, type ReplyKind, type SendMode } from "@/lib/settings";
 import { businessIdsOf, workspaceId } from "@/lib/workspace";
 import { autopilotPause, autopilotResumedAt, pauseAutopilot, type AutopilotPause } from "./autopilot-state";
 import { openCampaign } from "./campaigns";
@@ -138,20 +138,30 @@ export async function runAutopilot(now = new Date()): Promise<AutopilotRun> {
     await pauseAutopilot(`${health.problem} Sending on its own is paused until you resume it.`);
     return { ...out, paused: health.problem };
   }
+  // "Weekdays only": the weekend is left alone. What is ready waits, with its waiting time long over, for Monday.
+  if (settings.autoSendWeekdaysOnly && (now.getDay() === 0 || now.getDay() === 6)) return out;
   const db = await getDb();
   const campaign = await openCampaign();
   const mine = businessIdsOf(db, await workspaceId());
   // Ready since before this moment = the waiting time is over (an edit restarts it: it touches updatedAt).
   const cutoff = new Date(now.getTime() - (settings.sendMode === "hold" ? settings.holdHours * 3_600_000 : 0)).toISOString();
   const ripe = await db
-    .select({ id: outreachDrafts.id, step: outreachDrafts.step, business: businesses })
+    .select({ id: outreachDrafts.id, step: outreachDrafts.step, inboundId: outreachDrafts.inboundId, business: businesses })
     .from(outreachDrafts)
     .innerJoin(businesses, eq(businesses.id, outreachDrafts.businessId))
     .where(and(eq(outreachDrafts.campaignId, campaign.id), inArray(outreachDrafts.businessId, mine), eq(outreachDrafts.status, "ready"), lte(outreachDrafts.updatedAt, cutoff)))
     .orderBy(outreachDrafts.createdAt)
     .all();
   for (const d of ripe) {
-    if (d.step === STEP.answer && !settings.autoAnswer) continue;
+    if (d.step === STEP.answer) {
+      // An answer goes out on its own only for a kind of reply the operator set to "send" (asked again now: they may have changed it).
+      const reply = d.inboundId ? await db.select({ kind: inboundEmails.classification }).from(inboundEmails).where(eq(inboundEmails.id, d.inboundId)).get() : null;
+      if (replyRulesOf(settings)[reply?.kind as ReplyKind]?.action !== "send") continue;
+    }
+    // The operator's own narrowing: which kind of email, and how good a lead. What is left out waits for them.
+    if (d.step === STEP.first && !settings.autoSendFirst) continue;
+    if (d.step !== STEP.first && d.step !== STEP.answer && !settings.autoSendFollowUps) continue;
+    if (d.step !== STEP.answer && settings.autoSendMinScore > 0 && (d.business.priority ?? d.business.leadScore ?? 0) < settings.autoSendMinScore) continue;
     // An answer goes to someone who wrote to us; every other email needs a recipient the rules let us write to unasked.
     if (d.step !== STEP.answer && (await automaticSendHold(d.business))) continue;
     if ((await approveDraft(d.id, "autopilot")).ok) out.approved++;

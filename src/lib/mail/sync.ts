@@ -15,9 +15,9 @@ import { enqueueJob } from "@/lib/jobs/queue";
 import { holdUntil, logActivity, markNotReached, markReplied, setNextAction } from "@/lib/pipeline/prospects";
 import { PENDING_ON_REPLY } from "@/lib/outreach/steps";
 import { addSuppression } from "@/lib/email/suppression";
-import { getState, setState } from "@/lib/settings";
+import { getSettings, getState, setState } from "@/lib/settings";
 import { businessIdsOf, workspaceId } from "@/lib/workspace";
-import { assertMailboxForWorkspace, getMailProvider } from "./index";
+import { assertMailboxForWorkspace, getMailProviders } from "./index";
 import { bouncedRecipients, isAutoReply, isBounce, isHardBounce, stripQuoted } from "./parse";
 import type { InboundMessage, InboxCursor } from "./types";
 
@@ -34,11 +34,14 @@ export interface SyncResult {
 
 type SentDraft = Pick<typeof outreachDrafts.$inferSelect, "id" | "businessId" | "messageId" | "toEmail" | "sentAt" | "step" | "subject" | "campaignId">;
 
+/** Where reading stopped in one mailbox. */
+const cursorKey = (address: string) => `mail.cursor:${address.toLowerCase()}`;
+
 export async function syncMailbox(): Promise<SyncResult> {
   const result: SyncResult = { fetched: 0, replies: 0, autoReplies: 0, bounces: 0, ignored: 0 };
   await assertMailboxForWorkspace();
-  const provider = getMailProvider();
-  if (!provider) return result;
+  const providers = await getMailProviders();
+  if (!providers.length) return result;
   const db = await getDb();
   const mine = businessIdsOf(db, await workspaceId());
   const sent: SentDraft[] = await db
@@ -48,18 +51,35 @@ export async function syncMailbox(): Promise<SyncResult> {
     .all();
   if (!sent.length) return result; // nothing was sent, so nothing in the inbox can belong to outreach
 
-  const stored = await getState<InboxCursor & { address: string }>("mail.cursor");
-  const cursor = stored && stored.address === provider.address ? { uid: stored.uid, uidValidity: stored.uidValidity } : null;
+  // Every mailbox of the workspace is read, each from where it was left. One that cannot be read does not stop the others.
   const earliest = sent.reduce((min, d) => (d.sentAt! < min ? d.sentAt! : min), sent[0].sentAt!);
-  const fetched = await provider.fetchInbox({ cursor, since: new Date(new Date(earliest).getTime() - 86_400_000) });
-  result.fetched = fetched.messages.length;
+  const own = new Set(providers.map((p) => p.address.toLowerCase()));
+  const legacy = await getState<InboxCursor & { address: string }>("mail.cursor");
+  const messages: InboundMessage[] = [];
+  const cursors: [string, InboxCursor][] = [];
+  const unreadable: string[] = [];
+  for (const provider of providers) {
+    const stored = (await getState<InboxCursor>(cursorKey(provider.address))) ?? (legacy && legacy.address === provider.address ? legacy : null);
+    try {
+      const fetched = await provider.fetchInbox({ cursor: stored ? { uid: stored.uid, uidValidity: stored.uidValidity } : null, since: new Date(new Date(earliest).getTime() - 86_400_000) });
+      // The same reply can sit in two of our own inboxes (a forward, a shared address): it is taken once.
+      for (const m of fetched.messages) if (!messages.some((x) => x.messageId === m.messageId)) messages.push(m);
+      if (fetched.cursor) cursors.push([provider.address, fetched.cursor]);
+    } catch (err) {
+      if (providers.length === 1) throw err;
+      unreadable.push(`${provider.address}: ${(err as Error).message.split("\n")[0]}`);
+    }
+  }
+  result.fetched = messages.length;
 
+  // How long the next email waits after an out-of-office reply: the operator's setting.
+  const holdDays = (await getSettings()).outOfOfficeDays || AUTO_REPLY_HOLD_DAYS;
   const byMessageId = new Map(sent.map((d) => [d.messageId!, d]));
   const byAddress = new Map<string, SentDraft>();
   for (const d of [...sent].sort((a, b) => (a.sentAt! < b.sentAt! ? -1 : 1))) if (d.toEmail) byAddress.set(d.toEmail.toLowerCase(), d); // the latest email to an address wins
 
-  for (const msg of [...fetched.messages].sort((a, b) => a.uid - b.uid)) {
-    if (msg.from.address === provider.address.toLowerCase()) continue;
+  for (const msg of messages.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.uid - b.uid))) {
+    if (own.has(msg.from.address)) continue;
     if (await db.select({ id: inboundEmails.id }).from(inboundEmails).where(eq(inboundEmails.messageId, msg.messageId)).get()) continue;
 
     if (isBounce(msg)) {
@@ -95,7 +115,7 @@ export async function syncMailbox(): Promise<SyncResult> {
     if (auto) {
       result.autoReplies++;
       // Nobody is reading: the next email of the sequence waits a week from the automatic reply instead of landing in an empty office.
-      const until = new Date(new Date(msg.date).getTime() + AUTO_REPLY_HOLD_DAYS * 86_400_000).toISOString();
+      const until = new Date(new Date(msg.date).getTime() + holdDays * 86_400_000).toISOString();
       await holdUntil(draft.businessId, until);
       await logActivity(draft.businessId, "email", `Automatic reply received from ${msg.from.address}: "${msg.subject}". The next email waits until ${until.slice(0, 10)}.`, { inboundId: id, auto: true });
       continue;
@@ -110,8 +130,9 @@ export async function syncMailbox(): Promise<SyncResult> {
     await enqueueJob("process_reply", { inboundId: id }, { idempotencyKey: `reply:${id}` });
   }
 
-  if (fetched.cursor) await setState("mail.cursor", { ...fetched.cursor, address: provider.address });
+  for (const [address, cursor] of cursors) await setState(cursorKey(address), cursor);
   await setState("mail.lastSync", { at: nowIso(), ...result });
+  if (unreadable.length) throw new Error(unreadable.join(" · "));
   return result;
 }
 

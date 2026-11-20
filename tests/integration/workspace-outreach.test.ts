@@ -176,10 +176,10 @@ describe("workspace isolation: emails, batches, sending and the pipeline", () =>
   });
 
   it("refuses sending and inbox reading for a workspace that has no mailbox yet, in plain words", async () => {
-    expect(NO_WORKSPACE_MAILBOX).toBe("This workspace has no mailbox connected yet.");
+    expect(NO_WORKSPACE_MAILBOX).toBe("No mailbox is connected yet. Connect yours under Settings, Mailbox.");
     const away = await seed(AWAY, "Oakbeck Plumbing", "hello@oakbeck-plumbing.example", "approved");
-    expect(await runInWorkspace(HOME, () => mailboxFor())).toEqual({ enabled: true, address: "owner@harbour-studio.example", reason: null });
-    expect(await runInWorkspace(AWAY, () => mailboxFor())).toEqual({ enabled: false, address: null, reason: NO_WORKSPACE_MAILBOX });
+    expect(await runInWorkspace(HOME, () => mailboxFor())).toMatchObject({ enabled: true, address: "owner@harbour-studio.example", reason: null, source: "settings" });
+    expect(await runInWorkspace(AWAY, () => mailboxFor())).toMatchObject({ enabled: false, address: null, reason: NO_WORKSPACE_MAILBOX, source: null });
 
     await runInWorkspace(AWAY, async () => {
       const pre = (await sendPreflight(away.campaignId))!;

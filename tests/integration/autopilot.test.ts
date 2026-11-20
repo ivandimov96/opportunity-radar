@@ -15,6 +15,7 @@ vi.mock("@/lib/ai/client", async (importOriginal) => {
 });
 
 import { useTempDb, resetEnv } from "../helpers";
+import { runInWorkspace } from "@/lib/workspace";
 import { businesses, facts, inboundEmails, investigations, jobs, observations, opportunities, outreachDrafts, pages, prospects, searches } from "@/db/schema";
 import { newId } from "@/lib/ids";
 import { drainQueue } from "@/lib/jobs/worker";
@@ -29,7 +30,7 @@ import { automaticSendHold } from "@/lib/outreach/eligibility";
 import { dailyCapInForce } from "@/lib/outreach/limits";
 import { cancelQueued, sendPreflight } from "@/lib/outreach/send";
 import { ensureProspect, setStage } from "@/lib/pipeline/prospects";
-import { getSettings, saveSettings } from "@/lib/settings";
+import { DEFAULT_SETTINGS, getSettings, replyRulesOf, resetSettings, saveSettings } from "@/lib/settings";
 
 const BODY = "Hi team,\n\nI noticed that every replacement starts with a free in-home estimate. Would a short mock-up of a booking page be useful?";
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 0.001 };
@@ -115,6 +116,78 @@ describe("autopilot", () => {
     await saveSettings({ sendMode: "auto" });
     expect(await runAutopilot()).toEqual({ approved: 1, queued: 1 });
     expect((await draft(flagged.draftId)).status).toBe("needs_review");
+  });
+
+  it("sends only what the operator allowed: the kind of email, a minimum score, and not at the weekend", async () => {
+    await saveSettings({ sendMode: "auto" });
+    await sentByHand(TRUST_MIN_MANUAL);
+    const first = await seed("Alpha Air", "office@alpha.example", "ready", { updatedAt: hoursAgo(1) });
+    const followUp = await seed("Bravo Air", "hello@bravo.example", "ready", { updatedAt: hoursAgo(1), step: 1 });
+    const status = async () => [(await draft(first.draftId)).status, (await draft(followUp.draftId)).status];
+    const friday = new Date(2026, 10, 20, 11, 0);
+    const saturday = new Date(2026, 10, 21, 11, 0);
+    const monday = new Date(2026, 10, 23, 11, 0);
+
+    // Neither kind allowed: both wait for the operator, exactly as in manual mode.
+    await saveSettings({ autoSendFirst: false, autoSendFollowUps: false });
+    expect(await runAutopilot(friday)).toEqual({ approved: 0, queued: 0 });
+    expect(await status()).toEqual(["ready", "ready"]);
+
+    // A minimum score holds back a business that scores below it (this one has no score yet).
+    await saveSettings({ autoSendFirst: true, autoSendMinScore: 60 });
+    expect(await runAutopilot(friday)).toEqual({ approved: 0, queued: 0 });
+    await db.update(businesses).set({ priority: 59 }).where(eq(businesses.id, first.id)).run();
+    expect(await runAutopilot(friday)).toEqual({ approved: 0, queued: 0 });
+    await db.update(businesses).set({ priority: 60 }).where(eq(businesses.id, first.id)).run();
+
+    // Weekdays only: nothing on Saturday; on Monday the first email goes, the follow-up still waits.
+    await saveSettings({ autoSendWeekdaysOnly: true });
+    expect(await runAutopilot(saturday)).toEqual({ approved: 0, queued: 0 });
+    expect(await status()).toEqual(["ready", "ready"]);
+    expect((await runAutopilot(monday)).approved).toBe(1);
+    expect(await status()).toEqual(["queued", "ready"]);
+
+    // Follow-ups allowed again (the score rule applies to them too).
+    await saveSettings({ autoSendFollowUps: true, autoSendMinScore: 0 });
+    expect((await runAutopilot(monday)).approved).toBe(1);
+    expect((await draft(followUp.draftId)).approvedBy).toBe("autopilot");
+    // The defaults change nothing for someone who never opens this card.
+    expect(await getSettings()).toMatchObject({ autoSendFirst: true, autoSendFollowUps: true, autoSendMinScore: 0, autoSendWeekdaysOnly: true });
+  });
+
+  it("resets settings to the defaults for the named ones only, and never for another workspace", async () => {
+    await saveSettings({ sendMode: "auto", holdHours: 9, autoSendMinScore: 70, autoSendWeekdaysOnly: true, dailySendCap: 7, senderName: "Ivan Dimov" });
+    await runInWorkspace("ws-meadow", () => saveSettings({ sendMode: "hold", holdHours: 12 }));
+    const after = await resetSettings(["sendMode", "holdHours", "autoSendMinScore", "autoSendWeekdaysOnly"]);
+    expect(after).toMatchObject({ sendMode: "manual", holdHours: DEFAULT_SETTINGS.holdHours, autoSendMinScore: 0, autoSendWeekdaysOnly: false });
+    // What was not named keeps its value.
+    expect(after).toMatchObject({ dailySendCap: 7, senderName: "Ivan Dimov" });
+    expect(await runInWorkspace("ws-meadow", () => getSettings())).toMatchObject({ sendMode: "hold", holdHours: 12 });
+    // Nothing to reset is not an error.
+    expect((await resetSettings([])).dailySendCap).toBe(7);
+  });
+
+  it("keeps the replies as they always were until the operator sets their own rule for a kind of reply", async () => {
+    // Unset: every answer waits, and the old single switch still turns the two routine kinds on.
+    expect(replyRulesOf(await getSettings())).toMatchObject({ wants_meeting: { action: "review", note: "" }, not_now: { action: "review" }, interested: { action: "review" }, wants_info: { action: "review" }, wrong_person: { action: "review" } });
+    await saveSettings({ autoAnswer: true });
+    expect(replyRulesOf(await getSettings())).toMatchObject({ wants_meeting: { action: "send" }, not_now: { action: "send" }, interested: { action: "review" } });
+    // Set by the operator: exactly what they chose, for every kind; anything odd in it falls back to "wait for me".
+    await saveSettings({ autoAnswer: false, replyRules: { wants_meeting: { action: "none", note: "" }, interested: { action: "send", note: "  Offer Tuesday or Thursday afternoon.  " }, wants_info: { action: "whatever" }, not_now: null, extra: { action: "send" } } });
+    const rules = replyRulesOf(await getSettings());
+    expect(rules).toEqual({ wants_meeting: { action: "none", note: "" }, not_now: { action: "review", note: "" }, interested: { action: "send", note: "Offer Tuesday or Thursday afternoon." }, wants_info: { action: "review", note: "" }, wrong_person: { action: "review", note: "" } });
+    expect((await getSettings()).outOfOfficeDays).toBe(7);
+    expect((await saveSettings({ outOfOfficeDays: 99 })).outOfOfficeDays).toBe(30);
+    // Reset: back to the defaults.
+    expect(replyRulesOf(await resetSettings(["replyRules", "autoAnswer", "outOfOfficeDays"]))).toMatchObject({ wants_meeting: { action: "review" }, interested: { action: "review" } });
+  });
+
+  it("stores the profile as it was typed, tidied: lists without repeats, places with their codes, only sizes that exist", async () => {
+    const saved = await saveSettings({ offerResult: "  Fewer missed calls.  ", offerKind: "software", targetKinds: "sign makers\nRoofers\n\nsign makers", targetPlaces: "gb | eng\nxx-nonsense\nUS", targetSizes: "small,medium,gigantic", targetNeedsWebsite: "on", excludeKinds: ["franchises", "Franchises"], fitSigns: "They take bookings by phone." });
+    expect(saved).toMatchObject({ offerResult: "Fewer missed calls.", offerKind: "software", targetKinds: ["sign makers", "Roofers"], targetPlaces: [{ country: "GB", region: "ENG" }, { country: "US", region: "" }], targetSizes: ["small", "medium"], targetNeedsWebsite: true, targetNeedsPhone: false, excludeKinds: ["franchises"], fitSigns: "They take bookings by phone." });
+    expect((await saveSettings({ offerKind: "magic" })).offerKind).toBe("");
+    // It is the workspace's own: another one starts empty.
+    expect(await runInWorkspace("ws-meadow", () => getSettings())).toMatchObject({ targetKinds: [], targetPlaces: [], offerResult: "" });
   });
 
   it("pauses itself when emails bounce, stays paused until the operator resumes, and stops when a batch is stopped", async () => {
@@ -215,6 +288,47 @@ describe("autopilot", () => {
     expect(out.text.trim().endsWith("1 Main St, Austin, TX 78701")).toBe(true); // the answer ends with the signature
     expect((await db.select().from(inboundEmails).where(eq(inboundEmails.businessId, a.id)).get())!.handledAt).toBeTruthy();
     expect((await draft(yes.id)).status).toBe("needs_review");
+  });
+
+  it("follows the operator's own rule for each kind of reply: send a yes on its own, write nothing when a call is asked for", async () => {
+    resetEnv({ ...env, ANTHROPIC_API_KEY: "test-key" });
+    await saveSettings({ sendMode: "auto", bookingLink: "https://cal.example/ivan", replyRules: { wants_meeting: { action: "none", note: "" }, interested: { action: "send", note: "Say the mock-up comes on Friday." }, not_now: { action: "review", note: "" }, wants_info: { action: "review", note: "" }, wrong_person: { action: "review", note: "" } } });
+    const [a, b] = await sentByHand(TRUST_MIN_MANUAL);
+    const msgId = async (x: { draftId: string }) => (await draft(x.draftId)).messageId!;
+    deliverToFakeInbox({ from: { address: "maria@past0.example", name: "Maria" }, subject: "Re: Idea", inReplyTo: await msgId(a), text: "Sounds good, can we have a quick call?" });
+    deliverToFakeInbox({ from: { address: "tom@past1.example", name: "Tom" }, subject: "Re: Idea", inReplyTo: await msgId(b), text: "Yes please, send the mock-up over." });
+    await syncMailbox();
+    const asked: string[] = [];
+    callStructured.mockImplementation(async (call: { user: string }) => {
+      asked.push(call.user);
+      return {
+        data: /quick call/.test(call.user)
+          ? { category: "wants_meeting", confidence: 0.95, summary: "They would like a call.", suggested_reply: "Hi Maria,\n\nGlad to. Pick any slot here: https://cal.example/ivan" }
+          : { category: "interested", confidence: 0.95, summary: "They want the mock-up.", suggested_reply: "Hi Tom,\n\nGreat, the mock-up comes on Friday." },
+        model: "reply-model",
+        usage,
+      };
+    });
+    expect(await drainQueue(["process_reply"])).toBe(2);
+    // The operator's instruction went along with the reply, for the kind it belongs to and no other.
+    expect(asked.every((u) => u.includes('- if the reply is "interested": Say the mock-up comes on Friday.'))).toBe(true);
+    expect(asked.some((u) => u.includes('if the reply is "wants_meeting"'))).toBe(false);
+
+    const answers = await db.select().from(outreachDrafts).where(eq(outreachDrafts.step, 9)).all();
+    // "Do not write an answer": nothing was written for the call. "Send it for me": the yes is ready without a reason to wait.
+    expect(answers.map((d) => d.businessId)).toEqual([b.id]);
+    expect(answers[0]).toMatchObject({ status: "ready", toEmail: "tom@past1.example" });
+    expect(await runAutopilot()).toEqual({ approved: 1, queued: 1 });
+    await due();
+    await drainQueue(["send_email"]);
+    expect(fakeMail().sent.at(-1)).toMatchObject({ to: "tom@past1.example" });
+
+    // Changed back to "I send it" while an answer is ready: it is no longer passed on.
+    deliverToFakeInbox({ from: { address: "tom@past1.example", name: "Tom" }, subject: "Re: Idea", inReplyTo: await msgId(b), text: "Yes please, one more thing: send the mock-up over to my partner too." });
+    await syncMailbox();
+    expect(await drainQueue(["process_reply"])).toBe(1);
+    await saveSettings({ replyRules: { ...replyRulesOf(await getSettings()), interested: { action: "review", note: "" } } });
+    expect(await runAutopilot()).toEqual({ approved: 0, queued: 0 });
   });
 
   it("writes a last note after an unanswered follow-up and one check-back after a \"not now\"", async () => {

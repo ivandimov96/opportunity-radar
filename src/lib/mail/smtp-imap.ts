@@ -18,10 +18,15 @@ export interface SmtpImapConfig {
   password: string;
   smtp: { host: string; port: number; secure: boolean };
   imap: { host: string; port: number };
+  /**
+   * Sign-in with a token instead of the password (Microsoft): called before every connection, it returns a valid
+   * access token or throws with a plain reason. `password` is not used then.
+   */
+  accessToken?: () => Promise<string>;
 }
 
 /** Gmail files a copy of everything sent over SMTP in Sent on its own; other mailboxes need the copy appended. */
-const SAVES_SENT_COPY = new Set(["gmail"]);
+const SAVES_SENT_COPY = new Set(["gmail", "microsoft"]);
 const MAX_SOURCE_BYTES = 300_000;
 
 function toSendError(err: unknown): MailSendError {
@@ -35,10 +40,25 @@ function toSendError(err: unknown): MailSendError {
 }
 
 export function smtpImapProvider(cfg: SmtpImapConfig): MailProvider {
-  const transport = () => nodemailer.createTransport({ host: cfg.smtp.host, port: cfg.smtp.port, secure: cfg.smtp.secure, auth: { user: cfg.user, pass: cfg.password }, connectionTimeout: 20_000, greetingTimeout: 20_000, socketTimeout: 45_000 });
-  const imap = () => new ImapFlow({ host: cfg.imap.host, port: cfg.imap.port, secure: true, auth: { user: cfg.user, pass: cfg.password }, logger: false, connectionTimeout: 20_000, socketTimeout: 60_000 });
+  // The sign-in: the password, or a fresh token. A token that cannot be had is a refused login, known before anything is sent.
+  const signIn = async () => {
+    if (!cfg.accessToken) return null;
+    try {
+      return await cfg.accessToken();
+    } catch (err) {
+      throw new MailSendError((err as Error).message, "auth");
+    }
+  };
+  const transport = async () => {
+    const accessToken = await signIn();
+    return nodemailer.createTransport({ host: cfg.smtp.host, port: cfg.smtp.port, secure: cfg.smtp.secure, auth: accessToken ? { type: "OAuth2", user: cfg.user, accessToken } : { user: cfg.user, pass: cfg.password }, connectionTimeout: 20_000, greetingTimeout: 20_000, socketTimeout: 45_000 });
+  };
+  const imap = async () => {
+    const accessToken = await signIn();
+    return new ImapFlow({ host: cfg.imap.host, port: cfg.imap.port, secure: true, auth: accessToken ? { user: cfg.user, accessToken } : { user: cfg.user, pass: cfg.password }, logger: false, connectionTimeout: 20_000, socketTimeout: 60_000 });
+  };
   const withImap = async <T>(fn: (client: ImapFlow) => Promise<T>): Promise<T> => {
-    const client = imap();
+    const client = await imap();
     // imapflow reports a dropped connection as an event; without a listener that would crash the process.
     client.on("error", () => {});
     await client.connect();
@@ -60,7 +80,7 @@ export function smtpImapProvider(cfg: SmtpImapConfig): MailProvider {
     async send(msg: OutgoingMessage) {
       const raw = await new MailComposer({ from: msg.from, to: msg.to, subject: msg.subject, text: msg.text, messageId: msg.messageId, inReplyTo: msg.inReplyTo ?? undefined, references: msg.references?.length ? msg.references : undefined, headers: msg.headers, date: new Date() }).compile().build();
       let response: string;
-      const t = transport();
+      const t = await transport(); // throws "auth" before anything is handed over
       try {
         const info = await t.sendMail({ envelope: { from: cfg.address, to: [msg.to] }, raw });
         response = String(info.response ?? "accepted");
@@ -135,13 +155,15 @@ export function smtpImapProvider(cfg: SmtpImapConfig): MailProvider {
     async verify() {
       let smtp: string | null = null;
       let imapErr: string | null = null;
-      const t = transport();
       try {
-        await t.verify();
+        const t = await transport();
+        try {
+          await t.verify();
+        } finally {
+          t.close();
+        }
       } catch (err) {
-        smtp = toSendError(err).message;
-      } finally {
-        t.close();
+        smtp = err instanceof MailSendError ? err.message : toSendError(err).message;
       }
       try {
         await withImap(async () => undefined);

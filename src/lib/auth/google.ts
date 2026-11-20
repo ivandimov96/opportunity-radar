@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { users } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
-import { normalizeEmail, workspaceForNewUser, type SessionUser } from "./index";
+import { markOnboardingPending, normalizeEmail, workspaceForNewUser, type SessionUser } from "./index";
 
 export const GOOGLE_STATE_COOKIE = "radar_google_state";
 export const googleConfigured = () => Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
@@ -48,5 +48,6 @@ export async function userForGoogle(profile: { email: string; name: string }): P
   const user: SessionUser = { id: newId(), email: profile.email, name: profile.name, role: first ? "owner" : "member", workspaceId: await workspaceForNewUser(first, profile.name) };
   // No password: this account signs in with Google only (the marker can never match a typed password).
   await db.insert(users).values({ ...user, passwordHash: "google", createdAt: nowIso() }).run();
+  await markOnboardingPending(user.workspaceId);
   return user;
 }

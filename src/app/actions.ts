@@ -5,13 +5,13 @@ import { redirect } from "next/navigation";
 import { getDb } from "@/db/client";
 import { requireOwner } from "@/lib/auth";
 import { getConfig } from "@/lib/config";
-import { businesses, jobs, outreachDrafts, prospects, searches, searchResults } from "@/db/schema";
+import { FIRST_WORKSPACE_ID, businesses, jobs, outreachDrafts, prospects, searches, searchResults } from "@/db/schema";
 import { csvToCandidates, upsertCandidate, type DiscoveryProviderKey } from "@/lib/discovery";
 import { normalizeWebsite, websiteDomain } from "@/lib/discovery/normalize";
 import { newId, nowIso } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { kickWorker } from "@/lib/jobs/kick";
-import { enqueueInvestigation, enqueueOutreach } from "@/lib/jobs/handlers";
+import { tryInvestigation, enqueueOutreach } from "@/lib/jobs/handlers";
 import { saveCandidates } from "@/lib/discovery/engine";
 import { isFirecrawlConfigured } from "@/lib/research/firecrawl";
 import { filtersOf } from "@/lib/search-input";
@@ -28,17 +28,19 @@ import { resumeAutopilot } from "@/lib/outreach/autopilot-state";
 import { isWrittenStep } from "@/lib/outreach/steps";
 import { dueInDays } from "@/lib/due";
 import { rememberDone } from "@/lib/pipeline/follow-up";
-import { getSettings, saveSettings, type AppSettings } from "@/lib/settings";
-import { settingsHref } from "@/lib/settings-nav";
+import { getSettings, saveSettings, type AppSettings, resetSettings, REPLY_KINDS, searchTargetsOf, missingSenderDetails, profileGaps, setState, saysEnough, OFFER_MIN_CHARS } from "@/lib/settings";
+import { applyProfileRules } from "@/lib/profile-rules";
+import { settingsHref, settingsTabOf } from "@/lib/settings-nav";
 import { chooseIdea } from "@/lib/outreach/ideas";
 import { allowAgain, findRemoved, removeBusiness } from "@/lib/pipeline/removed";
-import { getMailProvider, mailboxFor, syncMailboxKey } from "@/lib/mail";
+import { room, setWorkspacePlan } from "@/lib/usage";
+import { connectMailbox, getMailProvider, listMailboxes, mailboxFor, removeMailbox, setDefaultMailbox, syncMailboxKey } from "@/lib/mail";
 import { applyReplyClassification } from "@/lib/jobs/mail-handlers";
 import { maybeAutoDraft } from "@/lib/jobs/handlers";
 import { REPLY_CATEGORIES, type ReplyCategory } from "@/lib/ai/schemas";
 import { composeEmailBody, signatureLines } from "@/lib/outreach/drafts";
 import { makeMessageId } from "@/lib/outreach/send";
-import { extraCityRuns, parseSearchForm, type RawSearchValues, type SearchFieldErrors } from "@/lib/search-input";
+import { extraCityRuns, parseSearchForm, rawSearchValues, type RawSearchValues, type SearchFieldErrors } from "@/lib/search-input";
 import { assertBusinessInWorkspace, businessIdsOf, draftInWorkspace, searchInWorkspace, workspaceId } from "@/lib/workspace";
 
 const str = (fd: FormData, k: string) => (fd.get(k)?.toString() ?? "").trim();
@@ -64,6 +66,9 @@ export async function createSearch(_prev: CreateSearchState, fd: FormData): Prom
   if (!parsed.ok) return { errors: parsed.errors, values: parsed.raw };
   // "Also search" cities: the same search once more per city, each a search of its own with its own results and cost.
   const runs = [parsed, ...extraCityRuns(fd, parsed.values.city ?? "")];
+  // The plan's monthly searches: said here, before anything is created or spent.
+  const searchRoom = await room("searches");
+  if (searchRoom.left < runs.length) return { errors: { form: searchRoom.left === 0 ? searchRoom.reason! : `Your ${searchRoom.plan.label} plan has room for ${searchRoom.left} more search${searchRoom.left === 1 ? "" : "es"} this month, and this would start ${runs.length} (one per city).` }, values: rawSearchValues(fd) };
   const db = await getDb();
   const ws = await workspaceId();
   const ids: string[] = [];
@@ -84,6 +89,8 @@ export async function rerunSearch(fd: FormData) {
   await requireOwner();
   const id = str(fd, "searchId");
   if (!(await searchInWorkspace(id))) return;
+  const searchRoom = await room("searches");
+  if (searchRoom.left < 1) redirect(withMessage(`/searches/${id}`, "error", searchRoom.reason!));
   const db = await getDb();
   await db.update(searches).set({ status: "queued", error: null, updatedAt: nowIso() }).where(eq(searches.id, id)).run();
   await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
@@ -95,7 +102,8 @@ export async function investigateAction(fd: FormData) {
   await requireOwner();
   const id = str(fd, "businessId");
   const mode = fd.get("mode");
-  await enqueueInvestigation(id, mode === "recrawl" || mode === "reanalyze" ? mode : "auto");
+  const full = await tryInvestigation(id, mode === "recrawl" || mode === "reanalyze" ? mode : "auto");
+  if (full) redirect(withMessage(`/businesses/${id}`, "error", full));
   kickWorker();
   revalidatePath(`/businesses/${id}`);
 }
@@ -119,16 +127,29 @@ export async function investigateManyAction(fd: FormData) {
   // Best leads first: the queue is FIFO, so enqueue order is investigation order.
   targets.sort((a, b) => (b.leadScore ?? 0) - (a.leadScore ?? 0));
   let n = 0;
+  /** Why the rest was not started, when the plan's monthly research ran out part-way. */
+  let planFull: string | null = null;
   for (const t of targets) {
     if (t.kind === "chain" && !includeChains) continue;
     if (!t.website && !getConfig().RESEARCH_FIND_WEBSITE) continue;
     if (!includeDone && t.status === "profiled") continue;
     if (t.status === "queued" || t.status === "investigating") continue;
-    await enqueueInvestigation(t.id);
+    planFull = await tryInvestigation(t.id);
+    if (planFull) break;
     n++;
   }
   if (n) kickWorker();
   revalidatePath(searchId ? `/searches/${searchId}` : "/businesses");
+  if (planFull) redirect(withMessage(searchId ? `/searches/${searchId}` : "/businesses", "error", n ? `Research started for ${n}. The rest was not started: ${planFull}` : planFull));
+}
+
+/** Puts an account on a plan. Only the product's own workspace may. */
+export async function setWorkspacePlanAction(fd: FormData) {
+  const user = await requireOwner();
+  if (user.workspaceId !== FIRST_WORKSPACE_ID) redirect(settingsHref("usage"));
+  const ok = await setWorkspacePlan(str(fd, "workspaceId"), str(fd, "plan"));
+  revalidatePath("/settings");
+  redirect(withMessage(settingsHref("usage"), ok ? "ok" : "error", ok ? "Plan changed." : "That plan cannot be set for this account."));
 }
 
 /** Write (or rewrite) the email for a business; an optional note tells the writer what to change. */
@@ -247,10 +268,7 @@ export async function updateWebsiteAction(fd: FormData) {
   const db = await getDb();
   await db.update(businesses).set({ website, websiteDomain: websiteDomain(website), status: website ? "new" : "no_website", statusMessage: website ? null : "No website on record", updatedAt: nowIso() }).where(eq(businesses.id, id)).run();
   await logActivity(id, "note", website ? `Website set to ${website}` : "Website cleared");
-  if (website && fd.get("investigate") !== "off") {
-    await enqueueInvestigation(id);
-    kickWorker();
-  }
+  if (website && fd.get("investigate") !== "off" && !(await tryInvestigation(id))) kickWorker();
   revalidatePath(`/businesses/${id}`);
 }
 
@@ -289,10 +307,7 @@ export async function importCsvAction(fd: FormData) {
     await ensureProspect(r.businessId);
     if (autoInvestigate) {
       const b = await db.select({ website: businesses.website, status: businesses.status }).from(businesses).where(eq(businesses.id, r.businessId)).get();
-      if (b?.website && b.status !== "profiled") {
-        await enqueueInvestigation(r.businessId);
-        queued++;
-      }
+      if (b?.website && b.status !== "profiled" && !(await tryInvestigation(r.businessId))) queued++;
     }
   }
   const s = (await db.select().from(searches).where(eq(searches.id, id)).get())!;
@@ -378,7 +393,7 @@ export async function saveCandidatesAction(fd: FormData) {
   if (investigate && isFirecrawlConfigured()) {
     const limit = filtersOf(search).autoInvestigateLimit ?? outcome.investigable.length;
     for (const t of outcome.investigable.slice(0, limit)) {
-      await enqueueInvestigation(t.id);
+      if (await tryInvestigation(t.id)) break; // the plan's monthly research is used up
       queued++;
     }
     if (queued) kickWorker();
@@ -559,7 +574,8 @@ export async function setBusinessEmailAction(fd: FormData) {
   }
   // Research that stopped for lack of an address continues; a qualified business gets its email written.
   if (biz.verdict === "no_contact" && biz.website) {
-    await enqueueInvestigation(id);
+    const full = await tryInvestigation(id);
+    if (full) redirect(withMessage(back, "error", `Saved. ${full}`));
     kickWorker();
   } else if (await maybeAutoDraft(id)) kickWorker();
   revalidatePath(`/businesses/${id}`);
@@ -628,22 +644,60 @@ export async function markReplyHandledAction(fd: FormData) {
 }
 
 // ------------------------------------------------------------------- settings
+/** The fields each card of the Settings pages owns. */
+const SETTINGS_FIELDS: Record<string, (keyof AppSettings)[]> = {
+  sender: ["senderName", "senderTitle", "senderCompany", "senderWebsite", "postalAddress"],
+  offer: ["offer", "offerResult"],
+  audience: ["targetKinds", "targetPlaces", "targetSizes", "targetNeedsWebsite", "targetNeedsPhone", "fitSigns", "excludeKinds"],
+  tone: ["bookingLink", "proofPoints", "voiceSamples"],
+  signature: ["signature"],
+  sending: ["dailySendCap", "sendSpacingSeconds", "sendWindowStart", "sendWindowEnd"],
+  followups: ["followUpDays", "followUpCount", "recontactDays"],
+  countries: ["allowedCountries"],
+  autopilot: ["sendMode", "holdHours"],
+  // "autoAnswer" is the older single switch: saving this card sets it off, the rules say everything from then on.
+  answers: ["autoAnswer", "replyRules", "outOfOfficeDays"],
+  autorules: ["autoSendFirst", "autoSendFollowUps", "autoSendMinScore", "autoSendWeekdaysOnly"],
+  automation: ["autoSearch", "searchesPerDay"],
+  research: ["autoResearch", "researchPerDay", "readyBuffer"],
+  drafting: ["autoDraft"],
+  budget: ["monthlyAiBudgetUsd"],
+};
+/** Cards that hold what a person wrote about themselves: never reset by a button. */
+const NOT_RESETTABLE = new Set(["sender", "offer", "audience", "tone", "signature", "budget"]);
+
+/**
+ * "Reset to defaults" on a Settings page: every setting of the page's cards goes back to how the app ships.
+ * The list under "Who to look for" is the operator's own content and is kept.
+ */
+export async function resetSettingsAction(fd: FormData) {
+  await requireOwner();
+  const sections = fd.getAll("section").map(String).filter((name) => SETTINGS_FIELDS[name] && !NOT_RESETTABLE.has(name));
+  if (!sections.length) redirect("/settings");
+  const before = await getSettings();
+  const after = await resetSettings(sections.flatMap((name) => SETTINGS_FIELDS[name]).filter((key) => key !== "searchTargets"));
+  if (after.sendMode !== before.sendMode) console.log(`[autopilot] sending mode reset from ${before.sendMode} to ${after.sendMode} by the operator`);
+  revalidatePath("/settings");
+  redirect(withMessage(`/settings?tab=${settingsTabOf(sections[0])}`, "ok", "This page is back to its defaults."));
+}
+
 export async function saveSettingsAction(fd: FormData) {
   await requireOwner();
-  const section = str(fd, "section");
-  const fields: Record<string, (keyof AppSettings)[]> = {
-    sender: ["senderName", "senderTitle", "senderCompany", "senderWebsite", "postalAddress", "offer", "bookingLink", "voiceSamples"],
-    sending: ["dailySendCap", "sendSpacingSeconds", "sendWindowStart", "sendWindowEnd", "allowedCountries", "followUpDays", "followUpCount", "recontactDays"],
-    automation: ["autoDraft", "autoResearch", "researchPerDay", "readyBuffer", "autoSearch", "searchTargets", "searchesPerDay"],
-    budget: ["monthlyAiBudgetUsd"],
-    autopilot: ["sendMode", "holdHours", "autoAnswer"],
-    signature: ["signature"],
-  };
-  const switches: (keyof AppSettings)[] = ["autoDraft", "autoResearch", "autoSearch", "autoAnswer"];
+  // A page is one form holding several cards: each card names itself, and the fields of all of them are saved.
+  const sections = fd.getAll("section").map(String).filter(Boolean);
+  const section = sections[0] ?? "";
+
+  const switches: (keyof AppSettings)[] = ["autoDraft", "autoResearch", "autoSearch", "autoAnswer", "autoSendFirst", "autoSendFollowUps", "autoSendWeekdaysOnly", "targetNeedsWebsite", "targetNeedsPhone"];
   const patch: Partial<Record<keyof AppSettings, unknown>> = {};
-  for (const key of fields[section] ?? []) patch[key] = switches.includes(key) ? fd.get(key) === "on" : (fd.get(key)?.toString() ?? "");
+  for (const key of sections.flatMap((name) => SETTINGS_FIELDS[name] ?? [])) {
+    // One line of the Replies card per kind of reply: what happens, and the operator's own instruction.
+    if (key === "replyRules") patch[key] = Object.fromEntries(REPLY_KINDS.map((kind) => [kind, { action: str(fd, `replyAction_${kind}`), note: str(fd, `replyNote_${kind}`) }]));
+  }
+  for (const key of sections.flatMap((name) => SETTINGS_FIELDS[name] ?? []).filter((k) => k !== "replyRules")) patch[key] = switches.includes(key) ? fd.get(key) === "on" : (fd.get(key)?.toString() ?? "");
+  // The profile fields keep to their rules (src/lib/profile-rules.ts): a value that breaks one is not saved.
+  const refused = applyProfileRules(patch);
   const before = await getSettings();
-  if (section === "signature") {
+  if (sections.includes("signature")) {
     // The form opens filled in with what is used today. Saving that unchanged must not freeze it:
     // text equal to the automatic signature is stored as "not set".
     const norm = (v: unknown) => String(v ?? "").replace(/\r/g, "").trim();
@@ -653,13 +707,35 @@ export async function saveSettingsAction(fd: FormData) {
   }
   const after = await saveSettings(patch);
   // Choosing to send on its own is the operator's decision and is written down as one.
-  if (section === "autopilot" && after.sendMode !== before.sendMode) console.log(`[autopilot] sending mode changed from ${before.sendMode} to ${after.sendMode} by the operator`);
-  if (section === "automation" && after.autoSearch && !after.searchTargets.length) {
+  if (sections.includes("autopilot") && after.sendMode !== before.sendMode) console.log(`[autopilot] sending mode changed from ${before.sendMode} to ${after.sendMode} by the operator`);
+  if (sections.includes("automation") && after.autoSearch && !searchTargetsOf(after).length) {
     revalidatePath("/settings");
-    redirect(withMessage(settingsHref(section), "error", "Saved, but no search will start on its own yet: add at least one line like “sign makers | GB” under “Who to look for”."));
+    redirect(withMessage(settingsHref(section), "error", "Saved, but no search will start on its own yet: say who you sell to and where under Your details."));
   }
   revalidatePath("/settings");
-  redirect(withMessage(settingsHref(section), "ok", "Saved."));
+  // A step of a guided setup (Your details, or the first-run setup): saved, then on to the step it names (only ever one of its own).
+  const then = str(fd, "then");
+  if (/^\/(settings\?tab=sender&|setup\?)step=[a-z]+$/.test(then)) {
+    // What a step needs cannot be left out: it stays open and says what is missing (what was typed is kept).
+    const lacking = sections.includes("sender")
+      ? ["you", missingSenderDetails(after)]
+      : sections.includes("offer")
+        ? ["offer", [saysEnough(after.offer) ? null : "what you offer", saysEnough(after.offerResult) ? null : "what your customer gets out of it"]]
+        : sections.includes("audience")
+          ? ["audience", [after.targetKinds.length ? null : "at least one kind of business", after.targetPlaces.length ? null : "at least one place"]]
+          : null;
+    const here = sections.includes("sender") ? "you" : sections.includes("offer") ? "offer" : sections.includes("audience") ? "audience" : sections.includes("tone") ? "extras" : null;
+    if (refused.length && here) redirect(withMessage(then.replace(/step=[a-z]+$/, `step=${here}`), "error", `Not saved. ${refused.join(" ")}`));
+    // Saving a tab in Settings stays where it is; a step of the first-run setup moves on.
+    const moving = !then.endsWith(`step=${here}`);
+    const missing = ((lacking?.[1] as (string | null)[] | undefined) ?? []).filter(Boolean);
+    // Back to the same step of the same setup (Settings, or the first-run one).
+    if (lacking && missing.length) redirect(withMessage(then.replace(/step=[a-z]+$/, `step=${lacking[0]}`), "error", lacking[0] === "offer" ? `${moving ? "To continue, describe" : "Still missing: describe"} ${missing.join(" and ")} in a full sentence (at least ${OFFER_MIN_CHARS} characters).` : `${moving ? "To continue, add" : "Still missing:"} ${missing.join(" and ")}.`));
+    redirect(withMessage(then, "ok", "Saved."));
+  }
+  if (refused.length) redirect(withMessage(settingsHref(section), "error", `Not saved. ${refused.join(" ")}`));
+  // A whole page comes back to its top, with the one "Saved." line; a single card (the signature) to itself.
+  redirect(withMessage(sections.length > 1 ? `/settings?tab=${settingsTabOf(section)}` : settingsHref(section), "ok", "Saved."));
 }
 
 /** Lifts the autopilot's pause. Only the operator does this; the safety checks start counting again from now. */
@@ -682,30 +758,79 @@ export async function removeSuppressionAction(fd: FormData) {
   await requireOwner();
   await removeSuppression(str(fd, "id"));
   revalidatePath("/settings");
-  redirect(settingsHref("do-not-contact"));
+  // Back to the page of the list the entry was on (the list itself clamps a page that no longer exists).
+  const page = Math.floor(Number(fd.get("dp")) || 1);
+  redirect(`${settingsHref("do-not-contact")}${page > 1 ? `&dp=${page}` : ""}`);
 }
 
-/** Checks the mailbox connection (sign-in to send and to read) without sending anything. */
-export async function testMailboxAction() {
+/** "Add mailbox": signs in to the mailbox with what was typed and stores it for this workspace only when that works. */
+export async function connectMailboxAction(fd: FormData) {
   await requireOwner();
-  const box = await mailboxFor();
-  const provider = box.enabled ? getMailProvider() : null;
-  if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", box.reason ?? "No mailbox is connected."));
+  const res = await connectMailbox({ provider: str(fd, "provider"), address: str(fd, "address"), password: String(fd.get("password") ?? ""), user: str(fd, "user"), smtpHost: str(fd, "smtpHost"), smtpPort: str(fd, "smtpPort"), imapHost: str(fd, "imapHost"), imapPort: str(fd, "imapPort") });
+  revalidatePath("/", "layout");
+  // From the first-run setup: back to it (to the same step when it did not work, on to the end when it did).
+  if (str(fd, "from") === "setup") redirect(res.ok ? "/setup?step=done" : withMessage("/setup?step=mailbox", "error", res.error));
+  if (!res.ok) redirect(withMessage(settingsHref("mailbox"), "error", res.error));
+  redirect(withMessage(settingsHref("mailbox"), "ok", `Connected ${res.address}: sending and reading both work.`));
+}
+
+/**
+ * The end of the first-run setup: the account is no longer new, and the person goes where they chose
+ * (their first search, or the dashboard). It can only be finished once what is needed is filled in.
+ */
+export async function finishOnboardingAction(fd: FormData) {
+  await requireOwner();
+  const gaps = profileGaps(await getSettings());
+  if (gaps.send.length || gaps.search.length) redirect("/setup");
+  await setState("onboarding", "done");
+  revalidatePath("/", "layout");
+  redirect(str(fd, "to") === "search" ? "/searches/new" : "/");
+}
+
+/** Removes one of this workspace's mailboxes. Emails waiting to be sent stay where they are and go out from the mailbox that is left. */
+export async function removeMailboxAction(fd: FormData) {
+  await requireOwner();
+  const address = await removeMailbox(str(fd, "mailboxId"));
+  revalidatePath("/", "layout");
+  redirect(withMessage(settingsHref("mailbox"), address ? "ok" : "error", address ? `${address} was removed.` : "That mailbox is no longer there."));
+}
+
+/** Chooses the mailbox new emails are sent from. */
+export async function setDefaultMailboxAction(fd: FormData) {
+  await requireOwner();
+  const address = await setDefaultMailbox(str(fd, "mailboxId"));
+  revalidatePath("/", "layout");
+  redirect(withMessage(settingsHref("mailbox"), address ? "ok" : "error", address ? `New emails are now sent from ${address}.` : "That mailbox cannot be used for sending."));
+}
+
+/** The mailbox a button in the list is about: one of this workspace's own, never anyone else's. */
+async function mailboxOfForm(fd: FormData) {
+  const id = str(fd, "mailboxId");
+  const all = await listMailboxes();
+  return (id ? all.find((m) => m.id === id) : all[0]) ?? null;
+}
+
+/** Checks one mailbox's connection (sign-in to send and to read) without sending anything. */
+export async function testMailboxAction(fd: FormData) {
+  await requireOwner();
+  const box = await mailboxOfForm(fd);
+  const provider = box?.enabled ? await getMailProvider(undefined, box.address) : null;
+  if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", box?.reason ?? "No mailbox is connected."));
   const r = await provider.verify();
   const problems = [r.smtp ? `Sending: ${r.smtp}` : null, r.imap ? `Reading: ${r.imap}` : null].filter(Boolean);
-  if (problems.length) redirect(withMessage(settingsHref("mailbox"), "error", problems.join(" · ")));
+  if (problems.length) redirect(withMessage(settingsHref("mailbox"), "error", `${provider.address}: ${problems.join(" · ")}`));
   // Signing in is half of it: whether the mail is trusted on arrival depends on the domain's public sending records.
   const health = await senderDomainHealth(provider.address).catch(() => null);
   const records = health && !health.freeMailbox && !health.advice.length ? ` ${health.domain} has its SPF and DMARC records.` : health?.advice.length ? ` ${health.advice.join(" ")}` : "";
-  redirect(withMessage(settingsHref("mailbox"), "ok", `Connected as ${provider.address}: sending and reading both work.${records}`));
+  redirect(withMessage(settingsHref("mailbox"), "ok", `${provider.address}: sending and reading both work.${records}`));
 }
 
 /** Sends one test email to the operator's own address, with the signature exactly as recipients will see it. */
-export async function sendTestEmailAction() {
+export async function sendTestEmailAction(fd?: FormData) {
   await requireOwner();
   // A workspace without a mailbox of its own sends nothing, not even a test.
-  const box = await mailboxFor();
-  const provider = box.enabled ? getMailProvider() : null;
+  const box = (fd ? await mailboxOfForm(fd) : null) ?? (await mailboxFor());
+  const provider = box.enabled ? await getMailProvider(undefined, box.address) : null;
   if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", box.reason ?? "No mailbox is connected."));
   const settings = await getSettings();
   try {

@@ -1,13 +1,14 @@
 /** Read-side queries for pages. Kept in one place so pages stay thin. Searches and businesses (and what hangs off a business) are read for the acting workspace only. */
 import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, like, lte, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { activities, businesses, businessSources, facts, inboundEmails, investigations, jobs, observations, opportunities, outreachDrafts, pages, prospects, searchCandidates, searchResults, searches } from "@/db/schema";
+import { FIRST_WORKSPACE_ID, activities, businesses, businessSources, facts, inboundEmails, investigations, jobs, observations, opportunities, outreachDrafts, pages, prospects, searchCandidates, searchResults, searches } from "@/db/schema";
 import { usageSummary } from "@/lib/ai/usage";
 import { getConfig } from "@/lib/config";
 import { MACHINE_STAGES, PIPELINE_STAGE_KEYS } from "@/lib/pipeline/stages";
 import { priorityScore } from "@/lib/scoring/score";
 import { getSettings, missingSenderDetails } from "@/lib/settings";
 import { settingsHref } from "@/lib/settings-nav";
+import { mailboxFor } from "@/lib/mail";
 import { workspaceId } from "@/lib/workspace";
 
 export type BusinessRow = typeof businesses.$inferSelect;
@@ -395,10 +396,13 @@ export async function navStatus(): Promise<{ counts: { todo: number; businesses:
     getSettings(),
   ]);
   const setup: { label: string; href: string }[] = [];
-  if (!cfg.googleMaps.enabled) setup.push({ label: "Business search key", href: settingsHref("connections") });
-  if (!cfg.firecrawl.enabled) setup.push({ label: "Website research key", href: settingsHref("connections") });
-  if (!cfg.ai.enabled) setup.push({ label: "AI key", href: settingsHref("connections") });
-  if (!cfg.mail.enabled) setup.push({ label: "Mailbox", href: settingsHref("mailbox") });
+  // Missing keys are the product's own matter: only its own workspace is reminded of them.
+  if (ws === FIRST_WORKSPACE_ID) {
+    if (!cfg.googleMaps.enabled) setup.push({ label: "Business search key", href: settingsHref("connections") });
+    if (!cfg.firecrawl.enabled) setup.push({ label: "Website research key", href: settingsHref("connections") });
+    if (!cfg.ai.enabled) setup.push({ label: "AI key", href: settingsHref("connections") });
+  }
+  if (!(await mailboxFor()).enabled) setup.push({ label: "Mailbox", href: settingsHref("mailbox") });
   if (missingSenderDetails(settings).length > 0) setup.push({ label: "Your sender details", href: settingsHref("sender") });
   return { counts: { todo: dueNow, businesses: toJudge, outreach: emails, pipeline: replies }, setup };
 }

@@ -17,7 +17,7 @@ import { inboundEmails, outreachDrafts, type DraftIssue, type DraftValidation } 
 import type { ReplyCategory } from "@/lib/ai/schemas";
 import { newId, nowIso } from "@/lib/ids";
 import { logActivity } from "@/lib/pipeline/prospects";
-import { getSettings } from "@/lib/settings";
+import { getSettings, replyRulesOf, type ReplyAction, type ReplyKind } from "@/lib/settings";
 import { openCampaign } from "./campaigns";
 import { REVIEW_STATUSES } from "./drafts";
 import { sendBlockers } from "./eligibility";
@@ -40,11 +40,16 @@ const ONLY_YOU: Partial<Record<ReplyCategory, string>> = {
 };
 const ANSWERABLE: ReplyCategory[] = ["wants_meeting", "interested", "wants_info", "not_now", "wrong_person"];
 
-/** Why this answer waits for the operator although its text is fine; empty = it may go on its own. Pure. */
-export function answerNeedsYou(input: { category: ReplyCategory; confidence: number | null; matchedBy: string; answersSent: number }): string[] {
+/**
+ * Why this answer waits for the operator although its text is fine; empty = it may go on its own. Pure.
+ * `action` is what the operator set for this kind of reply. Left out, it is the app's own default: the three
+ * kinds only a person can answer wait, the two routine ones do not.
+ */
+export function answerNeedsYou(input: { category: ReplyCategory; action?: ReplyAction; confidence: number | null; matchedBy: string; answersSent: number }): string[] {
   const reasons: string[] = [];
   const only = ONLY_YOU[input.category];
-  if (only) reasons.push(only);
+  // Told to send this kind on its own, the operator has taken that decision: the standing reason no longer applies.
+  if (only && (input.action ?? "review") !== "send") reasons.push(only);
   if ((input.confidence ?? 0) < ANSWER_MIN_CONFIDENCE) reasons.push("The app is not sure it read this reply correctly.");
   if (input.matchedBy !== "thread") reasons.push("The reply was matched by its sender address only, not by the thread.");
   if (input.answersSent >= ANSWER_MAX_AUTOMATIC) reasons.push(`${input.answersSent} answers have already gone out in this conversation: have a look yourself.`);
@@ -57,6 +62,9 @@ export async function draftAnswer(inbound: Inbound, category: ReplyCategory, sug
   if (!body || !ANSWERABLE.includes(category) || inbound.kind !== "reply" || !inbound.fromEmail) return null;
   const db = await getDb();
   const settings = await getSettings();
+  // What the operator set for this kind of reply. "none": they answer these themselves, nothing is written.
+  const rule = replyRulesOf(settings)[category as ReplyKind];
+  if (!rule || rule.action === "none") return null;
   const thread = await db.select().from(outreachDrafts).where(and(eq(outreachDrafts.businessId, inbound.businessId), inArray(outreachDrafts.status, ["sent", "bounced"]))).orderBy(outreachDrafts.sentAt).all();
   const first = thread.find((d) => d.step === STEP.first) ?? thread[0];
   if (!first) return null;
@@ -64,7 +72,7 @@ export async function draftAnswer(inbound: Inbound, category: ReplyCategory, sug
   const issues: DraftIssue[] = [
     ...checkAnswerText(body, { bookingLink: settings.bookingLink }),
     ...(await sendBlockers({ step: STEP.answer, toEmail: inbound.fromEmail }, { id: inbound.businessId, email: null, emailStatus: null, country: null }, settings)).map((message) => ({ severity: "block" as const, code: "recipient", message })),
-    ...answerNeedsYou({ category, confidence, matchedBy: inbound.matchedBy, answersSent }).map((message) => ({ severity: "warn" as const, code: "needs_you", message })),
+    ...answerNeedsYou({ category, action: rule.action, confidence, matchedBy: inbound.matchedBy, answersSent }).map((message) => ({ severity: "warn" as const, code: "needs_you", message })),
   ];
   const validation: DraftValidation = { passed: !hasBlock(issues), issues, checkedBy: null, checkedAt: nowIso() };
   const status = validation.passed && !issues.some((i) => i.code === "needs_you") ? "ready" : "needs_review";

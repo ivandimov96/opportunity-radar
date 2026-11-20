@@ -6,6 +6,8 @@
  */
 import { redirect } from "next/navigation";
 import { checkLogin, createUser, endSession, normalizeEmail, startSession } from "@/lib/auth";
+import { getState } from "@/lib/settings";
+import { runInWorkspace } from "@/lib/workspace";
 
 const attempts = new Map<string, { n: number; at: number }>();
 const WINDOW_MS = 10 * 60_000;
@@ -20,6 +22,11 @@ function tooMany(key: string): boolean {
   a.n++;
   return a.n > MAX_ATTEMPTS;
 }
+/**
+ * Whether the account's first-run setup is still ahead of it. Asked here, at the moment of signing in, so the
+ * person is sent to the setup directly: a page must not send them there while it is already being drawn.
+ */
+const setupAhead = async (workspaceId: string) => (await runInWorkspace(workspaceId, () => getState<string>("onboarding"))) === "pending";
 const text = (fd: FormData, k: string) => (fd.get(k)?.toString() ?? "").slice(0, 300);
 /** Only a path inside this app may be returned to after signing in. */
 const safeNext = (next: string) => (next.startsWith("/") && !next.startsWith("//") && !next.startsWith("/login") && !next.startsWith("/signup") ? next : "/");
@@ -33,7 +40,7 @@ export async function loginAction(fd: FormData) {
   if (!user) redirect(back("/login", "The email or the password is not right.", email, next));
   attempts.delete(`login:${email}`);
   await startSession(user);
-  redirect(user.role === "owner" ? safeNext(next) : "/welcome");
+  redirect(user.role !== "owner" ? "/welcome" : (await setupAhead(user.workspaceId)) ? "/setup" : safeNext(next));
 }
 
 export async function signupAction(fd: FormData) {
@@ -42,7 +49,7 @@ export async function signupAction(fd: FormData) {
   const res = await createUser({ email, password: text(fd, "password"), name: text(fd, "name") });
   if (!res.ok) redirect(back("/signup", res.error, email));
   await startSession(res.user);
-  redirect(res.user.role === "owner" ? "/" : "/welcome");
+  redirect(res.user.role !== "owner" ? "/welcome" : (await setupAhead(res.user.workspaceId)) ? "/setup" : "/");
 }
 
 export async function logoutAction() {

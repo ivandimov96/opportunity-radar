@@ -8,7 +8,7 @@
  * folder: found means it went out; not found, or no way to tell, means the
  * email is marked failed for the operator to decide. It is never re-sent on a guess.
  */
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { businesses, emailEvents, inboundEmails, outreachDrafts } from "@/db/schema";
 import { AiRefusalError, AiSpendLimitError, AiUnavailableError, callStructured } from "@/lib/ai/client";
@@ -27,7 +27,7 @@ import { closeCampaignIfDone, dayKey, planSendTimes, sentToday, usedByDay } from
 import { SEQUENCE_STEPS, STEP, stepLabel } from "@/lib/outreach/steps";
 import { draftAnswer, withdrawAnswers } from "@/lib/outreach/answers";
 import { advanceStageIfBehind, logActivity, setNextAction, setRecontact } from "@/lib/pipeline/prospects";
-import { getSettings, missingSenderDetails } from "@/lib/settings";
+import { getSettings, missingSenderDetails, REPLY_KINDS, replyRulesOf } from "@/lib/settings";
 import { businessIdsOf, draftInWorkspace, workspaceId } from "@/lib/workspace";
 import { NonRetryableError, RetryableError, type ProgressFn } from "./handlers";
 import { enqueueJob, type JobRow } from "./queue";
@@ -50,8 +50,10 @@ export async function handleSendEmail(job: JobRow, _progress: ProgressFn, signal
     await closeCampaignIfDone(draft!.campaignId);
   };
   // The mailbox of the workspace this job runs as; a workspace without one sends nothing.
+  // A follow-up or an answer leaves from the address the conversation started from, while that mailbox is still connected.
+  const earlier = draft.sentFrom ?? (draft.step === 0 ? null : (await db.select({ from: outreachDrafts.sentFrom }).from(outreachDrafts).where(and(eq(outreachDrafts.businessId, draft.businessId), eq(outreachDrafts.status, "sent"), isNotNull(outreachDrafts.sentFrom))).orderBy(outreachDrafts.sentAt).limit(1).get())?.from) ?? null;
   const box = await mailboxFor();
-  const provider = box.enabled ? getMailProvider() : null;
+  const provider = box.enabled ? await getMailProvider(undefined, earlier) : null;
   if (!provider) {
     await fail(box.reason ?? "No mailbox is connected.");
     throw new NonRetryableError(box.reason ?? "No mailbox is connected");
@@ -101,6 +103,8 @@ export async function handleSendEmail(job: JobRow, _progress: ProgressFn, signal
   await event(draftId, draft.businessId, "attempt", { attempt: draft.attempts, to });
   signal.throwIfAborted();
 
+  // Which mailbox this attempt uses is recorded first: an interrupted attempt is then looked up in the right Sent folder.
+  await db.update(outreachDrafts).set({ sentFrom: provider.address }).where(eq(outreachDrafts.id, draftId)).run();
   const subject = draft.step > 0 && !/^re:/i.test(draft.subject ?? "") ? `Re: ${draft.subject ?? ""}` : (draft.subject ?? "");
   try {
     const res = await provider.send({
@@ -209,6 +213,13 @@ export async function applyReplyClassification(inboundId: string, category: Repl
   await setNextAction(row.businessId, answerId ? `${NEXT_ACTION[category]}: an answer is written under Outreach` : NEXT_ACTION[category], nowIso(), undefined, `reply:${inboundId}`);
 }
 
+/** The operator's own instructions for answering, by kind of reply, as a block for the model; empty when there are none. */
+function replyGuidance(settings: Parameters<typeof replyRulesOf>[0]): string {
+  const rules = replyRulesOf(settings);
+  const lines = REPLY_KINDS.filter((k) => rules[k].action !== "none" && rules[k].note).map((k) => `- if the reply is "${k}": ${rules[k].note}`);
+  return lines.length ? `\n\nThe sender's own instructions for the suggested answer (follow them; they never override the rules above about what may be claimed):\n${lines.join("\n")}` : "";
+}
+
 export async function handleProcessReply(job: JobRow, progress: ProgressFn) {
   const db = await getDb();
   const inboundId = String(job.payload.inboundId);
@@ -228,7 +239,7 @@ export async function handleProcessReply(job: JobRow, progress: ProgressFn) {
       stage: "reply",
       effort: "low",
       system: REPLY_SYSTEM,
-      user: `The email we sent${draft ? `:\nSubject: ${draft.subject ?? ""}\n${draft.body}` : " is not available."}\n\nSender's name: ${settings.senderName || "the owner"}${settings.bookingLink ? `\nSender's booking link (may be offered for scheduling): ${settings.bookingLink}` : ""}\n\n<reply>\nFrom: ${row.fromName ?? ""} <${row.fromEmail ?? ""}>\nSubject: ${row.subject ?? ""}\n\n${text.slice(0, 6000)}\n</reply>\n\nClassify the reply.`,
+      user: `The email we sent${draft ? `:\nSubject: ${draft.subject ?? ""}\n${draft.body}` : " is not available."}\n\nSender's name: ${settings.senderName || "the owner"}${settings.bookingLink ? `\nSender's booking link (may be offered for scheduling): ${settings.bookingLink}` : ""}${replyGuidance(settings)}\n\n<reply>\nFrom: ${row.fromName ?? ""} <${row.fromEmail ?? ""}>\nSubject: ${row.subject ?? ""}\n\n${text.slice(0, 6000)}\n</reply>\n\nClassify the reply.`,
       schema: ReplySchema,
       businessId: row.businessId,
       maxTokens: 6000,

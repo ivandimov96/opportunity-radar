@@ -92,12 +92,22 @@ ScoreRing, ScoreBar, EmptyState, Callout, PageHeader, Tabs, KeyValue, Flash.
   query, `Pager` for lists paged by the page itself, as on Outreach: 25 per page).
 - A number a button acts on sits in a pill inside it (`.btn-count`), not in brackets.
 - A button that can spend credits (Research, Run again on a search) asks first.
+- Fields: every input, dropdown and text area uses `.input`, `.select` or `.textarea`
+  (`globals.css`), which is the one place their look is decided: its own background
+  (`--field`), one height for inputs and dropdowns, a darker border under the mouse, the
+  accent border and a ring with the cursor in it, red when wrong, dimmed when off. Never
+  style a field on its own; size it with a utility (`h-8`, `text-xs`) where a small one is needed.
+- Settings: one topic per card, one setting per row, switches for on/off, and one Save bar
+  per page that appears with the first change (`src/app/settings/parts.tsx`, `save-bar.tsx`;
+  decisions D58 and D59). A new setting goes into the card it belongs to, or gets a card of
+  its own. A text that depends on a choice follows it at once, before saving.
 
 ## Look (decision D45)
 
 - Palette "airmail" as tokens in `src/app/globals.css` (light and dark): paper, sheet, ink, airmail
   blue (`--accent`, every action and link), postmark green (`--ok`), and airmail red (`--stamp`),
   which is used only by `.airmail`, the striped band on top of the sidebar.
+- Titles and large figures are set in Manrope since 2026-11-21 (decision D62); everything else below still holds.
 - One typeface, Inter, for everything: interface, page titles and the email text (changed 2026-11-20 at the
   founder's request; it replaced Avenir Next and the Charter serif). It is loaded through `next/font` in
   `src/app/layout.tsx`: fetched once when the app is built and served by the app itself.

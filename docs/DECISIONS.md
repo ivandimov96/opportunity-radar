@@ -747,3 +747,223 @@ The founder asked for an editable signature and then for the sentence the app ad
 - Accepted risk, stated to the founder: US and UK rules for unasked-for business email expect each
   message to say how to opt out. The landing page, privacy page and acceptable-use page no longer
   claim that every email says so.
+
+## D56 — Every workspace connects its own mailbox, and has its own settings (2026-11-20)
+
+**Context.** One mailbox, set in `.env`, belonged to the first workspace; settings (sender
+name, signature, limits, switches) were one global set. Nobody but the founder could send,
+and a second sender would have signed with the founder's name.
+
+**Decision.**
+- A `mailboxes` table, one row per workspace: provider (a preset or `custom`), address,
+  sign-in name, servers and an **app password stored encrypted** (AES-256-GCM, key derived
+  from `MAILBOX_SECRET`, else `AUTH_SECRET`; `src/lib/secret-box.ts`). The password never
+  reaches the browser again. A value that does not decrypt disables the mailbox ("connect
+  again"); it is never tried with something else.
+- Connecting (Settings, Mailbox) signs in to both servers first and saves only when that
+  works. Custom server names must resolve to public addresses and use mail ports, so the
+  form cannot be used to reach machines inside our own network.
+- The `.env` mailbox stays as the first workspace's fallback until it connects its own.
+- `settings` is keyed by workspace and key. Code that runs without a workspace (scripts,
+  the scheduler's own state) acts as the first workspace, as before.
+- The scheduler reads the inbox and runs sending-on-its-own for every workspace that has
+  a mailbox, each inside its own workspace.
+
+**Several mailboxes (same day).** A workspace may hold up to ten mailboxes; they are added
+and removed in Settings. One is the default: new emails leave from it. A follow-up or an
+answer leaves from the address its conversation started from (`outreach_drafts.sent_from`,
+recorded at the first attempt), so a thread never changes sender; if that mailbox was
+removed, the default takes over. The inbox of every mailbox is read, each with its own
+cursor, and one that fails does not stop the others. Removing the default hands over to
+the next working mailbox. A mailbox configured in `.env` is not a special case in the
+interface: the first time it is seen it is stored as an ordinary mailbox of the first
+workspace (password encrypted), once per address, so removing it is final. The list is
+sorted: the default, then the working ones, then by address. The add form is a provider
+picker with each provider's logo (`public/mail/`), then that provider's steps; the
+Microsoft sign-in button appears only when Microsoft is chosen.
+
+**Sign in with Microsoft (same day).** A button in the mailbox form starts the OAuth 2.0
+authorization-code flow (`src/lib/mail/microsoft.ts`, routes under `/auth/microsoft/mailbox`).
+The refresh token is stored encrypted in the same column as an app password (provider
+`microsoft`); a one-hour access token is made from it per connection and used with the
+existing SMTP + IMAP provider (XOAUTH2), so Message-IDs, the Sent-folder check and inbox
+cursors behave exactly as for any other mailbox. A rotated refresh token replaces the
+stored one; a withdrawn sign-in disables the mailbox with "sign in again". Needs
+`MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` (and optionally `APP_URL`); without them
+the button answers "not switched on yet". Chosen over the Graph mail API because it adds
+almost no new mail code that cannot be tested without a registered app; the cost is that
+tenants with authenticated SMTP switched off are refused at connect time, with that reason.
+Graph sending is the follow-up if that turns out to be common. First real run on 2026-11-20 (the founder's Entra registration, a personal Outlook
+account): sign-in, both connections and a test email worked. An outreach email and a
+reply through a Microsoft mailbox, and a company (Microsoft 365) account, are untested.
+
+**Not in this step.** Sign in with Google (needs an OAuth app and Google's security review
+for Gmail scopes). The scheduler's other steps (sequence emails,
+automatic search and research) still run for the first workspace only. New accounts are
+still held at `/welcome`.
+
+## D57 — Usage is counted per workspace, and a plan limits it (2026-11-20)
+
+**Context.** Searches, website reading and AI calls cost the product money, and all three
+were counted in one shared total: one customer could have spent the whole budget, and
+nothing said what a customer costs. Pricing cannot be set without that.
+
+**Decision.**
+- `workspace_usage` (workspace, month, metric → count), counted up in one statement
+  (`count` in `src/lib/usage/`). Metrics: `searches`, `research`, `emails`, `search_credits`.
+  AI cost and website pages per workspace are read from `ai_usage` and `investigations`.
+- A workspace has a plan (`workspaces.plan`, defined in `src/lib/usage/plans.ts`): a monthly
+  number of searches and of researched businesses, the two things that cost money to do.
+  Writing, reviewing and sending emails are counted but not limited. `owner` (the first
+  workspace) has no limits; a new account starts on `trial`.
+- A limit is asked before anything is queued (`room`, `assertRoom`; queued work takes up
+  room) and once more when the job starts (`countOrRefuse`). A refusal is a sentence for the
+  person: what the plan includes, that it is used, and the date it starts again. It counts
+  nothing and changes nothing. Places that queue research on someone's behalf use
+  `tryInvestigation`, which answers instead of throwing.
+- The provider budgets in `.env` and the AI budget stay as the product's own ceiling over
+  every workspace together; the AI budget setting is read from the first workspace.
+- Settings, Budget and usage: every account sees its plan and this month's use. The first
+  workspace also sees its provider budgets and a table of every account (use, cost, plan)
+  where a plan can be changed. The dashboard shows a customer their plan, not the budgets.
+
+**Not in this step.** Prices and payment; the plan numbers are placeholders to be set with
+them. Upgrading from inside the product. New accounts are still held at `/welcome`.
+
+## D58 — Settings pages: one topic per card, one setting per row (2026-11-20)
+
+**Context.** The eight sections of D54 had grown into long single forms that mixed
+unrelated things (identity with offer and writing style; daily limits with follow-ups and
+countries), with one Save at the bottom, switches as bare checkboxes, hours typed as
+numbers and search targets typed as `kind | CC | REGION` lines.
+
+**Decision** (`src/app/settings/parts.tsx`; the Mailbox page is not part of this and was
+left as it was):
+- A page is a stack of cards (`Group`), each about one thing, each a form of its own that
+  saves only its own fields (`saveSettingsAction` has one entry per card). Saving a card
+  comes back to that card.
+- A setting is a row (`Row`): its name and one line of explanation on the left, the control
+  on the right. On/off settings are switches (`Toggle`); a card that is one automation has
+  its switch in the heading. A choice between ways of working is a list of cards (`Choice`).
+- Pages that are a form to fill in (Your details) use fields with the label on top, two to a
+  line (`Field`, `Fields`); a missing field without which nothing can be sent is marked on
+  the field itself.
+- Numbers say what they count ("20 at most", "5 working days"); hours are picked from a
+  clock; search targets are rows with a country and region picker (`TargetsEditor`), saved
+  in the same text format as before.
+- The menu: You (Your details, Mailbox), Emails (Sending and follow-ups, Automatic sending,
+  Do not contact), Finding businesses (Finding and research), Account (Plan and usage,
+  Connections). No provider names or file names in the wording of a setting.
+
+## D59 — Settings: one Save per page, more say over automatic sending, reply rules (2026-11-20)
+
+Changes D58 where it said each card saves itself, and extends D50.
+
+- **One Save per page.** A page is one form (`SettingsForm`); its cards name themselves and
+  `saveSettingsAction` saves the fields of all of them. The Save bar (`save-bar.tsx`) is not
+  there until something is changed, then offers Save changes and Discard. What a choice
+  means is shown at once, before saving, with plain CSS (`group-has-[...]`).
+- **Reset to defaults** on Sending and follow-ups, Automatic sending, and Finding and
+  research (`resetSettingsAction`): the stored values of that page's cards are removed. Not
+  offered where a person wrote about themselves; the "Who to look for" list is kept.
+- **What is sent automatically** (`autoSendFirst`, `autoSendFollowUps`, `autoSendMinScore`,
+  `autoSendWeekdaysOnly`): all narrow automatic sending, none widen it. What they leave out
+  stays under Outreach for the operator. Defaults change nothing.
+- **Reply rules** (`replyRules`, `replyRulesOf`): for each kind of reply that can be answered
+  the operator chooses "send it for me", "write it, I send it" or "do not write an answer",
+  and may add an instruction of their own that goes to the model with the reply. Unset, the
+  rules are what the app always did (everything waits; the old `autoAnswer` switch sends the
+  two routine kinds). A kind set to "send" drops the standing "only you can answer" reason,
+  but an unsure reading, a reply matched by address only, or two automatic answers in one
+  conversation still hold the answer. An opt-out is never answered and always suppressed:
+  that is not a setting. The wait after an out-of-office reply is (`outOfOfficeDays`).
+- The Countries card left the Sending page; `allowedCountries` keeps its default (any).
+- `searchesPerDay` defaults to 5.
+
+The operator's instructions in the reply prompt have not been run against the real model.
+
+## D60 — A profile of what is sold and to whom, and the search made from it (2026-11-20)
+
+**Context.** Of everything under Your details only the "what you do" sentence was used, and
+only by the email writer. A search knew nothing about the operator: the kind of business and
+the place were typed each time, the automatic search worked from a second, hand-typed list,
+and research judges every business as a prospect for "a small software consultancy". The
+product is meant for any kind of seller (the founder's decision), so the page has to collect
+who the operator sells to and the rest of the product has to read it.
+
+**Decision, in three steps; step 1 is built.**
+1. **The profile and its link to search** (built). Settings gained: `offerResult`, `offerKind`,
+   `targetKinds`, `targetPlaces` (country, optional region), `targetSizes`, `targetNeedsWebsite`,
+   `targetNeedsPhone`, `fitSigns`, `excludeKinds`, `proofPoints`. Your details is four cards
+   (Who you are, What you sell, Who you sell to, Proof and tone) with one Save.
+   - `profileGaps` says what is missing for sending (name, postal address) and, separately,
+     for searching (offer, result, kinds, places). Missing fields are marked on the field.
+     An incomplete profile warns on the search form; it never blocks a search.
+   - `searchTargetsOf`: the automatic search works through every kind in every place of the
+     profile. The hand-typed list (`searchTargets`) is only used while the profile names
+     none; its editor left the Finding and research page, which now shows what the profile
+     gives and links to it.
+   - The search form offers the profile's kinds with one click and starts from its first
+     place and its must-haves when there is no earlier search to start from.
+   - Kinds are picked from the built-in catalogue or typed; no model call is involved.
+2. **Scoring** (not built): a found business scores by whether its category matches the
+   profile's kinds and sizes, and is left out when it matches `excludeKinds`.
+3. **Research and emails from the profile** (not built): the fixed "software consultancy"
+   in the research and email prompts is replaced by the operator's offer, result, signs of a
+   good fit and proof. Needs a small paid run to verify.
+
+Until steps 2 and 3, `targetSizes`, `excludeKinds`, `fitSigns`, `offerResult`, `offerKind` and
+`proofPoints` are collected and shown but change nothing yet.
+
+## D61 — The profile as a guided setup, and a first-run onboarding (2026-11-21)
+
+Changes D60 where it described Your details as four cards with one Save.
+
+- **Your details is a guided setup**: four short steps (About you, What you sell, Who you
+  sell to, Finishing touches), one on screen at a time, each saved with "Save and continue".
+  The first three are required: their needed fields are mandatory, an unfinished one says
+  what is missing and stays open (`saveSettingsAction`, the `then` field), there is no way
+  to skip, and a later step cannot be opened before the ones in front of it. The fields of
+  a step live once in `src/app/settings/profile-steps.tsx`.
+- **First-run onboarding** (`/setup`, shown without the app around it): the same three
+  steps, then "Connect your mailbox" (may be left for later; connecting from here, by app
+  password or Microsoft sign-in, comes back here), then a summary with "Find your first
+  businesses" and "Go to the dashboard" (`finishOnboardingAction`).
+- **Who goes through it**: a workspace whose `state:onboarding` is `pending`. An account
+  someone signed up for themselves starts that way (`markOnboardingPending` in
+  `createUser` and the Google sign-up); one made on purpose with a role (a script, the
+  test seed) does not. Finishing sets it to `done`; it can only be finished with the
+  three required steps complete.
+- **The gate**: the root layout sends a pending owner to `/setup`, but only when a page is
+  loaded whole; signing in or up sends them there itself (`setupAhead` in
+  `src/app/auth-actions.ts`). Nothing redirects while a page is already being drawn
+  (not the layout for the app's own partial fetches, not the dashboard page): in
+  development that made the browser ask for `/setup` without end (seen 2026-11-21).
+- The "What your searches will look for" sentence, the status boxes above the form, the
+  kind-of-offer choice and the Countries card were taken off at the founder's request;
+  `offerKind` and `allowedCountries` keep their stored values and defaults.
+- A missing field is marked "Required" (it was "Needed to send" / "Needed to search").
+
+New sign-ups are still members held at `/welcome`: they reach the onboarding once their
+account is opened (role `owner`).
+
+## D62. Rules for the profile fields, Your details as tabs, internals hidden (2026-11-21)
+
+- **Field rules** (`src/lib/profile-rules.ts`): every profile field has limits and, where
+  it helps, a shape (a name in letters, a website that looks like one, a booking link on
+  https, an offer of at least 20 characters and three words, no links or shouting in what
+  ends up in an email, at most 15 kinds of business). The form hands the limits to the
+  browser, which stops a wrong value first; `saveSettingsAction` applies the same rules
+  and does not save a value that breaks one (the old value stays, the refusal is shown).
+  An empty field is not this module's matter: what is required is decided by
+  `profileGaps` and the step check.
+- **Your details is four plain tabs** (Profile, Offer, Customers, Extras), all open, with
+  the same appearing Save bar as every other Settings page; a dot marks a tab that lacks
+  something required. The guided, in-order walk exists only in the first-run setup.
+- **How the product is built is the product's own business**: Settings, Connections (now
+  under "Admin"), the System page and the reminders about missing keys are shown to the
+  first workspace only. Customer screens do not name the research or AI services; where a
+  business was found (Google Maps, OpenStreetMap) is still shown.
+- **Titles are set in Manrope**, text in Inter (`--font-serif` is the title face).
+- The Connections text no longer calls Brave Search free: its free plan ended in
+  February 2026 (a monthly credit, a card required). It stays off.

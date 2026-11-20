@@ -422,6 +422,8 @@ export const outreachDrafts = sqliteTable(
     scheduledAt: text("scheduled_at"),
     sentAt: text("sent_at"),
     attempts: integer("attempts").notNull().default(0),
+    /** The address this email went out from (set at the first attempt), so the conversation stays in one mailbox. */
+    sentFrom: text("sent_from"),
     lastError: text("last_error"),
     createdAt: text("created_at").notNull().default(now()),
     updatedAt: text("updated_at").notNull().default(now()),
@@ -520,11 +522,44 @@ export const suppressions = sqliteTable("suppressions", {
 });
 
 /** Operator settings (sender identity, limits, automation). Secrets stay in the environment, never here. */
-export const settings = sqliteTable("settings", {
-  key: text("key").primaryKey(),
-  value: json<unknown>("value"),
-  updatedAt: text("updated_at").notNull().default(now()),
-});
+/** Settings and small pieces of state, one set per workspace: who the emails come from is each customer's own. */
+export const settings = sqliteTable(
+  "settings",
+  {
+    workspaceId: text("workspace_id").notNull().default(FIRST_WORKSPACE_ID),
+    key: text("key").notNull(),
+    value: json<unknown>("value"),
+    updatedAt: text("updated_at").notNull().default(now()),
+  },
+  (t) => [primaryKey({ columns: [t.workspaceId, t.key] })],
+);
+
+/**
+ * The mailboxes of a workspace: connected, removed and chosen in Settings. New emails go out from the
+ * one marked as default; a follow-up or an answer goes out from the address the conversation started from.
+ * The password is an app password, stored encrypted (src/lib/secret-box.ts) and never sent to the browser.
+ */
+export const mailboxes = sqliteTable(
+  "mailboxes",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    /** A key of MAIL_PRESETS, or "custom". */
+    provider: text("provider").notNull(),
+    address: text("address").notNull(),
+    user: text("user").notNull(),
+    passwordEnc: text("password_enc").notNull(),
+    smtpHost: text("smtp_host").notNull(),
+    smtpPort: integer("smtp_port").notNull(),
+    imapHost: text("imap_host").notNull(),
+    imapPort: integer("imap_port").notNull(),
+    /** The one new emails are sent from. At most one per workspace. */
+    isDefault: integer("is_default", { mode: "boolean" }).notNull().default(false),
+    createdAt: text("created_at").notNull().default(now()),
+    updatedAt: text("updated_at").notNull().default(now()),
+  },
+  (t) => [uniqueIndex("mailboxes_workspace_address_idx").on(t.workspaceId, t.address)],
+);
 
 // ----------------------------------------------------------------- pipeline
 export const prospects = sqliteTable("prospects", {
@@ -806,5 +841,24 @@ export const sessions = sqliteTable(
 export const workspaces = sqliteTable("workspaces", {
   id: text("id").primaryKey(),
   name: text("name").notNull().default(""),
+  /** What the workspace may use each month (a key of PLANS in src/lib/usage/plans.ts). */
+  plan: text("plan").notNull().default("trial"),
   createdAt: text("created_at").notNull(),
 });
+
+/**
+ * What each workspace used, per calendar month (UTC, "YYYY-MM") and per metric: searches run, businesses
+ * researched, emails written, search credits spent. One row per workspace, month and metric, counted up in a
+ * single statement. Plan limits are checked against it; the owner reads it to see what each customer costs.
+ */
+export const workspaceUsage = sqliteTable(
+  "workspace_usage",
+  {
+    workspaceId: text("workspace_id").notNull(),
+    period: text("period").notNull(),
+    metric: text("metric").notNull(),
+    used: integer("used").notNull().default(0),
+    updatedAt: text("updated_at").notNull().default(now()),
+  },
+  (t) => [primaryKey({ columns: [t.workspaceId, t.period, t.metric] })],
+);

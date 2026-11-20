@@ -6,6 +6,7 @@
 import { and, eq, gt } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { providerCache, providerUsage } from "@/db/schema";
+import { count as countUsage } from "@/lib/usage";
 
 export const currentPeriod = (d = new Date()) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
 
@@ -31,6 +32,8 @@ export async function recordUsage(provider: string, n = 1): Promise<number> {
   const used = (row?.used ?? 0) + n;
   if (row) await db.update(providerUsage).set({ used, updatedAt: now }).where(and(eq(providerUsage.provider, provider), eq(providerUsage.period, period))).run();
   else await db.insert(providerUsage).values({ provider, period, used, updatedAt: now }).run();
+  // Whose search spent them: the product's total above guards the budget, this says what each workspace costs.
+  if (provider === "serper") await countUsage("search_credits", n);
   return used;
 }
 

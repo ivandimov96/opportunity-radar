@@ -80,11 +80,16 @@ export function KeepScroll() {
     };
     const onSubmit = (e: SubmitEvent) => {
       const form = e.target as HTMLFormElement | null;
-      if (!form || e.defaultPrevented) return;
-      if (form.method !== "get") {
-        holdScroll(); // saves something and comes back to this page
+      if (!form) return;
+      // A form that saves something comes back to this page: its place is held. The framework takes such a
+      // submit over itself (and marks it as handled) before this runs, so "already handled" must not stop us here.
+      const saves = form.method !== "get" || (form.getAttribute("action") ?? "").startsWith("javascript:");
+      if (saves) {
+        // A form marked `data-scroll="top"` leads on to something new (the next step of a setup): that starts at the top.
+        holdScroll(form.dataset.scroll === "top" ? 0 : undefined);
         return;
       }
+      if (e.defaultPrevented) return;
       const url = new URL(form.action, window.location.href);
       if (url.origin !== window.location.origin || url.pathname !== window.location.pathname) return;
       e.preventDefault();

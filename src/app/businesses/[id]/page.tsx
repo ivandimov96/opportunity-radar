@@ -402,7 +402,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                         <div className="grid sm:grid-cols-4 gap-3 text-sm">
                           {[
                             { k: "Pages read", v: `${d.pages.filter((p) => !p.error).length} of ${d.pages.length}` },
-                            { k: "Firecrawl credits", v: d.pages.length && d.pages.every((p) => p.renderer === "stored") ? "0 · stored pages" : String(d.latest.creditsUsed) },
+                            { k: "Research credits", v: d.pages.length && d.pages.every((p) => p.renderer === "stored") ? "0 · stored pages" : String(d.latest.creditsUsed) },
                             { k: "Facts verified", v: String(d.facts.filter((f) => f.status === "verified").length) },
                             { k: "Off-site records", v: String(d.facts.filter((f) => ["domain_registered", "site_first_seen", "email_provider", "email_senders"].includes(f.key) && f.status === "verified").length) },
                           ].map((x) => (
@@ -417,7 +417,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                             <form action={investigateAction}>
                               <input type="hidden" name="businessId" value={b.id} />
                               <input type="hidden" name="mode" value="recrawl" />
-                              <button className="btn btn-sm" title="Fetch the website again through Firecrawl (one credit per page)">Research again</button>
+                              <button className="btn btn-sm" title="Read the website again (one credit per page)">Research again</button>
                             </form>
                             {d.pages.some((p) => p.hasHtml) && (
                               <form action={investigateAction}>

@@ -24,10 +24,10 @@ import { SEQUENCE_STEPS, STEP } from "@/lib/outreach/steps";
 import { getConfig } from "@/lib/config";
 import { isFirecrawlConfigured } from "@/lib/research/firecrawl";
 import { contactBlockers } from "@/lib/outreach/eligibility";
-import { getSettings, getState, setState } from "@/lib/settings";
-import { enqueueInvestigation, enqueueOutreach, maybeAutoDraft } from "./handlers";
+import { getSettings, getState, searchTargetsOf, setState } from "@/lib/settings";
+import { enqueueOutreach, maybeAutoDraft, tryInvestigation } from "./handlers";
 import { enqueueJob } from "./queue";
-import { MAILBOX_WORKSPACE_ID, syncMailboxKey } from "@/lib/mail";
+import { syncMailboxKey, workspacesWithMailbox } from "@/lib/mail";
 import { businessIdsOf, runInWorkspace } from "@/lib/workspace";
 
 export const SYNC_EVERY_MS = 5 * 60_000;
@@ -73,16 +73,18 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
   const db = await getDb();
   const settings = await getSettings();
 
-  // 1. Inbox: only while there is sent mail a reply could belong to. One mailbox, so one workspace: the one it belongs to.
-  if (cfg.mail.enabled) {
-    const last = await getState<{ at: string }>("mail.syncQueued");
-    const due = !last || now.getTime() - new Date(last.at).getTime() >= SYNC_EVERY_MS;
-    const watching = due ? await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(inArray(outreachDrafts.businessId, businessIdsOf(db, MAILBOX_WORKSPACE_ID)), inArray(outreachDrafts.status, ["sent", "bounced"]), gte(outreachDrafts.sentAt, new Date(now.getTime() - 90 * 86_400_000).toISOString()))).limit(1).get() : null;
-    if (watching) {
-      await runInWorkspace(MAILBOX_WORKSPACE_ID, () => enqueueJob("sync_mailbox", {}, { idempotencyKey: syncMailboxKey(MAILBOX_WORKSPACE_ID), maxAttempts: 1 }));
+  // 1. Inbox: for every workspace with a mailbox of its own, and only while it has sent mail a reply could belong to.
+  const withMailbox = await workspacesWithMailbox();
+  for (const ws of withMailbox) {
+    await runInWorkspace(ws, async () => {
+      const last = await getState<{ at: string }>("mail.syncQueued");
+      if (last && now.getTime() - new Date(last.at).getTime() < SYNC_EVERY_MS) return;
+      const watching = await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(inArray(outreachDrafts.businessId, businessIdsOf(db, ws)), inArray(outreachDrafts.status, ["sent", "bounced"]), gte(outreachDrafts.sentAt, new Date(now.getTime() - 90 * 86_400_000).toISOString()))).limit(1).get();
+      if (!watching) return;
+      await enqueueJob("sync_mailbox", {}, { idempotencyKey: syncMailboxKey(ws), maxAttempts: 1 });
       await setState("mail.syncQueued", { at: now.toISOString() });
       out.sync = true;
-    }
+    });
   }
 
   if (cfg.ai.enabled) {
@@ -165,7 +167,8 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
         .all();
       for (const b of next) {
         if (await failedRecently(`investigate:${b.id}`)) continue;
-        await runInWorkspace(b.workspaceId, () => enqueueInvestigation(b.id));
+        // A workspace whose plan is used up for the month is skipped, quietly: its owner sees why under Settings.
+        if (await runInWorkspace(b.workspaceId, () => tryInvestigation(b.id))) continue;
         out.research++;
       }
     }
@@ -175,7 +178,8 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
   await runInWorkspace(FIRST_WORKSPACE_ID, () => planFollowUps(now)).catch((err) => console.warn("[scheduler] follow-up planning failed", err));
 
   // 5. Finding businesses on its own: one search when the stock waiting for research runs low (Settings → Automation).
-  if (settings.autoSearch && settings.searchTargets.length && cfg.googleMaps.enabled) {
+  const targets = searchTargetsOf(settings);
+  if (settings.autoSearch && targets.length && cfg.googleMaps.enabled) {
     await runInWorkspace(FIRST_WORKSPACE_ID, async () => {
       const stock = Number((await db.select({ n: sql<number>`count(*)` }).from(businesses).where(and(eq(businesses.workspaceId, FIRST_WORKSPACE_ID), eq(businesses.status, "new"), isNotNull(businesses.website), ne(businesses.kind, "chain"), isNull(businesses.investigatedAt))).get())?.n ?? 0);
       const waiting = Number((await db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(inArray(outreachDrafts.status, ["ready", "approved"])).get())?.n ?? 0);
@@ -184,15 +188,16 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
       if ((await autoSearchesToday(now)) >= settings.searchesPerDay) return;
       // The search credits do not renew: the last ones are left for searches the operator starts.
       if ((await usageTotal("serper")) + AUTO_SEARCH_CREDITS > cfg.SERPER_CREDIT_BUDGET) return;
-      const started = await startAutoSearch(settings.searchTargets);
+      const started = await startAutoSearch(targets);
       if (started) out.search = started.name;
     });
   }
 
   // 6. Sending on its own, when the operator chose it: the ready emails whose waiting time is over (see outreach/autopilot.ts).
-  if (cfg.mail.enabled && settings.sendMode !== "manual") {
-    const run = await runInWorkspace(MAILBOX_WORKSPACE_ID, () => runAutopilot(now));
-    out.autopilot = { approved: run.approved, queued: run.queued };
+  // Each workspace decides for itself (its own setting, mailbox, limits and safety pause).
+  for (const ws of withMailbox) {
+    const run = await runInWorkspace(ws, () => runAutopilot(now));
+    out.autopilot = { approved: out.autopilot.approved + run.approved, queued: out.autopilot.queued + run.queued };
   }
   return out;
 }
