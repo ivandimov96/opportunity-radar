@@ -1,17 +1,26 @@
 /**
  * The scheduler: what the app does on its own, once a minute, inside the worker.
  *  - reads the inbox every few minutes while there is sent mail to watch;
- *  - writes one follow-up for a first email that went unanswered (it still waits for approval);
+ *  - writes the follow-up and the last note for a first email that went unanswered, and one
+ *    check-back for someone who answered "not now";
  *  - writes the email for qualified businesses that do not have one yet;
- *  - researches saved businesses, best leads first, while few emails are waiting for review.
- * It never sends anything and never starts a search: those stay the operator's.
+ *  - researches saved businesses, best leads first, while few emails are waiting for review;
+ *  - starts a search from the operator's targets when few businesses are left to research;
+ *  - passes ready emails on for sending once their waiting time is over.
+ * The last two are off until the operator switches them on in Settings: by default
+ * it never sends anything and never starts a search.
  * Every step is bounded by the budgets in Settings and by the monthly spend guards.
  * It looks across all workspaces (the budgets are still shared) and queues each job as
  * the workspace of the business it is for, so the handler runs where the business lives.
  */
-import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, notInArray, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { businesses, inboundEmails, investigations, jobs, outreachDrafts, prospects } from "@/db/schema";
+import { FIRST_WORKSPACE_ID, businesses, inboundEmails, investigations, jobs, outreachDrafts, prospects } from "@/db/schema";
+import { AUTO_SEARCH_CREDITS, autoSearchesToday, startAutoSearch } from "@/lib/discovery/auto-search";
+import { usageTotal } from "@/lib/discovery/usage";
+import { runAutopilot } from "@/lib/outreach/autopilot";
+import { planFollowUps } from "@/lib/pipeline/follow-up";
+import { SEQUENCE_STEPS, STEP } from "@/lib/outreach/steps";
 import { getConfig } from "@/lib/config";
 import { isFirecrawlConfigured } from "@/lib/research/firecrawl";
 import { contactBlockers } from "@/lib/outreach/eligibility";
@@ -43,15 +52,23 @@ async function failedRecently(idempotencyKey: string): Promise<boolean> {
   return Boolean(await db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.idempotencyKey, idempotencyKey), eq(jobs.status, "failed"), gte(jobs.finishedAt, since))).get());
 }
 
+/** Fewer businesses than this waiting for research, and a new search is due. */
+export const AUTO_SEARCH_LOW_STOCK = 5;
+
 export interface SchedulerResult {
   sync: boolean;
+  /** Follow-ups and last notes queued for writing. */
   followUps: number;
+  checkBacks: number;
+  /** The name of the search the app started on its own, if it did. */
+  search: string | null;
+  autopilot: { approved: number; queued: number };
   drafts: number;
   research: number;
 }
 
 export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
-  const out: SchedulerResult = { sync: false, followUps: 0, drafts: 0, research: 0 };
+  const out: SchedulerResult = { sync: false, followUps: 0, checkBacks: 0, search: null, autopilot: { approved: 0, queued: 0 }, drafts: 0, research: 0 };
   const cfg = getConfig();
   const db = await getDb();
   const settings = await getSettings();
@@ -69,28 +86,46 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
   }
 
   if (cfg.ai.enabled) {
-    // 2. One follow-up per unanswered first email, after the configured number of working days.
-    if (settings.followUpDays > 0) {
+    // 2. The sequence after an unanswered first email: a follow-up, then a last note, each after the configured working days.
+    if (settings.followUpDays > 0 && settings.followUpCount > 0) {
       const cutoff = new Date(now.getTime() - settings.followUpDays * 86_400_000).toISOString();
-      const candidates = await db
-        .select({ businessId: outreachDrafts.businessId, sentAt: outreachDrafts.sentAt })
-        .from(outreachDrafts)
-        .innerJoin(prospects, eq(prospects.businessId, outreachDrafts.businessId))
-        .where(and(eq(outreachDrafts.step, 0), eq(outreachDrafts.status, "sent"), lte(outreachDrafts.sentAt, cutoff), eq(prospects.stage, "contacted")))
-        .orderBy(outreachDrafts.sentAt)
-        .limit(40)
-        .all();
-      for (const c of candidates) {
-        if (out.followUps >= PER_TICK) break;
-        if (businessDaysBetween(new Date(c.sentAt!), now) < settings.followUpDays) continue;
-        if (await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.businessId, c.businessId), eq(outreachDrafts.step, 1), ne(outreachDrafts.status, "archived"))).limit(1).get()) continue;
-        if (await db.select({ id: inboundEmails.id }).from(inboundEmails).where(and(eq(inboundEmails.businessId, c.businessId), inArray(inboundEmails.kind, ["reply", "bounce"]))).limit(1).get()) continue;
-        const biz = await db.select().from(businesses).where(eq(businesses.id, c.businessId)).get();
-        // Checked as the business's own workspace: "already emailed" only counts that workspace's emails.
+      for (const [i, step] of SEQUENCE_STEPS.slice(0, settings.followUpCount).entries()) {
+        const previous = i === 0 ? STEP.first : SEQUENCE_STEPS[i - 1];
+        const candidates = await db
+          .select({ businessId: outreachDrafts.businessId, sentAt: outreachDrafts.sentAt })
+          .from(outreachDrafts)
+          .innerJoin(prospects, eq(prospects.businessId, outreachDrafts.businessId))
+          // An out-of-office reply postpones the next email (prospects.hold_until).
+          .where(and(eq(outreachDrafts.step, previous), eq(outreachDrafts.status, "sent"), lte(outreachDrafts.sentAt, cutoff), eq(prospects.stage, "contacted"), or(isNull(prospects.holdUntil), lte(prospects.holdUntil, now.toISOString()))))
+          .orderBy(outreachDrafts.sentAt)
+          .limit(40)
+          .all();
+        for (const c of candidates) {
+          if (out.followUps >= PER_TICK) break;
+          if (businessDaysBetween(new Date(c.sentAt!), now) < settings.followUpDays) continue;
+          if (await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.businessId, c.businessId), eq(outreachDrafts.step, step), ne(outreachDrafts.status, "archived"))).limit(1).get()) continue;
+          if (await db.select({ id: inboundEmails.id }).from(inboundEmails).where(and(eq(inboundEmails.businessId, c.businessId), inArray(inboundEmails.kind, ["reply", "bounce"]))).limit(1).get()) continue;
+          const biz = await db.select().from(businesses).where(eq(businesses.id, c.businessId)).get();
+          // Checked as the business's own workspace: "already emailed" only counts that workspace's emails.
+          if (!biz || (await runInWorkspace(biz.workspaceId, () => contactBlockers(biz, settings))).length) continue;
+          if (await failedRecently(`outreach:${c.businessId}:${step}`)) continue;
+          const { created } = await runInWorkspace(biz.workspaceId, () => enqueueOutreach(c.businessId, { step }));
+          if (created) out.followUps++;
+        }
+      }
+    }
+
+    // 2b. One check-back for everyone who answered "not now", when its day has come (set when the reply was read).
+    if (settings.recontactDays > 0) {
+      const due = await db.select({ businessId: prospects.businessId }).from(prospects).where(and(isNotNull(prospects.recontactAt), lte(prospects.recontactAt, now.toISOString()), eq(prospects.stage, "replied"))).limit(20).all();
+      for (const d of due) {
+        if (out.checkBacks >= PER_TICK) break;
+        if (await db.select({ id: outreachDrafts.id }).from(outreachDrafts).where(and(eq(outreachDrafts.businessId, d.businessId), eq(outreachDrafts.step, STEP.checkBack), ne(outreachDrafts.status, "archived"))).limit(1).get()) continue;
+        const biz = await db.select().from(businesses).where(eq(businesses.id, d.businessId)).get();
         if (!biz || (await runInWorkspace(biz.workspaceId, () => contactBlockers(biz, settings))).length) continue;
-        if (await failedRecently(`outreach:${c.businessId}:1`)) continue;
-        const { created } = await runInWorkspace(biz.workspaceId, () => enqueueOutreach(c.businessId, { step: 1 }));
-        if (created) out.followUps++;
+        if (await failedRecently(`outreach:${d.businessId}:${STEP.checkBack}`)) continue;
+        const { created } = await runInWorkspace(biz.workspaceId, () => enqueueOutreach(d.businessId, { step: STEP.checkBack }));
+        if (created) out.checkBacks++;
       }
     }
 
@@ -134,6 +169,30 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
         out.research++;
       }
     }
+  }
+
+  // 4b. Follow-up: every business in play gets (or keeps) its next action; costs nothing and sends nothing.
+  await runInWorkspace(FIRST_WORKSPACE_ID, () => planFollowUps(now)).catch((err) => console.warn("[scheduler] follow-up planning failed", err));
+
+  // 5. Finding businesses on its own: one search when the stock waiting for research runs low (Settings → Automation).
+  if (settings.autoSearch && settings.searchTargets.length && cfg.googleMaps.enabled) {
+    await runInWorkspace(FIRST_WORKSPACE_ID, async () => {
+      const stock = Number((await db.select({ n: sql<number>`count(*)` }).from(businesses).where(and(eq(businesses.workspaceId, FIRST_WORKSPACE_ID), eq(businesses.status, "new"), isNotNull(businesses.website), ne(businesses.kind, "chain"), isNull(businesses.investigatedAt))).get())?.n ?? 0);
+      const waiting = Number((await db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(inArray(outreachDrafts.status, ["ready", "approved"])).get())?.n ?? 0);
+      const searching = await db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.type, "discover_search"), inArray(jobs.status, ["queued", "running"]))).limit(1).get();
+      if (searching || stock >= Math.max(AUTO_SEARCH_LOW_STOCK, settings.researchPerDay) || waiting >= settings.readyBuffer) return;
+      if ((await autoSearchesToday(now)) >= settings.searchesPerDay) return;
+      // The search credits do not renew: the last ones are left for searches the operator starts.
+      if ((await usageTotal("serper")) + AUTO_SEARCH_CREDITS > cfg.SERPER_CREDIT_BUDGET) return;
+      const started = await startAutoSearch(settings.searchTargets);
+      if (started) out.search = started.name;
+    });
+  }
+
+  // 6. Sending on its own, when the operator chose it: the ready emails whose waiting time is over (see outreach/autopilot.ts).
+  if (cfg.mail.enabled && settings.sendMode !== "manual") {
+    const run = await runInWorkspace(MAILBOX_WORKSPACE_ID, () => runAutopilot(now));
+    out.autopilot = { approved: run.approved, queued: run.queued };
   }
   return out;
 }

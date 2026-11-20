@@ -12,13 +12,17 @@ import { getDb } from "@/db/client";
 import { businesses, emailEvents, inboundEmails, outreachDrafts } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
-import { logActivity, markNotReached, markReplied, setNextAction } from "@/lib/pipeline/prospects";
+import { holdUntil, logActivity, markNotReached, markReplied, setNextAction } from "@/lib/pipeline/prospects";
+import { PENDING_ON_REPLY } from "@/lib/outreach/steps";
 import { addSuppression } from "@/lib/email/suppression";
 import { getState, setState } from "@/lib/settings";
 import { businessIdsOf, workspaceId } from "@/lib/workspace";
 import { assertMailboxForWorkspace, getMailProvider } from "./index";
 import { bouncedRecipients, isAutoReply, isBounce, isHardBounce, stripQuoted } from "./parse";
 import type { InboundMessage, InboxCursor } from "./types";
+
+/** How long an out-of-office reply postpones the next email. */
+export const AUTO_REPLY_HOLD_DAYS = 7;
 
 export interface SyncResult {
   fetched: number;
@@ -90,16 +94,19 @@ export async function syncMailbox(): Promise<SyncResult> {
       .run();
     if (auto) {
       result.autoReplies++;
-      await logActivity(draft.businessId, "email", `Automatic reply received from ${msg.from.address}: "${msg.subject}"`, { inboundId: id, auto: true });
+      // Nobody is reading: the next email of the sequence waits a week from the automatic reply instead of landing in an empty office.
+      const until = new Date(new Date(msg.date).getTime() + AUTO_REPLY_HOLD_DAYS * 86_400_000).toISOString();
+      await holdUntil(draft.businessId, until);
+      await logActivity(draft.businessId, "email", `Automatic reply received from ${msg.from.address}: "${msg.subject}". The next email waits until ${until.slice(0, 10)}.`, { inboundId: id, auto: true });
       continue;
     }
     result.replies++;
     const preview = stripQuoted(msg.text).replace(/\s+/g, " ").slice(0, 200);
     await logActivity(draft.businessId, "email", `Reply received from ${msg.from.name || msg.from.address}: ${preview}`, { inboundId: id, matchedBy: threadRef ? "thread" : "address" });
     await markReplied(draft.businessId);
-    // A reply ends the sequence: a follow-up that was written but not sent is withdrawn.
-    await db.update(outreachDrafts).set({ status: "archived", updatedAt: nowIso() }).where(and(eq(outreachDrafts.businessId, draft.businessId), eq(outreachDrafts.step, 1), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "excluded"]))).run();
-    await setNextAction(draft.businessId, `Read and answer the reply from ${msg.from.name || msg.from.address}`, nowIso());
+    // A reply ends the sequence: what was written ahead but not sent is withdrawn.
+    await db.update(outreachDrafts).set({ status: "archived", updatedAt: nowIso() }).where(and(eq(outreachDrafts.businessId, draft.businessId), inArray(outreachDrafts.step, [...PENDING_ON_REPLY]), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "excluded"]))).run();
+    await setNextAction(draft.businessId, `Read and answer the reply from ${msg.from.name || msg.from.address}`, nowIso(), undefined, `reply:${id}`);
     await enqueueJob("process_reply", { inboundId: id }, { idempotencyKey: `reply:${id}` });
   }
 

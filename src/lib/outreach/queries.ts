@@ -118,7 +118,9 @@ export async function draftDetail(id: string) {
   const index = overview.findIndex((r) => r.draft.id === id);
   const prev = index > 0 ? overview[index - 1].draft.id : null;
   const next = index >= 0 && index < overview.length - 1 ? overview[index + 1].draft.id : null;
-  return { draft, business, prospect, opportunity, pack, settings, suppression, events, inbound, tab, position: index >= 0 ? { index: index + 1, total: overview.length } : null, prev, next };
+  // For an answer: the reply it answers.
+  const answered = draft.inboundId ? ((await db.select().from(inboundEmails).where(and(eq(inboundEmails.id, draft.inboundId), eq(inboundEmails.businessId, business.id))).get()) ?? null) : null;
+  return { draft, business, prospect, opportunity, pack, settings, suppression, events, inbound, answered, tab, position: index >= 0 ? { index: index + 1, total: overview.length } : null, prev, next };
 }
 
 /** Sent batches, newest first, with what happened to their emails. */

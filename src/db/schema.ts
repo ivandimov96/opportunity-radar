@@ -50,6 +50,8 @@ export type SearchStats = {
   skippedNoWebsite: number;
   skippedNoPhone?: number;
   skippedChains?: number;
+  /** Left out by the review-count or rating limit of the search. */
+  skippedReviews?: number;
   skippedKnown?: number;
   /** Found again after the operator removed them: left out. */
   skippedRemoved?: number;
@@ -91,6 +93,11 @@ export type SearchFilters = {
   customCategory?: string | null;
   /** Save every listed candidate as a business automatically (otherwise the operator picks). */
   autoSave?: boolean;
+  /** Started by the app itself from the targets in Settings, not by the operator. */
+  auto?: boolean;
+  /** Keep only listings with at least this many reviews / this rating (0 or absent = no limit). A listing without the figure does not pass a limit. */
+  minReviews?: number;
+  minRating?: number;
 };
 
 // --------------------------------------------------------------- businesses
@@ -399,8 +406,12 @@ export const outreachDrafts = sqliteTable(
     editedByUser: integer("edited_by_user", { mode: "boolean" }).notNull().default(false),
     model: text("model"),
     campaignId: text("campaign_id").references(() => campaigns.id, { onDelete: "set null" }),
-    /** 0 = first email, 1 = follow-up in the same thread. */
+    /** Which email of the conversation this is: see src/lib/outreach/steps.ts (0 first, 1 follow-up, 2 last note, 3 check-back, 9 answer to a reply). */
     step: integer("step").notNull().default(0),
+    /** Who approved it for sending: "operator" or "autopilot". Null = not approved yet, or approved before this was recorded (the operator). */
+    approvedBy: text("approved_by"),
+    /** The reply this email answers (step 9 only). No foreign key: the tables refer to each other. */
+    inboundId: text("inbound_id"),
     validation: json<DraftValidation>("validation"),
     costUsd: real("cost_usd").notNull().default(0),
     promptVersion: text("prompt_version"),
@@ -527,6 +538,17 @@ export const prospects = sqliteTable("prospects", {
   nextActionAt: text("next_action_at"),
   /** Manual order inside a pipeline column (lower first); null = not ordered yet, falls back to priority. */
   position: integer("position"),
+  /**
+   * Which rule planned the next action ("review:<email id>", "wait:0", …; see src/lib/pipeline/follow-up.ts).
+   * Null = the operator planned it themselves, and the app never replaces it.
+   */
+  nextActionKey: text("next_action_key"),
+  /** The last planned action the operator ticked off, so the same one is not planned again. */
+  nextActionDone: text("next_action_done"),
+  /** Nothing is written to this business on its own before this moment (an out-of-office reply sets it). */
+  holdUntil: text("hold_until"),
+  /** They said "not now": a check-back email is written when this moment comes. */
+  recontactAt: text("recontact_at"),
   updatedAt: text("updated_at").notNull().default(now()),
 });
 

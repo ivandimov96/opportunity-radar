@@ -6,7 +6,7 @@
  */
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { businesses, facts, investigations, observations, opportunities, outreachDrafts, pages, searches } from "@/db/schema";
+import { businesses, facts, inboundEmails, investigations, observations, opportunities, outreachDrafts, pages, prospects, searches } from "@/db/schema";
 import { getConfig } from "@/lib/config";
 import { runDiscovery, type RunOutcome } from "@/lib/discovery/engine";
 import { investigateWithModel, AiRefusalError, AiSpendLimitError, AiUnavailableError } from "@/lib/ai";
@@ -16,6 +16,7 @@ import { buildEvidencePack } from "@/lib/outreach/evidence";
 import { batchPeers } from "@/lib/outreach/drafts";
 import { contactBlockers, OUTBOUND_COMMITTED } from "@/lib/outreach/eligibility";
 import { hasBlock } from "@/lib/outreach/validate";
+import { isWrittenStep, STEP, stepLabel, stepNoun, type WrittenStep } from "@/lib/outreach/steps";
 import { openCampaign } from "@/lib/outreach/campaigns";
 import { getSettings } from "@/lib/settings";
 import { newId, nowIso } from "@/lib/ids";
@@ -440,8 +441,8 @@ export const MEASURED_KEYS = new Set<string>(["website_health", "website_updated
 export const MAX_OPPORTUNITIES = 3;
 
 // ------------------------------------------------------------------ outreach
-/** Queue the email for a business: step 0 = first email, 1 = the follow-up. One job per business and step at a time. */
-export async function enqueueOutreach(businessId: string, opts: { step?: 0 | 1; feedback?: string | null } = {}) {
+/** Queue the email for a business: step 0 = first email, 1 = follow-up, 2 = last note, 3 = check-back (steps.ts). One job per business and step at a time. */
+export async function enqueueOutreach(businessId: string, opts: { step?: WrittenStep; feedback?: string | null } = {}) {
   const step = opts.step ?? 0;
   await assertBusinessInWorkspace(businessId);
   return enqueueJob("generate_outreach", { businessId, step, feedback: opts.feedback ?? null }, { idempotencyKey: `outreach:${businessId}:${step}` });
@@ -478,7 +479,9 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
   const db = await getDb();
   const cfg = getConfig();
   const businessId = String(job.payload.businessId);
-  const step = Number(job.payload.step ?? 0) === 1 ? 1 : 0;
+  const rawStep = Number(job.payload.step ?? 0);
+  if (!isWrittenStep(rawStep)) throw new NonRetryableError(`Step ${rawStep} is not written from research`);
+  const step: WrittenStep = rawStep;
   const feedback = (job.payload.feedback as string | null) ?? null;
   const biz = await db.select().from(businesses).where(and(eq(businesses.id, businessId), eq(businesses.workspaceId, await workspaceId()))).get();
   if (!biz) throw new NonRetryableError(`Business ${businessId} not found`);
@@ -488,8 +491,13 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
   const committed = await db.select().from(outreachDrafts).where(and(eq(outreachDrafts.businessId, businessId), inArray(outreachDrafts.status, OUTBOUND_COMMITTED))).orderBy(desc(outreachDrafts.createdAt)).all();
   const first = committed.find((d) => d.step === 0 && d.status === "sent") ?? null;
   if (step === 0 && committed.some((d) => d.step === 0)) throw new NonRetryableError("This business was already emailed; a second first email is never written");
-  if (step === 1 && !first) throw new NonRetryableError("A follow-up needs a first email that was sent");
-  if (step === 1 && committed.some((d) => d.step === 1)) throw new NonRetryableError("A follow-up was already sent to this business");
+  if (step > 0 && !first) throw new NonRetryableError(`A ${stepNoun(step)} needs a first email that was sent`);
+  if (step > 0 && committed.some((d) => d.step === step)) throw new NonRetryableError(`A ${stepNoun(step)} was already sent to this business`);
+  const followUp = committed.find((d) => d.step === STEP.followUp && d.status === "sent") ?? null;
+  if (step === STEP.lastNote && !followUp) throw new NonRetryableError("A last note comes after a follow-up that was sent");
+  // A check-back answers a "not now": it needs that reply, and carries what they said.
+  const notNow = step === STEP.checkBack ? ((await db.select().from(inboundEmails).where(and(eq(inboundEmails.businessId, businessId), eq(inboundEmails.kind, "reply"))).orderBy(desc(inboundEmails.receivedAt)).limit(1).get()) ?? null) : null;
+  if (step === STEP.checkBack && notNow?.classification !== "not_now") throw new NonRetryableError("A check-back is only written after a \"not now\"");
 
   // One alternative from the research, preferably of a different kind than the main idea: the follow-up may raise it.
   const alternatives = await db.select().from(opportunities).where(and(eq(opportunities.businessId, businessId), eq(opportunities.role, "secondary"), eq(opportunities.source, "ai"))).orderBy(desc(opportunities.attractivenessScore)).all();
@@ -502,7 +510,7 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
   // The company's own name: a map listing may carry a branch or be a search phrase (see company-name.ts).
   const pageRows = await db.select({ text: pages.text, title: pages.title }).from(pages).where(eq(pages.businessId, businessId)).all();
   const companyName = companyNameFor(biz.name, biz.website, pageRows.map((p) => p.text ?? ""), pageRows.map((p) => p.title ?? ""));
-  progress({ message: step === 1 ? "Writing the follow-up" : "Writing the email" });
+  progress({ message: `Writing the ${stepNoun(step)}` });
   let out: Awaited<ReturnType<typeof writeOutreachEmail>>;
   try {
     out = await writeOutreachEmail({
@@ -515,6 +523,8 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
       pack,
       step,
       firstEmail: first ? { subject: first.subject ?? "", body: first.body } : null,
+      followUpEmail: step === STEP.lastNote && followUp ? { body: followUp.body } : null,
+      theirReply: notNow ? { receivedAt: notNow.receivedAt, summary: notNow.classificationSummary ?? "They said not now." } : null,
       others,
       feedback,
     });
@@ -532,9 +542,11 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
   await db.batch([
     // The new email replaces earlier unsent ones for the same step; they stay in the history as archived.
     db.update(outreachDrafts).set({ status: "archived", updatedAt: nowIso() }).where(and(eq(outreachDrafts.businessId, businessId), eq(outreachDrafts.step, step), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "excluded", "failed"]))),
-    db.insert(outreachDrafts).values({ id, businessId, opportunityId: opp.id, campaignId: campaign.id, step, style: "personal", channel: "email", toEmail: biz.email ?? null, subject: out.email.subject, body: out.email.body, claims: out.email.claims, warnings: issues.map((i) => i.message), validation, status, model: out.model, costUsd: out.costUsd, promptVersion: OUTREACH_PROMPT_VERSION, inReplyTo: step === 1 ? (first?.messageId ?? null) : null }),
+    db.insert(outreachDrafts).values({ id, businessId, opportunityId: opp.id, campaignId: campaign.id, step, style: "personal", channel: "email", toEmail: biz.email ?? null, subject: out.email.subject, body: out.email.body, claims: out.email.claims, warnings: issues.map((i) => i.message), validation, status, model: out.model, costUsd: out.costUsd, promptVersion: OUTREACH_PROMPT_VERSION, inReplyTo: step > 0 ? (first?.messageId ?? null) : null }),
+    // The check-back is written: the date that asked for it is done with.
+    ...(step === STEP.checkBack ? [db.update(prospects).set({ recontactAt: null, updatedAt: nowIso() }).where(eq(prospects.businessId, businessId))] : []),
   ]);
-  await logActivity(businessId, "system", `${step === 1 ? "Follow-up" : "Outreach email"} written for “${opp.title}” (${out.attempts} attempt(s), $${out.costUsd.toFixed(3)}): ${validation.passed ? "all checks passed, ready for review" : `needs review: ${issues.filter((i) => i.severity === "block").map((i) => i.message).join(" ")}`}`, { draftId: id, status });
+  await logActivity(businessId, "system", `${step === 0 ? "Outreach email" : stepLabel(step)} written for “${opp.title}” (${out.attempts} attempt(s), $${out.costUsd.toFixed(3)}): ${validation.passed ? "all checks passed, ready for review" : `needs review: ${issues.filter((i) => i.severity === "block").map((i) => i.message).join(" ")}`}`, { draftId: id, status });
   if (step === 0 && validation.passed) await advanceStageIfBehind(businessId, "ready_to_contact", "email written and checked");
 }
 

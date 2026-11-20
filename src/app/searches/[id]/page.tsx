@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { CANDIDATE_SORTS, getSearchCandidates, getSearchOverview, type CandidateSort } from "@/lib/queries";
 import { Badge, Callout, Card, EmptyState, Icon, PageHeader, StatusPill, fmtRelative, fmtDuration } from "@/components/ui";
 import { AutoRefresh } from "@/components/auto-refresh";
+import { ConfirmButton } from "@/components/confirm-button";
 import { getPlaybook } from "@/lib/industries";
 import { PROVIDER_LABEL } from "@/lib/discovery";
 import { describeFilters } from "@/lib/search-input";
@@ -33,6 +34,12 @@ export default async function SearchDetail({ params, searchParams }: { params: P
   const failedSources = Object.entries(st?.providerResults ?? {}).filter(([, r]) => r.error && !/planned integration/i.test(r.error));
   const okSources = Object.entries(st?.providerResults ?? {}).filter(([, r]) => !r.error);
   const unsaved = data.counts.total - data.counts.saved;
+  const leftOut = st ? [st.skippedClosed ? `${st.skippedClosed} closed` : "", st.skippedChains ? `${st.skippedChains} chains` : "", st.skippedReviews ? `${st.skippedReviews} below the review limits` : "", st.skippedNoWebsite ? `${st.skippedNoWebsite} without a website` : "", st.skippedNoPhone ? `${st.skippedNoPhone} without a phone` : "", st.skippedKnown ? `${st.skippedKnown} you already had` : "", st.skippedRemoved ? `${st.skippedRemoved} you removed earlier` : ""].filter(Boolean) : [];
+  const leftOutCount = st ? (st.skippedClosed ?? 0) + (st.skippedChains ?? 0) + (st.skippedReviews ?? 0) + (st.skippedNoWebsite ?? 0) + (st.skippedNoPhone ?? 0) + (st.skippedKnown ?? 0) + (st.skippedRemoved ?? 0) : 0;
+  // Businesses that reached this search without a results list (an import, sample data): count them from the saved ones.
+  const found = Math.max(data.counts.total, businessStats.saved);
+  const savedCount = Math.max(data.counts.saved, businessStats.saved);
+  const manySources = Object.keys(data.counts.bySource).length > 1;
   const base = `/searches/${search.id}`;
   const playbook = getPlaybook(search.industry);
   const where = [search.city, search.region ? regionName(search.country, search.region) : null, countryName(search.country)].filter(Boolean).join(", ");
@@ -40,50 +47,48 @@ export default async function SearchDetail({ params, searchParams }: { params: P
   return (
     <>
       <PageHeader
-        crumbs={[{ href: "/searches", label: "Discover" }, { label: search.name }]}
-        title={
-          <span className="flex items-center gap-2 flex-wrap">
-            {search.name}
-          </span>
-        }
-        subtitle={
-          <>
-            {search.filters?.customCategory ? `“${search.filters.customCategory}”` : playbook.label} · {where} · up to {search.maxResults} · {search.providers.map((p) => PROVIDER_LABEL[p] ?? p).join(" + ")} · {fmtRelative(search.createdAt)}
-            <span className="block text-xs text-ink-faint mt-1">{describeFilters(search).join(" · ")}</span>
-          </>
-        }
+        crumbs={[{ href: "/searches", label: "Searches" }, { label: search.name }]}
+        title={search.name}
+        subtitle={`${search.filters?.customCategory || playbook.label} · ${where} · ${fmtRelative(search.createdAt)}`}
         actions={
           <>
             <AutoRefresh active={active} label={discovering ? "Searching" : `Researching ${businessStats.processing}`} />
             {businessStats.saved > 0 && (
-              <a href={`/api/export?searchId=${search.id}`} className="btn" title="Saved businesses of this search as CSV">
-                <Icon name="download" /> Export CSV
+              <a href={`/api/export?searchId=${search.id}`} className="btn btn-ghost" title="The saved businesses of this search as a CSV file">
+                <Icon name="download" /> Export
               </a>
             )}
-            <Link href={`/searches/new?industry=${encodeURIComponent(search.industry)}&country=${encodeURIComponent(search.country)}&city=${encodeURIComponent(search.city ?? "")}&region=${encodeURIComponent(search.region ?? "")}`} className="btn" title="Start a new search prefilled with this type and place">
-              <Icon name="plus" /> New search like this
+            <Link href={`/searches/new?industry=${encodeURIComponent(search.industry)}&country=${encodeURIComponent(search.country)}&city=${encodeURIComponent(search.city ?? "")}&region=${encodeURIComponent(search.region ?? "")}`} className="btn btn-ghost" title="A new search with this kind of business and place filled in">
+              <Icon name="plus" /> Similar search
             </Link>
             <form action={rerunSearch}>
               <input type="hidden" name="searchId" value={search.id} />
-              <button className="btn" disabled={active} title="Run the sources again (cached cells are reused; only missing or stale cells are read)">
+              <ConfirmButton className="btn" disabled={active} confirmLabel="Run again" message="Run this search again? It asks the sources again, which can use search credits. Businesses you already have are not duplicated.">
                 <Icon name="refresh" /> Run again
-              </button>
+              </ConfirmButton>
             </form>
             {unsaved > 0 && !discovering && (
               <form action={saveCandidatesAction}>
                 <input type="hidden" name="searchId" value={search.id} />
                 <input type="hidden" name="all" value="on" />
                 <button className="btn btn-primary">
-                  <Icon name="plus" /> Save all {unsaved} unsaved
+                  <Icon name="plus" /> Save all <span className="btn-count">{unsaved}</span>
                 </button>
               </form>
             )}
             {businessStats.investigable > 0 && (
               <form action={investigateManyAction}>
                 <input type="hidden" name="searchId" value={search.id} />
-                <button className="btn btn-primary" disabled={active || !cfg.firecrawl.enabled} title={cfg.firecrawl.enabled ? "Queue website research for the saved businesses that have none yet" : "Research needs FIRECRAWL_API_KEY"}>
-                  <Icon name="sparkles" /> Research {businessStats.investigable} saved
-                </button>
+                {/* One primary action at a time: saving comes first, research after it. */}
+                <ConfirmButton
+                  className={`btn ${unsaved > 0 && !discovering ? "" : "btn-primary"}`}
+                  disabled={active || !cfg.firecrawl.enabled}
+                  title={cfg.firecrawl.enabled ? undefined : "Research is not set up yet (Settings)"}
+                  confirmLabel="Start research"
+                  message={`Research ${businessStats.investigable} saved business${businessStats.investigable === 1 ? "" : "es"}? Each one has its website read and analysed, which uses website and AI credits.`}
+                >
+                  <Icon name="sparkles" /> Research <span className="btn-count">{businessStats.investigable}</span>
+                </ConfirmButton>
               </form>
             )}
           </>
@@ -110,38 +115,29 @@ export default async function SearchDetail({ params, searchParams }: { params: P
       )}
 
       <div className="surface p-4 mb-5">
-        <div className="flex items-center justify-between gap-3 mb-3 flex-wrap">
-          <div className="flex items-center gap-2 flex-wrap">
-            <StatusPill status={search.status} label={discovering ? (search.status === "queued" ? "Queued" : "Searching") : search.status === "done" ? (failedSources.length ? "Partial" : data.counts.total ? "Results" : "No results") : "Failed"} />
-            {discovering && job?.progress?.message && <span className="text-xs text-ink-muted">{job.progress.message}</span>}
-            {!discovering && st?.durationMs != null && <span className="text-xs text-ink-faint">took {fmtSec(st.durationMs)}</span>}
-            {!discovering && st?.cached === "all" && <Badge tone="info" title="Every grid cell of the area was already in the local copy: no source was read">from local cache</Badge>}
-            {!discovering && st?.cached === "some" && <Badge tone="info" title="Part of the area came from the local copy; the rest was read from the sources">partly cached</Badge>}
-            {!discovering && st?.releases && Object.keys(st.releases).length > 0 && <span className="text-xs text-ink-faint">{Object.entries(st.releases).map(([k, r]) => `${PROVIDER_LABEL[k] ?? k} ${r}`).join(" · ")}</span>}
-          </div>
-          <div className="text-xs text-ink-faint">{st?.area ? `Area: ${st.area}` : ""}</div>
+        <div className="flex items-center gap-2 flex-wrap mb-4">
+          <StatusPill status={search.status} label={discovering ? (search.status === "queued" ? "Queued" : "Searching") : search.status === "done" ? (failedSources.length ? "Partly done" : found ? "Done" : "Nothing found") : "Failed"} />
+          {discovering && job?.progress?.message && <span className="text-xs text-ink-muted">{job.progress.message}</span>}
+          {!discovering && st?.durationMs != null && <span className="text-xs text-ink-faint">took {fmtSec(st.durationMs)}</span>}
         </div>
-        {active && <div className="relative h-1.5 rounded-full bg-surface-3 overflow-hidden mb-3 progress-indeterminate" />}
-        <ol className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {active && <div className="relative h-1.5 rounded-full bg-surface-3 overflow-hidden mb-4 progress-indeterminate" />}
+        <dl className="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-4">
           {[
-            { label: "Found", n: data.counts.total, hint: st ? [st.candidates != null ? `${st.candidates} source records` : "", st.skippedClosed ? `${st.skippedClosed} closed` : "", st.skippedChains ? `${st.skippedChains} chains` : "", st.skippedNoWebsite ? `${st.skippedNoWebsite} no website` : "", st.skippedNoPhone ? `${st.skippedNoPhone} no phone` : "", st.skippedKnown ? `${st.skippedKnown} known` : "", st.skippedRemoved ? `${st.skippedRemoved} removed by you earlier` : "", data.counts.possibleDuplicates ? `${data.counts.possibleDuplicates} possible duplicates` : ""].filter(Boolean).join(" · ") : "" },
-            { label: "Saved", n: data.counts.saved, hint: `${unsaved} not saved${st ? ` · ${st.created} new · ${st.merged} merged` : ""}` },
-            { label: "Reachable", n: data.counts.withWebsite, hint: `${data.counts.withWebsite} website · ${data.counts.withPhone} phone` },
-            { label: "Researched", n: businessStats.investigated, hint: `${businessStats.processing} in progress · ${businessStats.investigable} waiting · ${businessStats.withOpportunity} with opportunity${businessStats.failed ? ` · ${businessStats.failed} failed` : ""}` },
-          ].map((s, i) => (
-            <li key={s.label} className="flex items-start gap-3">
-              <span className="w-6 h-6 rounded-full bg-surface-3 text-xs font-semibold grid place-items-center text-ink-muted shrink-0">{i + 1}</span>
-              <span className="min-w-0">
-                <span className="block text-xs text-ink-muted">{s.label}</span>
-                <span className="block text-xl font-semibold tabular-nums leading-tight">{s.n}</span>
-                <span className="block text-xs text-ink-faint">{s.hint}</span>
-              </span>
-            </li>
+            { label: "Found", n: found, hint: leftOut.length ? `${leftOutCount} left out` : "", title: leftOut.join(" · ") },
+            { label: "Saved", n: savedCount, hint: unsaved > 0 ? `${unsaved} not saved yet` : found ? "all of them" : "" },
+            { label: "With a website", n: data.counts.withWebsite, hint: `${data.counts.withPhone} with a phone` },
+            { label: "Researched", n: businessStats.investigated, hint: [businessStats.processing ? `${businessStats.processing} in progress` : "", businessStats.investigable ? `${businessStats.investigable} waiting` : "", businessStats.withOpportunity ? `${businessStats.withOpportunity} with an idea` : "", businessStats.failed ? `${businessStats.failed} failed` : ""].filter(Boolean).join(" · ") },
+          ].map((s) => (
+            <div key={s.label} title={s.title || undefined}>
+              <dt className="text-xs text-ink-muted">{s.label}</dt>
+              <dd className="text-2xl font-semibold tabular-nums leading-tight mt-0.5">{s.n}</dd>
+              {s.hint && <dd className="text-xs text-ink-faint mt-0.5">{s.hint}</dd>}
+            </div>
           ))}
-        </ol>
+        </dl>
         {st && (
           <details className="mt-4 text-sm">
-            <summary className="cursor-pointer text-ink-muted hover:text-ink">Search details: sources, filters and the full log</summary>
+            <summary className="disclosure text-ink-muted">How this search ran</summary>
             <div className="grid md:grid-cols-2 gap-4 mt-3">
               <div>
                 <div className="label mb-1">Sources</div>
@@ -192,15 +188,17 @@ export default async function SearchDetail({ params, searchParams }: { params: P
       </div>
 
       {(data.counts.total > 0 || filtered) && (
-        <FilterBar basePath={base} sp={sp} params={t} placeholder="Search within results: name, category, city, domain or street" dateFields={[{ key: "discovered", label: "Found" }]}>
-          <select className="select w-auto" name="source" defaultValue={sp.source ?? ""} aria-label="Source">
-            <option value="">Any source</option>
-            {Object.keys(data.counts.bySource).map((k) => (
-              <option key={k} value={k}>
-                {PROVIDER_LABEL[k] ?? k} ({data.counts.bySource[k]})
-              </option>
-            ))}
-          </select>
+        <FilterBar basePath={base} sp={sp} params={t} placeholder="Search these results" dateFields={[{ key: "discovered", label: "Found" }]}>
+          {manySources && (
+            <select className="select w-auto" name="source" defaultValue={sp.source ?? ""} aria-label="Source">
+              <option value="">Any source</option>
+              {Object.keys(data.counts.bySource).map((k) => (
+                <option key={k} value={k}>
+                  {PROVIDER_LABEL[k] ?? k} ({data.counts.bySource[k]})
+                </option>
+              ))}
+            </select>
+          )}
           <select className="select w-auto" name="website" defaultValue={sp.website ?? ""} aria-label="Website">
             <option value="">Website: any</option>
             <option value="yes">Has website</option>
@@ -218,17 +216,17 @@ export default async function SearchDetail({ params, searchParams }: { params: P
           </select>
         </FilterBar>
       )}
-      <Card title={`Businesses (${data.total}${filtered ? ` of ${data.counts.total}` : ""})`} description={unsaved > 0 ? "Select rows to save them to Radar; saved businesses link to their page. Lead score ranks reachable independents first." : "Every listed business is saved. Lead score ranks reachable independents first."} padded={false}>
+      <Card title={`Businesses (${filtered || data.counts.total ? data.total : found}${filtered ? ` of ${data.counts.total}` : ""})`} padded={false}>
         {data.rows.length === 0 ? (
           <EmptyState
             icon="search"
-            title={discovering ? "Searching…" : filtered ? "No results match these filters" : search.status === "failed" ? "The search did not run" : "No businesses found"}
-            description={discovering ? "Results appear here when the sources have answered." : filtered ? "Change or reset the filters." : search.status === "failed" ? "See the error above, then run the search again." : "Nothing in the sources matched this category in this area. Try a wider radius, fewer categories, or another source."}
-            action={!discovering && !filtered && <Link href="/searches/new" className="btn">New search</Link>}
+            title={discovering ? "Searching…" : !filtered && businessStats.saved > 0 ? "These businesses are in your list" : filtered ? "No results match these filters" : search.status === "failed" ? "The search did not run" : "No businesses found"}
+            description={discovering ? "Results appear here when the sources have answered." : !filtered && businessStats.saved > 0 ? `All ${businessStats.saved} are saved. Open them in Businesses to work on them.` : filtered ? "Change or reset the filters." : search.status === "failed" ? "See the error above, then run the search again." : "Nothing in the sources matched this category in this area. Try a wider radius, fewer categories, or another source."}
+            action={!discovering && !filtered && (businessStats.saved > 0 ? <Link href={`/businesses?search=${search.id}`} className="btn btn-primary">Open in Businesses</Link> : <Link href="/searches/new" className="btn">New search</Link>)}
           />
         ) : (
           <>
-            <CandidateTable rows={data.rows} searchId={search.id} basePath={base} sp={sp} params={t} providerLabel={PROVIDER_LABEL} firecrawlEnabled={cfg.firecrawl.enabled} />
+            <CandidateTable rows={data.rows} searchId={search.id} basePath={base} sp={sp} params={t} providerLabel={PROVIDER_LABEL} showSources={manySources} firecrawlEnabled={cfg.firecrawl.enabled} />
             <Pagination basePath={base} sp={sp} params={t} total={data.total} label="businesses" />
           </>
         )}

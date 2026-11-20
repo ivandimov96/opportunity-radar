@@ -1,8 +1,8 @@
 /**
  * The loading state of the product: its own radar, small, turning in the
- * middle of the page. Used wherever a whole page is on its way (the front
- * page, the dashboard, signing in and up), so waiting looks the same and looks
- * like this product everywhere.
+ * middle of the page. It is for arriving: the front page, signing in and up,
+ * and the first page after that. Pages of the workspace show their own outline
+ * while they load (components/page-skeleton.tsx).
  */
 import { RadarArt } from "./radar-art";
 

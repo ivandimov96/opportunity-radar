@@ -120,12 +120,16 @@ export async function moveOnBoard(businessId: string, stage: PipelineStage, orde
   if (updates.length) await db.batch(updates as [(typeof updates)[number], ...typeof updates]);
 }
 
-export async function setNextAction(businessId: string, nextAction: string | null, nextActionAt: string | null, priority?: string) {
+/**
+ * Sets (or clears) the next action. `key` says which rule planned it (see follow-up.ts); without one the
+ * action is the operator's own and the app never replaces it. `undefined` leaves the key as it is (a date change).
+ */
+export async function setNextAction(businessId: string, nextAction: string | null, nextActionAt: string | null, priority?: string, key?: string | null) {
   const db = await getDb();
   await ensureProspect(businessId);
   await db
     .update(prospects)
-    .set({ nextAction, nextActionAt, ...(priority ? { priority } : {}), updatedAt: nowIso() })
+    .set({ nextAction, nextActionAt, ...(priority ? { priority } : {}), ...(key !== undefined ? { nextActionKey: nextAction ? key : null } : {}), updatedAt: nowIso() })
     .where(eq(prospects.businessId, businessId))
     .run();
 }
@@ -134,4 +138,18 @@ export async function recentActivities(businessId: string, limit = 50) {
   if (!(await businessInWorkspace(businessId))) return [];
   const db = await getDb();
   return db.select().from(activities).where(eq(activities.businessId, businessId)).orderBy(desc(activities.createdAt)).limit(limit).all();
+}
+
+/** Nothing is written to this business on its own before `until` (an out-of-office reply says nobody is reading). */
+export async function holdUntil(businessId: string, until: string | null) {
+  const db = await getDb();
+  await ensureProspect(businessId);
+  await db.update(prospects).set({ holdUntil: until, updatedAt: nowIso() }).where(eq(prospects.businessId, businessId)).run();
+}
+
+/** When to check back with someone who said "not now"; null clears it. */
+export async function setRecontact(businessId: string, at: string | null) {
+  const db = await getDb();
+  await ensureProspect(businessId);
+  await db.update(prospects).set({ recontactAt: at, updatedAt: nowIso() }).where(eq(prospects.businessId, businessId)).run();
 }

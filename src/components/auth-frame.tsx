@@ -8,7 +8,7 @@ import { Icon } from "./icons";
 import { Logo } from "./logo";
 import { RadarArt } from "./radar-art";
 
-const TRUE_THINGS = ["Every email says only what was read on the company's own website.", "Nothing is sent until you have read it and approved it.", "Replies come back to your own mailbox and onto one board."];
+const TRUE_THINGS = ["Every email says only what was read on the company's own website.", "Nothing is sent without your say: you approve each email, or you switch on automatic sending yourself.", "Replies come back to your own mailbox and onto one board."];
 
 export function AuthFrame({ title, lead, children, footer }: { title: string; lead?: string; children: React.ReactNode; footer?: React.ReactNode }) {
   return (

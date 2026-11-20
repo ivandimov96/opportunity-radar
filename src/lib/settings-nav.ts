@@ -1,18 +1,21 @@
 /**
- * Settings is one page split into tabs. Every link or redirect to a section goes
- * through `settingsHref`, so the right tab opens with the section in view.
+ * Settings is one page with a menu of sections on the left, each about one thing. Every link or
+ * redirect to a section goes through `settingsHref`, so the right section opens.
  */
 export const SETTINGS_TABS = [
-  { key: "sender", label: "You" },
-  { key: "mailbox", label: "Mailbox and sending" },
-  { key: "automation", label: "Automation and budgets" },
-  { key: "do-not-contact", label: "Do not contact" },
-  { key: "system", label: "Connections" },
+  { key: "sender", label: "Your details", group: "You", icon: "building" },
+  { key: "mailbox", label: "Mailbox", group: "You", icon: "mail" },
+  { key: "sending", label: "Sending limits", group: "Sending", icon: "clock" },
+  { key: "autopilot", label: "Automatic sending", group: "Sending", icon: "play" },
+  { key: "automation", label: "Finding and research", group: "Automation", icon: "sparkles" },
+  { key: "usage", label: "Budget and usage", group: "Automation", icon: "database" },
+  { key: "do-not-contact", label: "Do not contact", group: "Safety and setup", icon: "shield" },
+  { key: "system", label: "Connections", group: "Safety and setup", icon: "settings" },
 ] as const;
 export type SettingsTab = (typeof SETTINGS_TABS)[number]["key"];
 
-/** Section id → the tab that shows it. */
-const TAB_OF: Record<string, SettingsTab> = { sender: "sender", mailbox: "mailbox", sending: "mailbox", automation: "automation", usage: "automation", "do-not-contact": "do-not-contact", removed: "do-not-contact", connections: "system", system: "system" };
+/** Section id → the menu entry that shows it (a few ids are parts of a section). */
+const TAB_OF: Record<string, SettingsTab> = { sender: "sender", signature: "sender", mailbox: "mailbox", sending: "sending", autopilot: "autopilot", automation: "automation", usage: "usage", budget: "usage", "do-not-contact": "do-not-contact", removed: "do-not-contact", connections: "system", system: "system" };
 
 export function settingsTabOf(section: string | undefined): SettingsTab {
   return TAB_OF[section ?? ""] ?? "sender";

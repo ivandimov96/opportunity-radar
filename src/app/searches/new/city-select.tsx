@@ -4,6 +4,10 @@
  * country and region; GeoNames data, no lookup service, diacritics-insensitive).
  * Keyboard: ↑/↓ to move, Enter to pick, Esc to close. Picking a suggestion also
  * fills hidden lat/lon fields so a radius search has its center without geocoding.
+ * Without a region it searches the whole country and the pick brings its region
+ * along. Leaving the field with a name that matches a place exactly picks it.
+ * The parent remounts it (by key) when the country or region changes, passing
+ * the city and its coordinates back in as defaults.
  */
 import { useEffect, useId, useRef, useState } from "react";
 
@@ -14,16 +18,18 @@ export interface Suggestion {
   population: number;
   lat: number;
   lon: number;
+  /** How far around the centre a "whole city" search reaches for a place of this size. */
+  radiusKm?: number;
 }
 
-const fmtPop = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
+export const fmtPop = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(1)}M` : n >= 1000 ? `${Math.round(n / 1000)}k` : String(n));
 
-export function CitySelect({ country, region, defaultValue, hasError, disabled, onPick, regionLabel }: { country: string; region: string | null; defaultValue: string; hasError?: boolean; disabled?: boolean; onPick?: (s: Suggestion | null) => void; regionLabel?: (code: string | null) => string }) {
+export function CitySelect({ country, region, defaultValue, defaultCenter, hasError, disabled, onPick, onText, regionLabel, note }: { country: string; region: string | null; defaultValue: string; defaultCenter?: { lat: number; lon: number } | null; hasError?: boolean; disabled?: boolean; onPick?: (s: Suggestion | null) => void; onText?: (text: string) => void; regionLabel?: (code: string | null) => string; /** A short remark per suggestion (e.g. "searched 3 days ago"). */ note?: (s: Suggestion) => string | null }) {
   const [value, setValue] = useState(defaultValue);
   const [items, setItems] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
-  const [center, setCenter] = useState<{ lat: number; lon: number } | null>(null);
+  const [center, setCenter] = useState<{ lat: number; lon: number } | null>(defaultCenter ?? null);
   const [loading, setLoading] = useState(false);
   const listId = useId();
   const box = useRef<HTMLDivElement>(null);
@@ -48,14 +54,6 @@ export function CitySelect({ country, region, defaultValue, hasError, disabled, 
   };
 
   useEffect(() => {
-    // Country or region changed: the typed city may no longer apply; keep the text, drop the coordinates.
-    setCenter(null);
-    setItems([]);
-    onPick?.(null);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [country, region]);
-
-  useEffect(() => {
     const onDoc = (e: MouseEvent) => {
       if (!box.current?.contains(e.target as Node)) setOpen(false);
     };
@@ -67,6 +65,7 @@ export function CitySelect({ country, region, defaultValue, hasError, disabled, 
     setValue(v);
     setCenter(null);
     onPick?.(null);
+    onText?.(v);
     setOpen(true);
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => fetchItems(v), 120);
@@ -82,6 +81,7 @@ export function CitySelect({ country, region, defaultValue, hasError, disabled, 
     <div ref={box} className="relative">
       <input
         className={`input ${hasError ? "border-bad" : ""}`}
+        id="city"
         name="city"
         value={value}
         disabled={disabled}
@@ -95,6 +95,12 @@ export function CitySelect({ country, region, defaultValue, hasError, disabled, 
         onFocus={() => {
           setOpen(true);
           if (!items.length) fetchItems(value);
+        }}
+        onBlur={() => {
+          // Typed in full instead of picked: take the place of exactly that name, so the search has its centre.
+          if (center || !value.trim()) return;
+          const exact = items.find((s) => s.name.toLowerCase() === value.trim().toLowerCase());
+          if (exact) pick(exact);
         }}
         onKeyDown={(e) => {
           if (!open || !items.length) return;
@@ -120,7 +126,10 @@ export function CitySelect({ country, region, defaultValue, hasError, disabled, 
                 {s.name}
                 <span className="text-ink-faint">{s.region ? `, ${regionLabel ? regionLabel(s.region) : s.region}` : ""}</span>
               </span>
-              <span className="text-xs text-ink-faint tabular-nums">{fmtPop(s.population)}</span>
+              <span className="text-xs text-ink-faint tabular-nums whitespace-nowrap">
+                {note?.(s) ? <span className="text-warn mr-2">{note(s)}</span> : null}
+                {fmtPop(s.population)}
+              </span>
             </li>
           ))}
           {loading && !items.length && <li className="px-3 py-2 text-xs text-ink-faint">Searching…</li>}

@@ -9,14 +9,14 @@ export default async function TermsPage() {
   const op = await operator();
   const sections: LegalSection[] = [
     { title: "The agreement", body: [`These terms are an agreement between you and ${op.name}${op.address ? `, ${op.address}` : ""} ("we"), who runs Opportunity Radar ("the service"). By creating an account you accept them, together with the Privacy policy and the Acceptable use rules. If you do not accept them, do not use the service.`] },
-    { title: "What the service does", body: ["The service helps you find businesses, reads what they have published about themselves, drafts emails for you to review, sends the emails you approve from your own mailbox, and keeps track of the replies.", "The service is in early access. Workspaces are opened to new accounts a few at a time, so creating an account does not by itself give you a workspace. Features may change, and we may add limits on how much can be searched, researched or sent."] },
+    { title: "What the service does", body: ["The service helps you find businesses, reads what they have published about themselves, drafts emails for you to review, sends the emails you approve from your own mailbox (or, when you switch automatic sending on, the emails that passed its checks), and keeps track of the replies.", "The service is in early access. Workspaces are opened to new accounts a few at a time, so creating an account does not by itself give you a workspace. Features may change, and we may add limits on how much can be searched, researched or sent."] },
     { title: "Your account", body: ["You must be at least 18 and able to enter into a contract. Give accurate details, keep your password to yourself, and tell us if you think someone else has used your account. You are responsible for what is done through your account."] },
     {
       title: "You are the sender",
       body: [
-        "Every email sent through the service is sent by you, from your mailbox, in your name, after you approved it. That makes you responsible for it. In particular you agree to:",
+        "Every email sent through the service is sent by you, from your mailbox, in your name, after you approved it or under the automatic sending you switched on. Either way you are responsible for it. In particular you agree to:",
         [
-          "read each email before you approve it, and correct anything that is wrong;",
+          "read each email before you approve it and correct anything that is wrong, and, if you switch automatic sending on, keep reading what goes out;",
           "follow the laws on unsolicited business email that apply to you and to the people you write to (for example CAN-SPAM in the United States, and the GDPR and ePrivacy rules in Europe and the United Kingdom), including any duty to check whether a recipient may be contacted at all;",
           "identify yourself truthfully, with a real name and postal address;",
           "respect every request not to be contacted again;",

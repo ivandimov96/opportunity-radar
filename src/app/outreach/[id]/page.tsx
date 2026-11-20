@@ -10,7 +10,8 @@ import { draftDetail } from "@/lib/outreach/queries";
 import { stripQuoted } from "@/lib/mail/parse";
 import { verdictLabel } from "@/lib/pipeline/stages";
 import { settingsHref } from "@/lib/settings-nav";
-import { EMAIL_LENGTH } from "@/lib/outreach/validate";
+import { lengthFor } from "@/lib/outreach/validate";
+import { STEP, stepLabel, stepNoun } from "@/lib/outreach/steps";
 import { suggestSubjectsAction, draftStatusAction, generateDraftAction, markDraftSentAction, retryFailedAction, saveDraftAction, setBusinessEmailAction } from "@/app/actions";
 
 export const metadata = { title: "Review email" };
@@ -32,12 +33,16 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
   const ideas = editable ? await subjectIdeasFor(draft.id) : null;
   const issues = draft.validation?.issues ?? [];
   const blocks = issues.filter((i) => i.severity === "block");
-  const warns = issues.filter((i) => i.severity === "warn");
+  const isAnswer = draft.step === STEP.answer;
+  /** Why an answer waits for the operator although nothing is wrong with its text. */
+  const needsYou = issues.filter((i) => i.code === "needs_you");
+  const warns = issues.filter((i) => i.severity === "warn" && i.code !== "needs_you");
+  const to = isAnswer ? draft.toEmail : b.email;
   const recipientBlocked = blocks.some((i) => i.code === "recipient");
   const here = `/outreach/${draft.id}`;
   const byRef = new Map(pack.verified.map((e) => [e.ref, e]));
   const notSeen = new Map(pack.notSeen.map((e) => [e.ref, e]));
-  const { softMin: minWords, softMax: maxWords } = EMAIL_LENGTH[draft.step === 0 ? "first" : "followUp"];
+  const { softMin: minWords, softMax: maxWords } = lengthFor(draft.step);
   const Status = ({ op, children, className = "btn" }: { op: string; children: React.ReactNode; className?: string }) => (
     <form action={draftStatusAction}>
       <input type="hidden" name="draftId" value={draft.id} />
@@ -53,7 +58,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
         crumbs={[{ href: `/outreach${d.tab ? `?tab=${d.tab}` : ""}`, label: "Outreach" }, { label: b.name }]}
         title={
           <span className="flex items-center gap-2 flex-wrap">
-            {draft.step > 0 ? "Follow-up to" : "Email to"} {b.name} <StatusPill status={draft.status} label={draft.status === "failed" ? "Not sent" : undefined} />
+            {draft.step > 0 ? `${stepLabel(draft.step)} to` : "Email to"} {b.name} <StatusPill status={draft.status} label={draft.status === "failed" ? "Not sent" : undefined} />
           </span>
         }
         subtitle={d.position ? `${d.position.index} of ${d.position.total} in this list` : undefined}
@@ -87,6 +92,23 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
             </Callout>
           )}
 
+          {needsYou.length > 0 && editable && (
+            <Callout tone="info" title="This answer waits for you">
+              <ul className="list-disc pl-4 space-y-0.5 text-sm">
+                {needsYou.map((i, n) => (
+                  <li key={n}>{i.message}</li>
+                ))}
+              </ul>
+              <p className="text-xs text-ink-muted mt-1">It is never sent on its own. Change it as needed, then approve it.</p>
+            </Callout>
+          )}
+
+          {d.answered && (
+            <Card title={`What ${d.answered.fromName || d.answered.fromEmail || "they"} wrote`} description={`${when(d.answered.receivedAt)}${d.answered.classification ? ` · read as: ${REPLY_LABEL[d.answered.classification] ?? d.answered.classification}` : ""}`}>
+              <pre className="letter-text font-sans whitespace-pre-wrap text-ink">{stripQuoted(d.answered.bodyText).slice(0, 4000)}</pre>
+            </Card>
+          )}
+
           {!draft.validation && editable && (
             <Callout tone="warn" title="This email was written before the current checks existed">
               Nothing has verified its statements against the research. The safest thing is to have it written again below; approving it as it is runs the fixed checks first and records your decision.
@@ -94,11 +116,11 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
           )}
 
           <Card
-            title={`The ${draft.step > 0 ? "follow-up" : "email"} ${draft.status === "sent" || draft.status === "bounced" ? "as it was sent" : "exactly as it will be sent"}`}
+            title={`The ${stepNoun(draft.step)} ${draft.status === "sent" || draft.status === "bounced" ? "as it was sent" : "exactly as it will be sent"}`}
             description={
               <>
-                To <strong>{b.email ?? "no address yet"}</strong>
-                {b.emailSource && ` · ${b.emailSource === "site" ? "published on their website" : b.emailSource === "manual" ? "added by you" : "from their listing"}`}
+                To <strong>{to ?? "no address yet"}</strong>
+                {isAnswer ? " · the person who replied, in the same thread" : b.emailSource && ` · ${b.emailSource === "site" ? "published on their website" : b.emailSource === "manual" ? "added by you" : "from their listing"}`}
                 {box.address && ` · from ${box.address}`}
               </>
             }
@@ -111,7 +133,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
                 <div className="label">
                   Your signature <span className="font-normal text-ink-faint">added under the email automatically{settings.senderName ? "" : "; add your name and address"} · <Link href={settingsHref("sender")}>change it</Link></span>
                 </div>
-                <pre className="letter-text text-ink-muted whitespace-pre-wrap rounded-[var(--radius-sm)] bg-surface-2 border border-line px-3 py-2.5">{signatureBlock(settings)}</pre>
+                <pre className="letter-text font-sans text-ink-muted whitespace-pre-wrap rounded-[var(--radius-sm)] bg-surface-2 border border-line px-3 py-2.5">{signatureBlock(settings, draft.step)}</pre>
               </div>
               {editable && (
                 <div className="flex flex-wrap items-center gap-2 pt-1">
@@ -126,7 +148,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
                   <button className="btn" name="then" value="stay">
                     Save changes
                   </button>
-                  {draft.status === "approved" && <span className="text-xs text-ok">Approved: it goes out with the next batch you send.</span>}
+                  {draft.status === "approved" && <span className="text-xs text-ok">{settings.sendMode === "manual" ? "Approved: it goes out with the next batch you send." : "Approved: it goes out at the next automatic run, unless sending on its own is paused."}</span>}
                 </div>
               )}
             </form>
@@ -162,7 +184,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
             )}
           </Card>
 
-          {editable && cfg.ai.enabled && (
+          {editable && cfg.ai.enabled && !isAnswer && (
             <Card title="Not happy with it?" description="Have it written again. Say what to change, or leave the note empty for a fresh attempt.">
               <form action={generateDraftAction} className="flex flex-wrap gap-2 items-start">
                 <input type="hidden" name="businessId" value={b.id} />
@@ -185,7 +207,8 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
             </Card>
           )}
 
-          <Card title="What the email says about them" description="Each statement and the research behind it." padded={false}>
+          {!isAnswer && (
+          <Card title="What the email says about them" padded={false}>
             {draft.claims.length === 0 ? (
               <EmptyLine>No statement about the business is listed for this email.</EmptyLine>
             ) : (
@@ -225,6 +248,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
             )}
             {draft.editedByUser && !draft.validation?.statements && <p className="px-5 py-3 border-t border-line text-xs text-ink-faint">You edited this email, so the independent check of the earlier text no longer applies. The fixed checks ran on your version.</p>}
           </Card>
+          )}
           {(d.events.length > 0 || d.inbound.length > 0) && (
             <Card title="What happened to this email" padded={false}>
               <ol className="divide-y divide-line">
@@ -249,7 +273,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
               </ol>
               {d.inbound.some((m) => m.kind === "reply") && (
                 <p className="px-5 py-3 border-t border-line text-xs text-ink-faint">
-                  Answer from your own mailbox. Suggested answers and the full conversation are on the <Link href={`/businesses/${b.id}?tab=outreach`}>business page</Link>.
+                  When an answer makes sense it is written for you and appears under Outreach. The full conversation is on the <Link href={`/businesses/${b.id}?tab=outreach`}>business page</Link>.
                 </p>
               )}
             </Card>
@@ -270,7 +294,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
               <div className="min-w-0 text-sm">
                 <div className="flex items-center gap-2 flex-wrap">
                   <Badge tone={b.verdict === "qualified" ? "ok" : "warn"}>{verdictLabel(b.verdict)}</Badge>
-                  <span className="text-xs text-ink-faint">{[b.category, [b.city, b.region].filter(Boolean).join(", ")].filter(Boolean).join(" · ")}</span>
+                  <span className="text-xs text-ink-faint">{[(b.category ?? "").replace(/_/g, " "), [b.city, b.region].filter(Boolean).join(", ")].filter(Boolean).join(" · ")}</span>
                 </div>
                 {b.summary && <p className="mt-1.5 text-ink-muted">{b.summary}</p>}
                 {b.website && (
@@ -284,7 +308,7 @@ export default async function ReviewEmailPage({ params, searchParams }: { params
           </Card>
 
           {opp && (
-            <Card title="The idea behind this email" description={opp.source === "ai" ? "One consolidated opportunity from the research." : "Grouped from fixed rule patterns; no model reviewed it."}>
+            <Card title="The idea behind this email">
               <div className="text-[0.95rem] font-semibold">{opp.title}</div>
               <p className="text-sm text-ink-muted mt-1.5">{(opp.source === "ai" && opp.salesAngle) || opp.whyRelevant || opp.proposedSolution}</p>
               <details className="mt-3 border-t border-line">

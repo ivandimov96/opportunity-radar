@@ -97,7 +97,7 @@ export default async function PrivacyPage() {
     {
       title: "If you received an email sent through the service",
       body: [
-        "Each email is sent by a user of the service from their own mailbox, and that user decided to write to you. Every email says how to opt out; replying that you do not want further contact is enough, and that address is then not written to again through the service.",
+        "Each email is sent by a user of the service from their own mailbox, and that user decided to write to you. Replying that you do not want further contact is enough, and that address is then not written to again through the service.",
         `You can also ask us directly what data about your business is held, where it came from, and to have it removed. ${contact}`,
       ],
     },

@@ -135,6 +135,16 @@ describe("google maps provider (Serper)", () => {
     expect(r.notes[0]).toMatch(/20 outside the search radius dropped/);
   });
 
+  it("reads only as many pages as the number of businesses asked for needs", async () => {
+    transport((body) => json(200, page(Array.from({ length: 20 }, (_, i) => listing((Number(body.page ?? 1) - 1) * 20 + i + 1)))));
+    expect((await googleMapsProvider.discover(query({ maxResults: 20 }))).candidates).toHaveLength(20);
+    expect(calls.length).toBe(1); // one page: 3 credits, not 9
+    await useTempDb();
+    calls.length = 0;
+    expect((await googleMapsProvider.discover(query({ maxResults: 25 }))).candidates).toHaveLength(40);
+    expect(calls.length).toBe(2);
+  });
+
   it("refuses to fetch once the credit budget is reached, and keeps what it has when the budget runs out mid-search", async () => {
     await recordUsage("serper", 2500);
     transport(() => json(200, page([listing(1)])));

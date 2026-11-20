@@ -128,7 +128,7 @@ describe("sending and reply tracking", () => {
     expect(sent[0].messageId).toMatch(/^<[0-9a-f-]{36}@dimov\.example>$/);
     expect(sent[0].from).toEqual({ name: "Ivan Dimov", address: "ivan@dimov.example" });
     expect(sent[0].text).toContain(BODY);
-    expect(sent[0].text).toMatch(/Ivan Dimov\nDimov Software\n1 Main St, Austin, TX 78701\n\nIf this isn't relevant, just reply "no thanks"/);
+    expect(sent[0].text).toMatch(/Ivan Dimov\nDimov Software\n1 Main St, Austin, TX 78701$/); // the signature ends the email: nothing is added after it
     expect(sent[0].headers?.["List-Unsubscribe"]).toBe("<mailto:ivan@dimov.example?subject=unsubscribe>");
     const da = await draft(a.draftId);
     expect(da).toMatchObject({ status: "sent", attempts: 1, lastError: null });
@@ -291,11 +291,19 @@ describe("sending and reply tracking", () => {
     expect((callStructured.mock.calls.find((x) => /Thursday/.test((x[0] as { user: string }).user))![0] as { user: string }).user).not.toContain("> Hi team"); // the model reads the reply without the quoted original
     expect(after[b.id]).toMatchObject({ classification: "unsubscribe", classifiedBy: "rules" });
     expect(await isSuppressed("hello@bravo.example")).toBe(true);
-    expect((await db.select().from(prospects).where(eq(prospects.businessId, a.id)).get())!.nextAction).toBe("Schedule the meeting they asked for");
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, a.id)).get())!.nextAction).toBe("Schedule the meeting they asked for: an answer is written under Outreach");
+    // The answer is an email of its own, in the thread, to the person who wrote; a gap left for a time holds it back.
+    const answer = (await db.select().from(outreachDrafts).where(and(eq(outreachDrafts.businessId, a.id), eq(outreachDrafts.step, 9))).get())!;
+    expect(answer).toMatchObject({ status: "needs_review", toEmail: "maria@alpha.example", inReplyTo: after[a.id].messageId, inboundId: after[a.id].id, body: "Thursday works. Would [time] suit you?", subject: "Idea for Alpha Air" });
+    expect(answer.validation!.issues.map((i) => i.code)).toEqual(["placeholder"]);
+    // An automatic reply postpones the next email by a week; "not now" plans one check-back.
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, c.id)).get())!.holdUntil).toBeTruthy();
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, e.id)).get())!.recontactAt).toBeTruthy();
     // The operator can correct a classification; an opt-out set by hand is honoured the same way.
     await applyReplyClassification(after[e.id].id, "unsubscribe", "operator");
     expect((await db.select().from(inboundEmails).where(eq(inboundEmails.id, after[e.id].id)).get())!).toMatchObject({ classification: "unsubscribe", classifiedBy: "operator" });
     expect(await isSuppressed("e@echo.example")).toBe(true);
+    expect((await db.select().from(prospects).where(eq(prospects.businessId, e.id)).get())!.recontactAt).toBeNull(); // an opt-out cancels the check-back
     expect((await db.select().from(suppressions).all()).map((s) => s.reason).sort()).toEqual(["bounced", "unsubscribed", "unsubscribed"]);
   });
 

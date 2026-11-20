@@ -11,7 +11,7 @@ import { redirect } from "next/navigation";
 import { getDb } from "@/db/client";
 import { FIRST_WORKSPACE_ID, sessions, users, workspaces } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
-import { SESSION_COOKIE, makeToken, readToken, type Role } from "./token";
+import { SESSION_COOKIE, WELCOME_COOKIE, WELCOME_SECONDS, makeToken, readToken, type Role } from "./token";
 
 const scrypt = promisify(scryptCb) as (password: string, salt: Buffer, keylen: number) => Promise<Buffer>;
 const SESSION_DAYS = 30;
@@ -96,7 +96,10 @@ export async function startSession(user: SessionUser): Promise<void> {
     db.insert(sessions).values({ id, userId: user.id, createdAt: nowIso(), expiresAt: expires.toISOString() }),
     db.update(users).set({ lastLoginAt: nowIso() }).where(eq(users.id, user.id)),
   ]);
-  (await cookies()).set(SESSION_COOKIE, await makeToken(id, user.role), { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", expires });
+  const jar = await cookies();
+  jar.set(SESSION_COOKIE, await makeToken(id, user.role), { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", expires });
+  // Just arrived: the page they land on shows the radar once (see src/app/loading.tsx). It says nothing about who they are.
+  jar.set(WELCOME_COOKIE, "1", { httpOnly: true, sameSite: "lax", secure: process.env.NODE_ENV === "production", path: "/", maxAge: WELCOME_SECONDS });
 }
 
 export async function endSession(): Promise<void> {

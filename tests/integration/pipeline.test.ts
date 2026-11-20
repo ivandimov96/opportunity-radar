@@ -106,6 +106,18 @@ describe("integrated pipeline", () => {
   });
   afterEach(() => _setSerperFetch(null));
 
+  it("leaves out listings below the review limits of the search and counts them", async () => {
+    const id = newId();
+    // Reviews: 120, 80, 40, 15. Ratings: 4.7, 4.5, 4.6, 4.1.
+    await db.insert(searches).values({ id, name: "Austin", industry: "auto_repair", country: "US", region: "TX", city: "Austin", maxResults: 10, providers: ["google_maps"], requireWebsite: false, autoInvestigate: false, filters: { segments: [], areaMode: "area", radiusKm: 15, requirePhone: false, excludeChains: true, skipKnown: false, minLeadScore: 0, autoInvestigateLimit: null, minReviews: 50, minRating: 4.6 } }).run();
+    await enqueueJob("discover_search", { searchId: id });
+    expect(await drainQueue()).toBe(1);
+    const s = (await db.select().from(searches).where(eq(searches.id, id)).get())!;
+    expect(s.stats).toMatchObject({ created: 1, skippedReviews: 3 });
+    expect((await db.select().from(businesses).all()).map((b) => b.name)).toEqual(["Barton Creek Auto Care"]);
+    expect(s.stats?.notes?.some((n) => /3 below the review limits/.test(n))).toBe(true);
+  });
+
   it("runs discovery (Google Maps through the injected transport) and records search stats", async () => {
     const id = newId();
     await db.insert(searches).values({ id, name: "Austin", industry: "auto_repair", country: "US", region: "TX", city: "Austin", maxResults: 10, providers: ["google_maps"], requireWebsite: false, autoInvestigate: false }).run();

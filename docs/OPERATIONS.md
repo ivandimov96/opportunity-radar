@@ -48,9 +48,38 @@ While the app is running (Settings → Automation and budgets switches each one)
   daily allowance, paused while enough emails wait for review;
 - an email for every business that qualifies and has a usable address;
 - inbox reading every five minutes while sent emails wait for an answer;
-- one follow-up draft after the configured working days without an answer.
+- a follow-up and then a last note after the configured working days without
+  an answer; one check-back after a "not now";
+- an answer to a reply, written into the open batch when one makes sense.
 
-Never automatic: starting a search, approving, sending.
+Off until you switch it on (Settings → Automation and budgets):
+
+- **Find new businesses on its own.** List who to look for, one per line
+  ("sign makers | GB", "roofers | US | TX"). One search of 20 listings (3
+  search credits) starts when fewer than a day's research is waiting.
+- **Who presses Send.** "Send checked emails after a waiting time" or "right
+  away". It starts only after you have sent 20 emails yourself, sends only
+  emails whose checks all passed, begins at 10 a day and rises by 5 a week up
+  to your limit, and pauses itself on bounces, opt-outs or failed sends, or
+  when you press "Stop sending". Resume it on the same Settings card. A UK
+  business that does not show it is a company (Ltd, LLP, a company number)
+  is never sent to automatically.
+- **Also send simple answers to replies.** Only a booking link for a meeting
+  request or a "noted" for "not now"; everything else waits for you.
+
+### Running unattended
+
+Automation only runs while the worker runs. For a machine that is always on:
+
+```
+pnpm build
+EMBEDDED_WORKER=false pnpm start     # the pages
+pnpm worker                           # the worker and scheduler, one process only
+```
+
+or simply `pnpm start` with the embedded worker. Use a host with a persistent
+disk (or Turso: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`), HTTPS, `AUTH_SECRET`
+set, and exactly one worker. Sending hours are the host's local time: set `TZ`.
 
 The worker lives in the app process, so automation and queued sends only run
 while the app is running. `EMBEDDED_WORKER=false` plus `pnpm worker` runs it as
@@ -135,17 +164,23 @@ $0.13 per business that has a public email, nothing for the others.
 
 ## Compliance notes (not legal advice)
 
+- Since 2026-11-20 (decision D55) the signature is your own text and no opt-out sentence is added after
+  it; add one to your signature if you want it. What follows describes the earlier default.
 - Every email carries your name, your company if you gave one, postal address and a plain way to opt
   out; opt-outs are recognised by a fixed rule and suppressed immediately and
   permanently; bounced addresses are suppressed.
 - Recipient addresses are only those a business published itself (or that you
   typed), and where each came from is stored.
-- The default allowed country is the US, where this kind of business email is
+- Since 2026-11-20 (decision D51) no country is blocked by default: the operator may email businesses
+  anywhere and can set a limit under Settings → Mailbox and sending. What follows is why a limit existed.
+  The first default was the US, where this kind of business email is
   permitted with the elements above (CAN-SPAM). The UK was added on 2026-11-18:
   its regulator allows marketing email to companies and LLPs with an opt-out,
   but treats sole traders and ordinary partnerships as individuals who must have
   agreed first. The app does not check a business's legal form: look for "Ltd",
-  "Limited", "LLP" or a company number before approving an email to the UK. Rules elsewhere are stricter:
+  "Limited", "LLP" or a company number before approving an email to the UK. (Automatic sending does this
+  look itself, in the name and the pages it read, and leaves the email to you when it finds none; it does
+  not consult a company register.) Rules elsewhere are stricter:
   several EU countries require prior consent even between businesses, the UK
   does for sole traders, Canada requires consent with narrow exceptions. Add a
   country under Settings → Mailbox and sending only after checking its rules for your case.

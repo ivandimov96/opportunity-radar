@@ -13,7 +13,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { saveCandidatesAction } from "@/app/actions";
-import { Badge, Icon, StatusPill, fmtRelative } from "@/components/ui";
+import { Badge, Icon, ScoreRing, StatusPill, fmtRelative } from "@/components/ui";
 import { SortHeader, type SP } from "@/components/table";
 import { formatPhone } from "@/lib/phone";
 import type { TableParams } from "@/lib/table";
@@ -63,7 +63,6 @@ function NameCell({ r }: { r: CandidateRow }) {
   return (
     <>
       <div className="flex items-center gap-1.5 flex-wrap min-w-0">
-        <span className="text-xs text-ink-faint tabular-nums shrink-0">{r.rank}.</span>
         {r.businessId ? (
           <Link href={`/businesses/${r.businessId}`} className="row-link truncate max-w-full">
             {r.name}
@@ -114,7 +113,7 @@ function Status({ r }: { r: CandidateRow }) {
   );
 }
 
-export function CandidateTable({ rows, searchId, basePath, sp, params, providerLabel, firecrawlEnabled }: { rows: CandidateRow[]; searchId: string; basePath: string; sp: SP; params: TableParams; providerLabel: Record<string, string>; firecrawlEnabled: boolean }) {
+export function CandidateTable({ rows, searchId, basePath, sp, params, providerLabel, showSources = false, firecrawlEnabled }: { rows: CandidateRow[]; searchId: string; basePath: string; sp: SP; params: TableParams; providerLabel: Record<string, string>; /** Only worth a place when the search read more than one source. */ showSources?: boolean; firecrawlEnabled: boolean }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const unsavedOnPage = rows.filter((r) => !r.businessId).map((r) => r.id);
   const allOn = unsavedOnPage.length > 0 && unsavedOnPage.every((id) => selected.has(id));
@@ -153,7 +152,7 @@ export function CandidateTable({ rows, searchId, basePath, sp, params, providerL
           <button className="btn btn-sm btn-primary">
             <Icon name="plus" /> Save selected
           </button>
-          <label className={`flex items-center gap-1.5 text-xs ${firecrawlEnabled ? "" : "opacity-60"}`} title={firecrawlEnabled ? "Queue the saved businesses for website research" : "Research needs FIRECRAWL_API_KEY"}>
+          <label className={`flex items-center gap-1.5 text-xs ${firecrawlEnabled ? "" : "opacity-60"}`} title={firecrawlEnabled ? "Research uses website and AI credits" : "Research is not set up yet (Settings)"}>
             <input type="checkbox" name="investigate" value="on" disabled={!firecrawlEnabled} className="accent-[var(--accent)]" /> and research them
           </label>
           <button type="button" className="btn btn-sm btn-ghost" onClick={() => setSelected(new Set())}>
@@ -170,7 +169,7 @@ export function CandidateTable({ rows, searchId, basePath, sp, params, providerL
           <col />
           <col className="w-[210px] xl:w-[250px]" />
           <col className="w-[104px]" />
-          <col className="w-[190px] hidden lg:table-column" />
+          <col className={`${showSources ? "w-[190px]" : "w-[110px]"} hidden lg:table-column`} />
           <col className="w-[140px]" />
         </colgroup>
         <thead>
@@ -180,8 +179,8 @@ export function CandidateTable({ rows, searchId, basePath, sp, params, providerL
             </th>
             <SortHeader label="Business" field="name" defaultDir="asc" {...sortProps} />
             <th>Contact</th>
-            <SortHeader label="Lead" field="lead" {...sortProps} />
-            <SortHeader label="Source · found" field="discovered" className="hidden lg:table-cell" {...sortProps} />
+            <SortHeader label="Score" field="lead" {...sortProps} />
+            <SortHeader label={showSources ? "Source · found" : "Found"} field="discovered" className="hidden lg:table-cell" {...sortProps} />
             <th>Status</th>
           </tr>
         </thead>
@@ -194,7 +193,7 @@ export function CandidateTable({ rows, searchId, basePath, sp, params, providerL
                 <td className="min-w-0 align-middle">
                   <NameCell r={r} />
                   <div className="text-xs text-ink-faint truncate" title={[d.category, r.matchedBy?.join("; "), d.location].filter(Boolean).join(" · ")}>
-                    {d.category ?? "category unknown"}
+                    {(d.category ?? "").replace(/_/g, " ") || "kind unknown"}
                     {d.location ? ` · ${d.location}` : ""}
                   </div>
                 </td>
@@ -202,18 +201,13 @@ export function CandidateTable({ rows, searchId, basePath, sp, params, providerL
                   <Contact r={r} />
                 </td>
                 <td className="align-middle">
-                  <div className="flex items-baseline gap-1.5" title={r.leadReasons?.join(", ") ?? undefined}>
-                    <span className="text-sm font-semibold tabular-nums leading-none">{r.leadScore}</span>
-                    <span className="text-[10.5px] text-ink-faint">lead</span>
-                  </div>
-                  <div className="mt-1.5 flex items-center gap-1.5" title={`Data completeness ${r.completeness}% (name, coordinates, street, city, phone, website, email)`}>
-                    <Meter value={r.completeness} title={`Data completeness ${r.completeness}%`} />
-                    <span className="text-[10.5px] text-ink-faint tabular-nums shrink-0">{r.completeness}%</span>
-                  </div>
+                  <span title={r.leadReasons?.join(", ") ?? undefined}>
+                    <ScoreRing value={r.leadScore} size={34} />
+                  </span>
                 </td>
                 <td className="hidden lg:table-cell align-middle">
                   <div className="flex items-center gap-2 flex-wrap">
-                    {sources(r)}
+                    {showSources && sources(r)}
                     <span className="text-xs text-ink-faint whitespace-nowrap" title={`Found ${fmtRelative(r.createdAt)}${d.refreshed ? ` · source record read ${fmtRelative(d.refreshed)}` : ""}`}>
                       {fmtRelative(r.createdAt)}
                     </span>
@@ -251,7 +245,7 @@ export function CandidateTable({ rows, searchId, basePath, sp, params, providerL
                   <span className="text-ink-faint">found {fmtRelative(r.createdAt)}</span>
                 </div>
                 <div className="flex items-center justify-between gap-3 flex-wrap">
-                  {sources(r)}
+                  {showSources ? sources(r) : <span />}
                   <Status r={r} />
                 </div>
               </div>

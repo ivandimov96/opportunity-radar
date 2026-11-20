@@ -89,7 +89,16 @@ function knownTools(): string[] {
 export const EMAIL_LENGTH = {
   first: { hardMin: 25, softMin: 35, softMax: 65, hardMax: 85 },
   followUp: { hardMin: 20, softMin: 25, softMax: 60, hardMax: 80 },
+  /** The last note of a sequence: two or three sentences. */
+  lastNote: { hardMin: 10, softMin: 15, softMax: 40, hardMax: 60 },
+  /** An answer to a reply: as long as the question needs, never an essay. */
+  answer: { hardMin: 3, softMin: 8, softMax: 110, hardMax: 180 },
 } as const;
+
+/** Which length range applies to an email of this step (see steps.ts). */
+export function lengthFor(step: number) {
+  return EMAIL_LENGTH[step === 0 ? "first" : step === 2 ? "lastNote" : step === 9 ? "answer" : "followUp"];
+}
 
 export function wordCount(body: string): number {
   return body.trim() ? body.trim().split(/\s+/).length : 0;
@@ -192,7 +201,7 @@ export function checkEmailText(email: EmailText, ctx: CheckContext): DraftIssue[
 
   // Length
   const words = wordCount(body);
-  const { hardMin, softMin, softMax, hardMax } = EMAIL_LENGTH[ctx.step === 0 ? "first" : "followUp"];
+  const { hardMin, softMin, softMax, hardMax } = lengthFor(ctx.step);
   if (words < hardMin) block("too_short", `The email is too short (${words} words).`);
   else if (words > hardMax) block("too_long", `The email is too long (${words} words; aim for ${softMin}-${softMax}).`);
   else if (words < softMin || words > softMax) warn("length", `The email has ${words} words (aim for ${softMin}-${softMax}).`);
@@ -267,3 +276,27 @@ export function checkEmailText(email: EmailText, ctx: CheckContext): DraftIssue[
 }
 
 export const hasBlock = (issues: DraftIssue[]) => issues.some((i) => i.severity === "block");
+
+/**
+ * The fixed checks for an answer to a reply. An answer says nothing new about
+ * their business, so there is no evidence to hold it against; what must never
+ * go out is a gap left for the operator to fill in ("[time]"), a link that is
+ * not the booking link, or an essay.
+ */
+export function checkAnswerText(body: string, ctx: { bookingLink?: string | null }): DraftIssue[] {
+  const issues: DraftIssue[] = [];
+  const block = (code: string, message: string) => issues.push({ severity: "block", code, message });
+  const words = wordCount(body);
+  const { hardMin, softMax, hardMax } = EMAIL_LENGTH.answer;
+  if (words < hardMin) block("too_short", "The answer is empty.");
+  else if (words > hardMax) block("too_long", `The answer is too long (${words} words).`);
+  else if (words > softMax) issues.push({ severity: "warn", code: "length", message: `The answer has ${words} words. A short answer is easier to reply to.` });
+  if (PLACEHOLDER_RE.test(body)) block("placeholder", "The answer has a gap for you to fill in (a date, a time or a detail in square brackets).");
+  for (const p of BANNED_PHRASES) if (body.toLowerCase().includes(p)) block("stock_phrase", `Contains a stock phrase: "${p}".`);
+  const allowed = (ctx.bookingLink ?? "").trim().replace(/\/$/, "").toLowerCase();
+  for (const url of body.match(URL_RE) ?? []) {
+    const u = url.replace(/[.,;]$/, "").replace(/\/$/, "").toLowerCase();
+    if (!allowed || !(u === allowed || allowed.endsWith(u.replace(/^https?:\/\//, "")))) block("link", `Contains a link that is not your booking link (${url}).`);
+  }
+  return issues;
+}

@@ -15,7 +15,8 @@ export type BusinessRow = typeof businesses.$inferSelect;
 async function draftSubquery() {
   const db = await getDb();
   return db
-    .select({ businessId: outreachDrafts.businessId, drafts: sql<number>`count(*)`.as("drafts") })
+    // `drafts`: every email that is not archived. `waiting`: only those that wait for the operator (to check, review or send).
+    .select({ businessId: outreachDrafts.businessId, drafts: sql<number>`count(*)`.as("drafts"), waiting: sql<number>`sum(case when ${outreachDrafts.status} in ('needs_review', 'ready', 'approved') then 1 else 0 end)`.as("waiting") })
     .from(outreachDrafts)
     .where(ne(outreachDrafts.status, "archived"))
     .groupBy(outreachDrafts.businessId)
@@ -119,6 +120,21 @@ export interface BusinessFilters {
   verdict?: string;
   minPriority?: number;
   website?: "yes" | "no";
+  /** The listing's own category ("Sign shop"), exactly as received. */
+  category?: string;
+  city?: string;
+  /** Only businesses a given search found. */
+  searchId?: string;
+  /** Research outcome as the table shows it (see RESULT_FILTERS). */
+  result?: string;
+  /** How they can be reached. */
+  contact?: "email" | "phone" | "website" | "no_email" | "no_website";
+  minRating?: number;
+  minReviews?: number;
+  /** Priority after research, or the listing score before it. */
+  minScore?: number;
+  /** Planned next action: overdue, due today, any planned, or none. */
+  due?: "overdue" | "today" | "planned" | "none";
   sort?: "priority" | "lead" | "name" | "updated" | "discovered" | "investigated";
   dir?: "asc" | "desc";
   quick?: "needs_investigation" | "qualified" | "needs_review" | "drafts" | "not_a_fit" | "no_contact" | "stale" | "failed" | "chains";
@@ -136,6 +152,34 @@ export const BUSINESS_DATE_FIELDS = [
   { key: "investigatedAt", label: "Researched" },
   { key: "updatedAt", label: "Updated" },
 ] as const;
+
+/** The "Result" filter: one list for what the table's Result column shows (research status and its outcome). */
+export const RESULT_FILTERS: { key: string; label: string; where: SQL }[] = [
+  { key: "not_researched", label: "Not researched", where: sql`${businesses.status} = 'new'` },
+  { key: "researching", label: "Researching", where: sql`${businesses.status} in ('queued', 'investigating')` },
+  { key: "qualified", label: "Qualified", where: sql`${businesses.verdict} = 'qualified'` },
+  { key: "needs_review", label: "Needs review", where: sql`${businesses.verdict} = 'needs_review'` },
+  { key: "insufficient_evidence", label: "Too little info", where: sql`${businesses.verdict} = 'insufficient_evidence'` },
+  { key: "no_contact", label: "No email", where: sql`${businesses.verdict} = 'no_contact'` },
+  { key: "not_a_fit", label: "Not a fit", where: sql`${businesses.verdict} = 'not_a_fit'` },
+  { key: "failed", label: "Failed", where: sql`${businesses.status} = 'failed'` },
+  { key: "no_website", label: "No website", where: sql`${businesses.status} = 'no_website'` },
+];
+
+/**
+ * The choices of the data-driven filters: the kinds of business, cities and searches that
+ * actually occur in the workspace's businesses, most frequent first, each with its count.
+ */
+export async function businessFilterOptions() {
+  const db = await getDb();
+  const ws = await workspaceId();
+  const [categories, cities, found] = await Promise.all([
+    db.select({ value: businesses.category, n: sql<number>`count(*)` }).from(businesses).where(and(eq(businesses.workspaceId, ws), sql`${businesses.category} is not null and ${businesses.category} != ''`)).groupBy(businesses.category).orderBy(desc(sql`count(*)`), businesses.category).limit(200).all(),
+    db.select({ value: businesses.city, n: sql<number>`count(*)` }).from(businesses).where(and(eq(businesses.workspaceId, ws), sql`${businesses.city} is not null and ${businesses.city} != ''`)).groupBy(businesses.city).orderBy(desc(sql`count(*)`), businesses.city).limit(300).all(),
+    db.select({ id: searches.id, name: searches.name, n: sql<number>`count(${searchResults.businessId})` }).from(searches).innerJoin(searchResults, eq(searchResults.searchId, searches.id)).where(eq(searches.workspaceId, ws)).groupBy(searches.id).orderBy(desc(searches.createdAt)).limit(100).all(),
+  ]);
+  return { categories: categories.map((c) => ({ value: c.value!, n: Number(c.n) })), cities: cities.map((c) => ({ value: c.value!, n: Number(c.n) })), searches: found.map((x) => ({ id: x.id, name: x.name, n: Number(x.n) })) };
+}
 
 /** The "quick" views of the businesses list, in the order the page shows them. */
 export const BUSINESS_QUICK_VIEWS = ["", "needs_investigation", "qualified", "needs_review", "drafts", "not_a_fit", "no_contact", "stale", "failed", "chains"] as const;
@@ -171,7 +215,7 @@ function quickCondition(quick: BusinessFilters["quick"], dr: DraftSub): SQL | un
 /** WHERE clause for the businesses list: text search, the labeled filters, the date range and the quick view. */
 function businessWhere(f: BusinessFilters, dr: DraftSub, ws: string): SQL | undefined {
   const conds: SQL[] = [eq(businesses.workspaceId, ws)];
-  if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`), like(businesses.email, `%${f.q}%`), like(businesses.phone, `%${f.q}%`))!);
+  if (f.q) conds.push(or(like(businesses.name, `%${f.q}%`), like(businesses.category, `%${f.q}%`), like(businesses.city, `%${f.q}%`), like(businesses.websiteDomain, `%${f.q}%`), like(businesses.email, `%${f.q}%`), like(businesses.phone, `%${f.q.replace(/\D/g, "") || f.q}%`))!);
   if (f.industry) conds.push(eq(businesses.industry, f.industry));
   if (f.stage) conds.push(eq(prospects.stage, f.stage));
   if (f.status) conds.push(eq(businesses.status, f.status));
@@ -179,6 +223,29 @@ function businessWhere(f: BusinessFilters, dr: DraftSub, ws: string): SQL | unde
   if (f.website === "yes") conds.push(sql`${businesses.website} is not null`);
   if (f.website === "no") conds.push(sql`${businesses.website} is null`);
   if (f.minPriority) conds.push(sql`coalesce(${businesses.priority}, 0) >= ${f.minPriority}`);
+  if (f.category) conds.push(eq(businesses.category, f.category));
+  if (f.city) conds.push(eq(businesses.city, f.city));
+  if (f.searchId) conds.push(sql`${businesses.id} in (select ${searchResults.businessId} from ${searchResults} where ${searchResults.searchId} = ${f.searchId})`);
+  const result = RESULT_FILTERS.find((r) => r.key === f.result);
+  if (result) conds.push(result.where);
+  if (f.contact === "email") conds.push(sql`${businesses.email} is not null`);
+  if (f.contact === "phone") conds.push(sql`${businesses.phone} is not null`);
+  if (f.contact === "website") conds.push(sql`${businesses.website} is not null`);
+  if (f.contact === "no_email") conds.push(sql`${businesses.email} is null`);
+  if (f.contact === "no_website") conds.push(sql`${businesses.website} is null`);
+  if (f.minRating) conds.push(sql`coalesce(${businesses.rating}, 0) >= ${f.minRating}`);
+  if (f.minReviews) conds.push(sql`coalesce(${businesses.reviewCount}, 0) >= ${f.minReviews}`);
+  if (f.minScore) conds.push(sql`coalesce(${businesses.priority}, ${businesses.leadScore}, 0) >= ${f.minScore}`);
+  if (f.due) {
+    // Whole local days, like the due tags: "today" is from midnight to midnight.
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
+    if (f.due === "overdue") conds.push(sql`${prospects.nextAction} is not null and ${prospects.nextActionAt} < ${startOfToday}`);
+    if (f.due === "today") conds.push(sql`${prospects.nextAction} is not null and ${prospects.nextActionAt} >= ${startOfToday} and ${prospects.nextActionAt} < ${endOfToday}`);
+    if (f.due === "planned") conds.push(sql`${prospects.nextAction} is not null`);
+    if (f.due === "none") conds.push(sql`${prospects.nextAction} is null`);
+  }
   const dateCol = { createdAt: businesses.createdAt, investigatedAt: businesses.investigatedAt, updatedAt: businesses.updatedAt }[f.dateField ?? "createdAt"];
   if (f.from) conds.push(sql`${dateCol} >= ${f.from}`);
   if (f.to) conds.push(sql`${dateCol} <= ${f.to}`);
@@ -284,7 +351,8 @@ export async function pipelineBoard(f: { q?: string; industry?: string; fromIso?
   if (f.fromIso) conds.push(gte(prospects.updatedAt, f.fromIso));
   if (f.toIso) conds.push(lte(prospects.updatedAt, f.toIso));
   const rows = await db
-    .select({ business: businesses, prospect: prospects, draftCount: dr.drafts })
+    // The board's "email ready" tag is about an email that waits for the operator, not one that was sent or bounced.
+    .select({ business: businesses, prospect: prospects, draftCount: dr.waiting })
     .from(prospects)
     .innerJoin(businesses, eq(prospects.businessId, businesses.id))
     .leftJoin(dr, eq(dr.businessId, businesses.id))
@@ -303,12 +371,16 @@ export async function pipelineBoard(f: { q?: string; industry?: string; fromIso?
  * and what still has to be set up before the whole flow can run. Three counts
  * and one settings read; nothing here touches the network.
  */
-export async function navStatus(): Promise<{ counts: { businesses: number; outreach: number; pipeline: number }; setup: { label: string; href: string }[] }> {
+export async function navStatus(): Promise<{ counts: { todo: number; businesses: number; outreach: number; pipeline: number }; setup: { label: string; href: string }[] }> {
   const db = await getDb();
   const cfg = getConfig();
   const one = async (q: Promise<{ n: number } | undefined>) => Number((await q)?.n ?? 0);
   const ws = await workspaceId();
   const mine = businessIdsOf(db, ws);
+  // Next actions due by the end of today (overdue ones included), for businesses still in play.
+  const now = new Date();
+  const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1).toISOString();
+  const dueNow = await one(db.select({ n: sql<number>`count(*)` }).from(prospects).where(sql`${prospects.businessId} in ${mine} and ${prospects.nextAction} is not null and ${prospects.nextActionAt} is not null and ${prospects.nextActionAt} < ${endOfToday} and ${prospects.stage} not in ('won', 'lost')`).get());
   const [toJudge, emails, replies, settings] = await Promise.all([
     one(
       db
@@ -328,7 +400,7 @@ export async function navStatus(): Promise<{ counts: { businesses: number; outre
   if (!cfg.ai.enabled) setup.push({ label: "AI key", href: settingsHref("connections") });
   if (!cfg.mail.enabled) setup.push({ label: "Mailbox", href: settingsHref("mailbox") });
   if (missingSenderDetails(settings).length > 0) setup.push({ label: "Your sender details", href: settingsHref("sender") });
-  return { counts: { businesses: toJudge, outreach: emails, pipeline: replies }, setup };
+  return { counts: { todo: dueNow, businesses: toJudge, outreach: emails, pipeline: replies }, setup };
 }
 
 export async function machineStageCounts() {

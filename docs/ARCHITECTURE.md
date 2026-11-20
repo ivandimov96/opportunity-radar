@@ -1,6 +1,6 @@
 # Architecture
 
-Current as of 2026-11-12. The code is the source of truth; this document says
+Current as of 2026-11-20. The code is the source of truth; this document says
 where things are and why they are shaped the way they are.
 
 ## The shape of it
@@ -119,8 +119,15 @@ src/lib/jobs/       queue, worker, scheduler, job handlers
    moves the business to "Replied" and withdraws a pending follow-up. An opt-out
    is recognised by a fixed rule and suppresses the address at once. Other
    replies are classified by the model (the original text is kept; the label can
-   be corrected) with a suggested answer that is never sent by the app.
-6. **Follow-up.** After the configured working days without an answer the
+   be corrected) with a suggested answer. When an answer makes sense it becomes
+   an email of its own (step 9, `src/lib/outreach/answers.ts`) in the same
+   thread, addressed to the person who wrote, and takes the same road as every
+   other email. "Not now" plans one check-back; an automatic reply postpones
+   the next email by a week.
+6. **Sequence** (`src/lib/outreach/steps.ts`). First email (0), follow-up (1),
+   last note (2), check-back after a "not now" (3), answer to a reply (9). The
+   number of follow-ups is a setting; a reply ends the sequence.
+   After the configured working days without an answer the
    scheduler drafts one follow-up in the same thread. It waits for approval like
    any other email.
 
@@ -173,7 +180,11 @@ keys, exponential backoff for retryable errors, a time limit per type, recovery
 of jobs left running by a dead process. The **scheduler** runs inside the worker
 once a minute: inbox sync, follow-up drafts, emails for qualified businesses that
 have none, and research of saved businesses (best leads first, within the daily
-allowance, paused while enough emails wait for review). It never sends and never
+allowance, paused while enough emails wait for review). When the operator has
+switched them on it also starts searches from the targets in Settings
+(`discovery/auto-search.ts`) and passes ready emails on for sending
+(`outreach/autopilot.ts`: waiting time, trust gate, warm-up limit, safety
+pause; decision D50). By default it never sends and never
 starts a search.
 
 ## Sending exactly once
@@ -229,5 +240,5 @@ starts a search.
 - SMTP + IMAP with an app password instead of a provider API: works with almost
   any mailbox with three lines of configuration; no delivery receipts beyond
   "accepted" and bounces, and no open tracking (by choice).
-- The operator answers replies from their own mail program; the app suggests and
-  records, it does not compose. Replies the operator sends are not synced back.
+- Answers written in the app are sent and recorded by it. Replies the operator
+  sends from their own mail program are still not synced back.

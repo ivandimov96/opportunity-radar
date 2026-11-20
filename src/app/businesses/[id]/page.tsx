@@ -1,3 +1,5 @@
+import { DUE_CHOICES, dueTag } from "@/lib/due";
+import { stepLabel } from "@/lib/outreach/steps";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { businessActivities, getBusinessDetail } from "@/lib/queries";
@@ -17,7 +19,7 @@ import { addNoteAction, chooseIdeaAction, removeBusinessAction, completeNextActi
 const REPLY_LABEL: Record<string, string> = { wants_meeting: "Wants a meeting", interested: "Interested", wants_info: "Asks for more information", not_now: "Not now", declined: "Declined", unsubscribe: "Asked not to be contacted", wrong_person: "Points to someone else", other: "Other" };
 const REPLY_TONE: Record<string, Tone> = { wants_meeting: "ok", interested: "ok", wants_info: "info", not_now: "neutral", declined: "bad", unsubscribe: "bad", wrong_person: "info", other: "neutral" };
 
-const TABS = ["opportunities", "profile", "outreach", "activity"] as const;
+const TABS = ["opportunities", "outreach", "profile", "activity"] as const;
 type Tab = (typeof TABS)[number];
 
 export default async function BusinessPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<{ tab?: string; kind?: string; page?: string; draft?: string; ok?: string; error?: string }> }) {
@@ -41,15 +43,18 @@ export default async function BusinessPage({ params, searchParams }: { params: P
   const gaps = d.facts.filter((f) => f.status === "not_found");
   const factByKey = new Map(d.facts.map((f) => [f.key, f]));
   const counts: Record<Tab, number | null> = { opportunities: null, profile: verified.length + d.observations.length, outreach: liveDrafts.length + d.inbound.length, activity: d.activityCount };
-  const TAB_LABEL: Record<Tab, string> = { opportunities: "Overview", profile: "Research", outreach: "Emails", activity: "Activity" };
+  const TAB_LABEL: Record<Tab, string> = { opportunities: "Idea", outreach: "Email", profile: "Research", activity: "History" };
   const stage = d.prospect?.stage ?? "discovered";
   const tabHref = (t: Tab) => `/businesses/${b.id}?tab=${t}`;
   const activityKind: ActivityKind = ACTIVITY_KINDS.some((k) => k.key === sp.kind) ? (sp.kind as ActivityKind) : "all";
   const activityPage = Math.max(1, Math.floor(Number(sp.page) || 1));
   const ACTIVITY_PAGE_SIZE = 25;
   const activityHref = (k: ActivityKind, page = 1) => `${tabHref("activity")}${k === "all" ? "" : `&kind=${k}`}${page > 1 ? `&page=${page}` : ""}#activity`;
-  const outreachHistory = tab === "outreach" ? await businessActivities(b.id, { types: ["email", "call", "meeting", "note"], page: 1, pageSize: 8 }) : null;
-  const activity = tab === "activity" ? await businessActivities(b.id, { types: ACTIVITY_KINDS.find((k) => k.key === activityKind)?.types, page: activityPage, pageSize: ACTIVITY_PAGE_SIZE }) : null;
+  const outreachHistory = true ? await businessActivities(b.id, { types: ["email", "call", "meeting", "note"], page: 1, pageSize: 8 }) : null;
+  /** The short list on the right: the latest few events, newest first. */
+  const recent = await businessActivities(b.id, { page: 1, pageSize: 6 });
+  const showAllHistory = sp.tab === "activity" || Boolean(sp.kind || sp.page);
+  const activity = showAllHistory ? await businessActivities(b.id, { types: ACTIVITY_KINDS.find((k) => k.key === activityKind)?.types, page: activityPage, pageSize: ACTIVITY_PAGE_SIZE }) : null;
 
   const PrimaryAction = () => {
     switch (wf.next.kind) {
@@ -87,301 +92,236 @@ export default async function BusinessPage({ params, searchParams }: { params: P
     }
   };
 
+  /** What kind of business it is, in plain words: the listing's own category ("car_repair" reads "Car repair"), else the search type. */
+  const rawKind = (b.category ?? "").replace(/_/g, " ").trim();
+  const kind = rawKind ? rawKind.charAt(0).toUpperCase() + rawKind.slice(1) : getPlaybook(b.industry).key === "generic" ? "" : getPlaybook(b.industry).label;
+  const score = b.priority ?? b.leadScore;
+  /**
+   * The conversation in time order: emails that went out and what came back, then (last) the emails
+   * that still wait for the operator. One list, so nothing has to be pieced together from separate cards.
+   */
+  const SENT_STATES = ["sent", "bounced", "sending", "queued"];
+  const thread: ({ kind: "ours"; at: string; pending: boolean; draft: (typeof liveDrafts)[number] } | { kind: "theirs"; at: string; msg: (typeof d.inbound)[number] })[] = [
+    ...liveDrafts.filter((x) => SENT_STATES.includes(x.status)).map((x) => ({ kind: "ours" as const, at: x.sentAt ?? x.scheduledAt ?? x.createdAt, pending: false, draft: x })),
+    ...d.inbound.map((m) => ({ kind: "theirs" as const, at: m.receivedAt, msg: m })),
+  ].sort((x, y) => (x.at < y.at ? -1 : 1));
+  thread.push(...liveDrafts.filter((x) => !SENT_STATES.includes(x.status)).sort((x, y) => x.step - y.step).map((x) => ({ kind: "ours" as const, at: x.createdAt, pending: true, draft: x })));
+  const REPLY_TONE: Record<string, Tone> = { wants_meeting: "ok", interested: "ok", wants_info: "info", not_now: "warn", declined: "neutral", unsubscribe: "bad", wrong_person: "warn", other: "neutral" };
+  /** Research has been done at least once (whatever it concluded). */
+  const researched = Boolean(b.investigatedAt) || d.facts.length > 0;
+  /** What the map listing itself says (kept with the source record): its categories, opening hours and a link to it. */
+  const raw = (d.sources.find((x) => x.raw)?.raw ?? {}) as { types?: unknown; openingHours?: unknown; cid?: unknown };
+  const WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+  const listing = {
+    types: Array.isArray(raw.types) ? raw.types.filter((x): x is string => typeof x === "string").slice(0, 4) : [],
+    hours: raw.openingHours && typeof raw.openingHours === "object" && !Array.isArray(raw.openingHours) ? WEEK.filter((day) => typeof (raw.openingHours as Record<string, unknown>)[day] === "string").map((day) => [day, String((raw.openingHours as Record<string, unknown>)[day])] as const) : [],
+    openDays: (() => {
+      const hours = raw.openingHours && typeof raw.openingHours === "object" && !Array.isArray(raw.openingHours) ? (raw.openingHours as Record<string, unknown>) : null;
+      if (!hours) return "";
+      const open = WEEK.filter((day) => typeof hours[day] === "string" && !/closed/i.test(String(hours[day])));
+      if (!open.length) return "";
+      const same = open.every((day) => hours[day] === hours[open[0]]);
+      const span = open.length === 1 ? open[0].slice(0, 3) : `${open[0].slice(0, 3)}–${open[open.length - 1].slice(0, 3)}`;
+      return same ? `${span}, ${String(hours[open[0]])}` : `${open.length} days a week`;
+    })(),
+    mapUrl: typeof raw.cid === "string" && /^\d+$/.test(raw.cid) ? `https://www.google.com/maps?cid=${raw.cid}` : null,
+  };
   /** The way from found to won, and how many of its steps this business has completed. */
   const JOURNEY = ["Found", "Researched", "Qualified", "Emailed", "Replied", "Meeting", "Won"];
   const reached = stage === "won" ? 7 : stage === "meeting_scheduled" || stage === "proposal_sent" ? 6 : stage === "replied" ? 5 : stage === "contacted" || stage === "lost" ? 4 : stage === "qualified" || stage === "ready_to_contact" || b.verdict === "qualified" ? 3 : b.investigatedAt ? 2 : 1;
 
   return (
     <>
-      <PageHeader
-        crumbs={[{ href: "/businesses", label: "Businesses" }, { label: b.name }]}
-        title={
-          <span className="flex items-center gap-2 flex-wrap">
-            {b.name}
-            <StatusPill status={b.verdict ?? b.status} />
-            <Badge tone={stageTone(stage)}>{stageLabel(stage)}</Badge>
-          </span>
-        }
-        subtitle={
-          <span className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <span>{getPlaybook(b.industry).label}{b.category ? ` · ${b.category}` : ""}</span>
-            <span className="text-ink-faint">{[b.street, b.city, b.region, b.postalCode].filter(Boolean).join(", ") || "address unknown"}</span>
-            {b.website ? (
-              <a href={b.website} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1">
-                {b.websiteDomain ?? b.website} <Icon name="external" className="w-3 h-3" />
-              </a>
-            ) : (
-              <span className="text-warn">no website</span>
-            )}
-          </span>
-        }
-        actions={
-          <>
-            <AutoRefresh active={busy} label={b.statusMessage ?? "Investigating"} />
-            {!busy && <PrimaryAction />}
-            {!busy && b.website && b.status === "profiled" && (
-              <form action={investigateAction}>
-                <input type="hidden" name="businessId" value={b.id} />
-                <button className="btn btn-ghost" disabled={!cfg.firecrawl.enabled} title={cfg.firecrawl.enabled ? "Fetch the website again and rebuild the profile" : "Website research needs FIRECRAWL_API_KEY"}>
-                  <Icon name="refresh" /> Research again
-                </button>
-              </form>
-            )}
-            {!busy && !emailed && (
-              <form action={removeBusinessAction}>
-                <input type="hidden" name="businessId" value={b.id} />
-                <input type="hidden" name="returnTo" value="/businesses" />
-                <ConfirmButton confirmLabel="Remove" danger className="btn btn-ghost btn-danger" message={`Remove ${b.name}? Its research and any unsent email are deleted, and future searches will leave it out. You can allow it again under Settings.`}>
-                  <Icon name="x" /> Remove
-                </ConfirmButton>
-              </form>
-            )}
-          </>
-        }
-      />
+      <nav className="flex items-center gap-1.5 text-sm text-ink-muted mb-4" aria-label="Breadcrumb">
+        <Link href="/businesses">Businesses</Link>
+        <Icon name="chevronRight" className="w-3 h-3" />
+        <span className="text-ink truncate">{b.name}</span>
+      </nav>
       <Flash msg={sp.ok} />
       <Flash msg={sp.error} tone="bad" />
 
-      <div className="surface px-5 py-4 mb-5">
-        <div className="flex flex-wrap items-center gap-4">
-          <span className={`w-10 h-10 rounded-lg grid place-items-center shrink-0 ${{ accent: "bg-accent-soft text-accent-text", ok: "bg-ok-soft text-ok", warn: "bg-warn-soft text-warn", neutral: "bg-surface-3 text-ink-muted", info: "bg-info-soft text-info" }[wf.next.tone]}`}>
-            <Icon name={wf.next.tone === "warn" ? "alert" : wf.next.tone === "ok" ? "check" : wf.next.kind === "wait" ? "clock" : "arrowRight"} />
-          </span>
-          <div className="min-w-[220px] flex-1">
-            <div className="text-sm font-semibold text-accent-text">Next step</div>
-            <div className="text-lg font-semibold leading-snug">{wf.next.title}</div>
-            <div className="text-sm text-ink-muted mt-0.5">{wf.next.description}</div>
-          </div>
-          {/* Where this business is on the way from found to won. */}
-        <ol className="flex items-start gap-0 basis-full lg:basis-0 lg:flex-1 lg:min-w-[30rem] mt-3 pt-4 border-t border-line lg:mt-0 lg:pt-0 lg:border-t-0 overflow-x-auto no-scrollbar" aria-label="Progress">
-          {JOURNEY.map((step, i) => {
-            const done = i < reached - 1;
-            const now = i === reached - 1;
-            return (
-              <li key={step} className="flex-1 min-w-[4.75rem] flex flex-col items-center text-center relative">
-                {i > 0 && <span className={`absolute top-3 right-1/2 w-full h-0.5 -z-0 ${i <= reached - 1 ? "bg-ok" : "bg-line-strong"}`} aria-hidden />}
-                <span className={`relative z-10 w-6 h-6 rounded-full grid place-items-center text-xs font-bold ${done ? "bg-ok text-accent-fg" : now ? (stage === "lost" ? "bg-bad text-accent-fg" : "bg-accent text-accent-fg") : "bg-surface-3 text-ink-faint border border-line-strong"}`}>{done ? <Icon name="check" className="w-3.5 h-3.5" /> : i + 1}</span>
-                <span className={`text-xs mt-1.5 ${now ? "font-semibold text-ink" : done ? "text-ink-muted" : "text-ink-faint"}`}>{step}</span>
-              </li>
-            );
-          })}
-        </ol>
-      </div>
-      </div>
-
-      {wf.next.kind === "add_email" && (
-        <div className="mb-4">
-          <Callout tone="warn" title="No public email address was found">
-            <p className="text-sm">{(b.verdictReasons ?? [])[0] ?? wf.next.description}</p>
-            <form action={setBusinessEmailAction} className="mt-2 flex flex-wrap gap-2 items-center">
-              <input type="hidden" name="businessId" value={b.id} />
-              <input className="input max-w-sm" type="email" name="email" placeholder="name@their-domain.com" required aria-label="Email address" />
-              <button className="btn btn-sm">Save the address and continue the research</button>
-            </form>
-          </Callout>
-        </div>
-      )}
-
-      {(wf.next.kind === "retry" || wf.next.kind === "no_website") && (
-        <div className="mb-4">
-          <Callout tone="warn" title={wf.next.kind === "retry" ? `Investigation failed: ${b.statusMessage ?? "unknown error"}` : "No website could be located"}>
-            {wf.next.kind === "no_website" && <p className="text-sm">{wf.next.description}</p>}
-            <form action={updateWebsiteAction} className="mt-2 flex flex-wrap gap-2 items-center">
-              <input type="hidden" name="businessId" value={b.id} />
-              <input className="input max-w-sm" name="website" defaultValue={b.website ?? ""} placeholder="https://their-website.com" />
-              <button className="btn btn-sm">Save website &amp; investigate</button>
-            </form>
-            {wf.next.kind === "no_website" && (
-              <form action={investigateAction} className="mt-2">
-                <input type="hidden" name="businessId" value={b.id} />
-                <button className="btn btn-sm btn-ghost"><Icon name="refresh" /> Retry the website finder</button>
-              </form>
+      <div className="space-y-4">
+        {/* Who they are, how to reach them, and the one thing to do next. */}
+        <section className="surface" aria-label="Business">
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-4 p-5">
+            {score != null && (
+              <span className="shrink-0" title={b.priority != null ? "Priority after research" : `Listing score before research: ${(b.leadReasons ?? []).join(", ")}`}>
+                <ScoreRing value={score} size={56} />
+              </span>
             )}
-          </Callout>
-        </div>
-      )}
+            <div className="min-w-[14rem] flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-2xl leading-tight">{b.name}</h1>
+                <StatusPill status={b.verdict ?? b.status} />
+                {b.kind === "chain" && <Badge tone="neutral">chain</Badge>}
+              </div>
+              <div className="text-sm text-ink-muted mt-1">
+                {[kind, [b.street, b.city, b.region, b.postalCode].filter(Boolean).join(", ")].filter(Boolean).join(" · ")}
+                {b.rating != null && (
+                  <span className="tabular-nums">
+                    {" · "}
+                    <strong className="text-ink">{b.rating.toFixed(1)}</strong> <span className="text-warn">★</span>
+                    {b.reviewCount != null ? ` (${b.reviewCount.toLocaleString()} ${b.reviewCount === 1 ? "review" : "reviews"})` : ""}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <AutoRefresh active={busy} label={b.statusMessage ?? "Researching"} />
+              {/* Research has its own button in step 1; every other next step is one click from here. */}
+              {!busy && wf.next.kind !== "investigate" && wf.next.kind !== "retry" && <PrimaryAction />}
+              {!busy && !emailed && (
+                <form action={removeBusinessAction}>
+                  <input type="hidden" name="businessId" value={b.id} />
+                  <input type="hidden" name="returnTo" value="/businesses" />
+                  <ConfirmButton confirmLabel="Remove" danger className="btn btn-ghost btn-danger" message={`Remove ${b.name}? Its research and any unsent email are deleted, and future searches will leave it out. You can allow it again under Settings.`}>
+                    <Icon name="x" /> Remove
+                  </ConfirmButton>
+                </form>
+              )}
+            </div>
+          </div>
+          <ul className="flex flex-wrap items-center gap-x-7 gap-y-2.5 border-t border-line px-5 py-3.5 text-sm" aria-label="Contact">
+            <ContactItem icon="phone">
+              {b.phone ? (
+                <a href={`tel:${b.phone}`} className="tabular-nums">
+                  {formatPhone(b.phone, b.country)}
+                </a>
+              ) : (
+                <span className="text-ink-faint">No phone</span>
+              )}
+            </ContactItem>
+            <ContactItem icon="globe">
+              {b.website ? (
+                <a href={b.website} target="_blank" rel="noreferrer">
+                  {b.websiteDomain ?? b.website}
+                </a>
+              ) : (
+                <span className="text-ink-faint">No website</span>
+              )}
+            </ContactItem>
+            <ContactItem icon="mail">
+              {b.email ? <a href={`mailto:${b.email}`}>{b.email}</a> : <span className={b.investigatedAt ? "text-warn" : "text-ink-faint"}>{b.investigatedAt ? "No email found" : "No email yet"}</span>}
+              <details className="relative inline-block ml-2 text-xs align-middle">
+                <summary className="text-ink-faint cursor-pointer select-none list-none hover:text-ink">{b.email ? `${b.emailSource === "site" ? "from their website" : b.emailSource === "manual" ? "added by you" : "from their listing"}${b.emailStatus === "invalid" ? " · does not accept mail" : ""} · change` : "add"}</summary>
+                <form action={setBusinessEmailAction} className="absolute z-20 left-0 top-6 flex gap-1.5 surface p-2 shadow-lg w-72">
+                  <input type="hidden" name="businessId" value={b.id} />
+                  <input className="input h-8 text-xs min-w-0" type="email" name="email" defaultValue={b.email ?? ""} placeholder="name@their-domain.com" required aria-label="Email address" />
+                  <button className="btn btn-sm">Save</button>
+                </form>
+              </details>
+            </ContactItem>
+            {listing.mapUrl && (
+              <ContactItem icon="external">
+                <a href={listing.mapUrl} target="_blank" rel="noreferrer">
+                  Google Maps
+                </a>
+              </ContactItem>
+            )}
+          </ul>
+          {/* Where this business is on the way from found to won. */}
+          <ol className="flex items-start border-t border-line px-3 py-3.5" aria-label="Journey">
+            {JOURNEY.map((step, i) => {
+              const done = i < reached - 1;
+              const now = i === reached - 1;
+              return (
+                <li key={step} className="flex-1 min-w-0 flex flex-col items-center text-center relative">
+                  {i > 0 && <span className={`absolute top-[0.6rem] right-1/2 w-full h-0.5 ${i <= reached - 1 ? "bg-ok" : "bg-line-strong"}`} aria-hidden />}
+                  <span className={`relative z-10 w-5 h-5 rounded-full grid place-items-center text-[0.65rem] font-bold ${done ? "bg-ok text-accent-fg" : now ? (stage === "lost" ? "bg-bad text-accent-fg" : "bg-accent text-accent-fg") : "bg-surface-3 text-ink-faint border border-line-strong"}`}>{done ? <Icon name="check" className="w-3 h-3" /> : i + 1}</span>
+                  {/* On a phone only the current step is named: seven names do not fit side by side. */}
+                  <span className={`text-xs mt-1 whitespace-nowrap ${now ? "font-semibold text-ink" : `hidden sm:block ${done ? "text-ink-muted" : "text-ink-faint"}`}`}>{now && stage === "lost" ? "Lost" : step}</span>
+                </li>
+              );
+            })}
+          </ol>
+        </section>
 
-      <Tabs items={TABS.map((t) => ({ href: tabHref(t), label: TAB_LABEL[t], count: counts[t], active: tab === t }))} />
-
-      <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
-        <div className="min-w-0 space-y-5">
-          {tab === "profile" && (
-            <>
-              {d.observations.length > 0 && (
-                <Card title="What their website shows" description="Things the pages state that matter for how they work, each with their own words. Limitations are things a page says, never things that were merely not found." padded={false}>
-                  <ul className="divide-y divide-line">
-                    {d.observations.map((o) => (
-                      <li key={o.id} className="px-5 py-3 text-sm">
-                        <div className="flex items-start gap-2">
-                          <Badge tone={o.kind === "limitation" ? "warn" : o.kind === "capability" ? "ok" : "neutral"}>{{ offering: "Offering", process: "How it works", capability: "Online today", limitation: "Limitation they state" }[o.kind] ?? o.kind}</Badge>
-                          <span className="min-w-0">{o.statement}</span>
-                        </div>
-                        <p className="text-xs text-ink-faint mt-1">
-                          “{o.evidenceQuote}”{" "}
-                          <a href={o.sourceUrl} target="_blank" rel="noreferrer">
-                            source
-                          </a>
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                </Card>
-              )}
-              {d.latest && (
-                <Card title="Research coverage" description={`What was actually read${b.investigatedAt ? ` · ${researchAgeDays(b.investigatedAt)} day(s) ago` : ""}${isResearchStale(b.investigatedAt) ? " · stale, consider re-investigating" : ""}`}>
-                  <div className="grid sm:grid-cols-4 gap-3 text-sm">
-                    {[
-                      { k: "Pages read", v: `${d.pages.filter((p) => !p.error).length} of ${d.pages.length}` },
-                      { k: "Firecrawl credits", v: d.pages.length && d.pages.every((p) => p.renderer === "stored") ? "0 · stored pages" : String(d.latest.creditsUsed) },
-                      { k: "Facts verified", v: String(d.facts.filter((f) => f.status === "verified").length) },
-                      { k: "Off-site records", v: String(d.facts.filter((f) => ["domain_registered", "site_first_seen", "email_provider", "email_senders"].includes(f.key) && f.status === "verified").length) },
-                    ].map((x) => (
-                      <div key={x.k}>
-                        <div className="text-xs text-ink-muted">{x.k}</div>
-                        <div className="font-semibold tabular-nums">{x.v}</div>
-                      </div>
-                    ))}
-                  </div>
-                  {b.website && (
-                    <div className="flex flex-wrap gap-2 mt-3">
-                      <form action={investigateAction}>
-                        <input type="hidden" name="businessId" value={b.id} />
-                        <input type="hidden" name="mode" value="recrawl" />
-                        <button className="btn btn-sm" title="Fetch the website again through Firecrawl (one credit per page)">Research again</button>
-                      </form>
-                      {d.pages.some((p) => p.hasHtml) && (
-                        <form action={investigateAction}>
-                          <input type="hidden" name="businessId" value={b.id} />
-                          <input type="hidden" name="mode" value="reanalyze" />
-                          <button className="btn btn-sm btn-ghost" title="Run the detectors again on the stored pages; costs no credits">Re-analyze stored pages</button>
-                        </form>
-                      )}
-                    </div>
-                  )}
-                  {d.pages.some((p) => p.error) && (
-                    <ul className="text-xs text-ink-muted mt-3 space-y-0.5">
-                      {d.pages.filter((p) => p.error).map((p) => (
-                        <li key={p.id} className="truncate">
-                          <span className="text-warn">{p.error}</span> · {p.url}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                  {(d.latest.notes?.length ?? 0) > 0 && (
-                    <details className="mt-3 text-xs">
-                      <summary className="cursor-pointer text-ink-muted">Investigation log ({d.latest.notes!.length})</summary>
-                      <ol className="list-decimal pl-4 mt-1 space-y-0.5 text-ink-muted">
-                        {d.latest.notes!.map((n, i) => (
-                          <li key={i}>{n}</li>
-                        ))}
-                      </ol>
-                    </details>
-                  )}
-                </Card>
-              )}
-              {d.facts.length > 0 && (
-                <Card title="Verified facts" description="Each one with the words it was read from and a link to the page." padded={false}>
-                  {FACT_GROUPS.map((g) => {
-                    const fields = FACT_FIELDS.filter((f) => f.group === g.key && f.key !== "summary");
-                    const rows = fields.map((f) => ({ field: f, fact: factByKey.get(f.key) })).filter((r) => r.fact?.status === "verified");
-                    if (!rows.length) return null;
-                    return (
-                      <div key={g.key} className="px-5 py-4 border-b border-line last:border-b-0">
-                        <div className="label mb-2">{g.label}</div>
-                        <dl className="divide-y divide-line">
-                          {rows.map(({ field, fact }) => (
-                            <div key={field.key} className="grid md:grid-cols-[200px_1fr] gap-x-4 gap-y-1 py-2 text-sm">
-                              <dt className="text-ink-muted flex items-center gap-1.5">
-                                {fact!.status === "verified" ? <Icon name="check" className="w-3.5 h-3.5 text-ok" /> : <Icon name="minus" className="w-3.5 h-3.5 text-warn" />}
-                                {field.label}
-                              </dt>
-                              <dd className="min-w-0">
-                                {fact!.status === "verified" ? (
-                                  <>
-                                    <span className="font-medium">{factValueLabel(fact!.value)}</span>
-                                    {(fact!.evidenceQuote || fact!.sourceUrl) && (
-                                      <div className="text-xs text-ink-muted mt-0.5">
-                                        {fact!.evidenceQuote && fact!.evidenceQuote !== fact!.value && <q className="italic">{fact!.evidenceQuote}</q>}{" "}
-                                        {fact!.sourceUrl && (
-                                          <a href={fact!.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 whitespace-nowrap">
-                                            source <Icon name="external" className="w-3 h-3" />
-                                          </a>
-                                        )}
-                                        <Badge className="ml-1" tone={fact!.method === "ai" ? "accent" : "neutral"}>{fact!.method === "detected" ? "detected" : fact!.method === "ai" ? "AI · quote verified" : fact!.method}</Badge>
-                                      </div>
-                                    )}
-                                  </>
-                                ) : (
-                                  <span className="text-warn">Not found on the site{fact!.evidenceQuote ? <span className="text-ink-faint"> · {fact!.evidenceQuote}</span> : null}</span>
-                                )}
-                              </dd>
-                            </div>
-                          ))}
-                        </dl>
-                      </div>
-                    );
-                  })}
-                </Card>
-              )}
-              {gaps.length > 0 && (
-                <Callout tone="neutral" icon="info" title={`${gaps.length} thing${gaps.length === 1 ? "" : "s"} looked for and not found on the site`}>
-                  {gaps.map((g) => factLabel(g.key)).join(" · ")}. Not finding something proves nothing about how they work: these are questions to ask, never statements.
-                </Callout>
-              )}
-              {d.pages.length > 0 && (
-                <details>
-                  <summary className="text-xs text-ink-muted select-none px-1 mb-2">Show the {d.pages.length} page{d.pages.length === 1 ? "" : "s"} that were read</summary>
-                <Card title="Pages read" description={d.latest ? `Latest investigation · ${fmtDate(d.latest.startedAt)} · ${d.latest.pagesFetched} fetched, ${d.latest.pagesFailed} failed · ${d.latest.creditsUsed} Firecrawl credit(s)${d.latest.model ? ` · model ${d.latest.model} · $${d.latest.costUsd.toFixed(3)}` : ""}` : undefined} padded={false}>
-                  {d.pages.length === 0 ? (
-                    <EmptyState compact icon="file" title="No pages fetched" />
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="table">
-                        <thead>
-                          <tr>
-                            <th>Kind</th>
-                            <th>URL</th>
-                            <th>Status</th>
-                            <th className="text-right">Text</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {d.pages.map((p) => (
-                            <tr key={p.id}>
-                              <td>
-                                <Badge>{p.kind}</Badge>
-                                {p.renderer === "stored" && <Badge className="ml-1" tone="neutral" title="Reused from an earlier investigation; no credits">stored</Badge>}
-                              </td>
-                              <td className="text-xs max-w-[420px]">
-                                <a href={p.url} target="_blank" rel="noreferrer" className="truncate block">
-                                  {p.url}
-                                </a>
-                                {p.title && <div className="text-ink-faint truncate">{p.title}</div>}
-                              </td>
-                              <td className="text-xs">{p.error ? <span className="text-bad">{p.error}</span> : <span className="text-ok">{p.statusCode}</span>}</td>
-                              <td className="text-xs text-right tabular-nums">{p.textLength.toLocaleString()} chars</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                  {d.latest?.notes?.length ? <p className="text-xs text-ink-faint px-5 py-3 border-t border-line">{d.latest.notes.join(" · ")}</p> : null}
-                </Card>
-                </details>
-              )}
-            </>
+        {/* The work on the left; where the business stands, what happened and where it came from stay beside it. */}
+        <div className="grid xl:grid-cols-[minmax(0,1fr)_360px] gap-5 items-start">
+          <div className="min-w-0 space-y-4">
+          {wf.next.kind === "add_email" && (
+            <div className="mb-4">
+              <Callout tone="warn" title="No public email address was found">
+                <p className="text-sm">{(b.verdictReasons ?? [])[0] ?? wf.next.description}</p>
+                <form action={setBusinessEmailAction} className="mt-2 flex flex-wrap gap-2 items-center">
+                  <input type="hidden" name="businessId" value={b.id} />
+                  <input className="input max-w-sm" type="email" name="email" placeholder="name@their-domain.com" required aria-label="Email address" />
+                  <button className="btn btn-sm">Save the address and continue the research</button>
+                </form>
+              </Callout>
+            </div>
           )}
 
-          {tab === "opportunities" && (
-            <>
-              <Card title="What this business does" description={d.latest ? `Investigated ${fmtRelative(d.latest.finishedAt ?? d.latest.startedAt)} · ${d.latest.pagesFetched} pages · ${verified.length} verified facts${d.latest.durationMs ? ` · took ${fmtDuration(d.latest.durationMs)}` : ""}` : undefined}>
+          {(wf.next.kind === "retry" || wf.next.kind === "no_website") && (
+            <div className="mb-4">
+              <Callout tone="warn" title={wf.next.kind === "retry" ? `Investigation failed: ${b.statusMessage ?? "unknown error"}` : "No website could be located"}>
+                {wf.next.kind === "no_website" && <p className="text-sm">{wf.next.description}</p>}
+                <form action={updateWebsiteAction} className="mt-2 flex flex-wrap gap-2 items-center">
+                  <input type="hidden" name="businessId" value={b.id} />
+                  <input className="input max-w-sm" name="website" defaultValue={b.website ?? ""} placeholder="https://their-website.com" />
+                  <button className="btn btn-sm">Save website &amp; investigate</button>
+                </form>
+                {wf.next.kind === "no_website" && (
+                  <form action={investigateAction} className="mt-2">
+                    <input type="hidden" name="businessId" value={b.id} />
+                    <button className="btn btn-sm btn-ghost"><Icon name="refresh" /> Retry the website finder</button>
+                  </form>
+                )}
+              </Callout>
+            </div>
+          )}
+
+
+          {/* The work, in the order it happens. The step to do now is open; finished ones fold to one line. */}
+          <ol className="space-y-4" aria-label="Progress">
+            <Step n={1} title="Research" state={researched && !busy ? "done" : "now"} status={busy ? "Researching…" : researched ? `${verdictLabel(b.verdict) || "Researched"}${b.investigatedAt ? ` · ${fmtRelative(b.investigatedAt)}` : ""}` : "Not started"}>
+              {!researched && !busy && (
+                <div className="surface p-5 flex flex-wrap items-center gap-4">
+                  <div className="flex-1 min-w-[14rem]">
+                    <div className="text-base font-semibold">Read their website and prepare one idea</div>
+                  </div>
+                  <form action={investigateAction}>
+                    <input type="hidden" name="businessId" value={b.id} />
+                    <button className="btn btn-primary btn-lg" disabled={!cfg.firecrawl.enabled} title={cfg.firecrawl.enabled ? undefined : "Website research needs FIRECRAWL_API_KEY"}>
+                      <Icon name="sparkles" /> Research this business
+                    </button>
+                  </form>
+                </div>
+              )}
+              {!d.latest && !d.facts.length && (
+                <section className="surface" aria-label="Map listing">
+                  <div className="grid sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line">
+                    <div className="px-5 py-4">
+                      <div className="text-xs font-semibold text-ink-muted">Listed as</div>
+                      <div className="text-[0.95rem] font-semibold mt-1">{listing.types.length ? listing.types.join(", ") : kind || "—"}</div>
+                    </div>
+                    <div className="px-5 py-4">
+                      <div className="text-xs font-semibold text-ink-muted">Reviews</div>
+                      <div className="text-[0.95rem] font-semibold mt-1 tabular-nums">
+                        {b.rating != null ? (
+                          <>
+                            {b.rating.toFixed(1)} <span className="text-warn">★</span> <span className="font-normal text-ink-muted">· {(b.reviewCount ?? 0).toLocaleString()} {b.reviewCount === 1 ? "review" : "reviews"}</span>
+                          </>
+                        ) : (
+                          "—"
+                        )}
+                      </div>
+                    </div>
+                    <div className="px-5 py-4">
+                      <div className="text-xs font-semibold text-ink-muted">Open</div>
+                      <div className="text-[0.95rem] font-semibold mt-1">{listing.openDays || "—"}</div>
+                    </div>
+                  </div>
+                </section>
+              )}
+              {(d.latest || d.facts.length > 0) && (
+              <Card title="What this business does">
                 {b.summary ? (
                   <p className="text-sm leading-relaxed">{b.summary}</p>
                 ) : d.facts.length ? (
                   <p className="text-sm text-ink-muted">{cfg.ai.enabled ? "No summary could be verified from the site." : "Summary needs the AI step (ANTHROPIC_API_KEY). Detected facts are below."}</p>
                 ) : (
-                  <EmptyState compact icon="sparkles" title="Not investigated yet" description={b.website ? "Investigate to fetch the website and public records, build the profile and analyze opportunities in one step." : b.status === "no_website" ? "No website could be located; add one if you know it." : "No website on record: investigating will first try to locate one."} />
+                  <EmptyState compact icon="sparkles" title="Not researched yet" />
                 )}
                 {d.latest?.workflows?.length ? (
                   <div className="mt-4">
@@ -396,6 +336,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                   </div>
                 ) : null}
               </Card>
+              )}
 
               {b.status === "profiled" && (
                 <Callout tone={b.verdict === "qualified" ? "ok" : b.verdict === "not_a_fit" ? "neutral" : "warn"} title={verdictLabel(b.verdict)}>
@@ -428,6 +369,183 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                   )}
                 </Callout>
               )}
+              {researched && (
+                <details className="surface group">
+                  <summary className="flex items-center gap-2 px-5 py-3.5 cursor-pointer select-none text-[0.95rem] font-semibold list-none">
+                    <Icon name="chevronRight" className="w-4 h-4 text-ink-faint transition-transform group-open:rotate-90" />
+                    Everything the research found
+                    <span className="text-sm font-normal text-ink-faint">{verified.length + d.observations.length} facts · {d.pages.length} pages</span>
+                  </summary>
+                  <div className="px-5 pb-5 space-y-5">
+                    {d.observations.length > 0 && (
+                      <Card title="What their website shows" padded={false}>
+                        <ul className="divide-y divide-line">
+                          {d.observations.map((o) => (
+                            <li key={o.id} className="px-5 py-3 text-sm">
+                              <div className="flex items-start gap-2">
+                                <Badge tone={o.kind === "limitation" ? "warn" : o.kind === "capability" ? "ok" : "neutral"}>{{ offering: "Offering", process: "How it works", capability: "Online today", limitation: "Limitation they state" }[o.kind] ?? o.kind}</Badge>
+                                <span className="min-w-0">{o.statement}</span>
+                              </div>
+                              <p className="text-xs text-ink-faint mt-1">
+                                “{o.evidenceQuote}”{" "}
+                                <a href={o.sourceUrl} target="_blank" rel="noreferrer">
+                                  source
+                                </a>
+                              </p>
+                            </li>
+                          ))}
+                        </ul>
+                      </Card>
+                    )}
+                    {d.latest && (
+                      <Card title="Research coverage" description={`What was actually read${b.investigatedAt ? ` · ${researchAgeDays(b.investigatedAt)} day(s) ago` : ""}${isResearchStale(b.investigatedAt) ? " · stale, consider re-investigating" : ""}`}>
+                        <div className="grid sm:grid-cols-4 gap-3 text-sm">
+                          {[
+                            { k: "Pages read", v: `${d.pages.filter((p) => !p.error).length} of ${d.pages.length}` },
+                            { k: "Firecrawl credits", v: d.pages.length && d.pages.every((p) => p.renderer === "stored") ? "0 · stored pages" : String(d.latest.creditsUsed) },
+                            { k: "Facts verified", v: String(d.facts.filter((f) => f.status === "verified").length) },
+                            { k: "Off-site records", v: String(d.facts.filter((f) => ["domain_registered", "site_first_seen", "email_provider", "email_senders"].includes(f.key) && f.status === "verified").length) },
+                          ].map((x) => (
+                            <div key={x.k}>
+                              <div className="text-xs text-ink-muted">{x.k}</div>
+                              <div className="font-semibold tabular-nums">{x.v}</div>
+                            </div>
+                          ))}
+                        </div>
+                        {b.website && (
+                          <div className="flex flex-wrap gap-2 mt-3">
+                            <form action={investigateAction}>
+                              <input type="hidden" name="businessId" value={b.id} />
+                              <input type="hidden" name="mode" value="recrawl" />
+                              <button className="btn btn-sm" title="Fetch the website again through Firecrawl (one credit per page)">Research again</button>
+                            </form>
+                            {d.pages.some((p) => p.hasHtml) && (
+                              <form action={investigateAction}>
+                                <input type="hidden" name="businessId" value={b.id} />
+                                <input type="hidden" name="mode" value="reanalyze" />
+                                <button className="btn btn-sm btn-ghost" title="Run the detectors again on the stored pages; costs no credits">Re-analyze stored pages</button>
+                              </form>
+                            )}
+                          </div>
+                        )}
+                        {d.pages.some((p) => p.error) && (
+                          <ul className="text-xs text-ink-muted mt-3 space-y-0.5">
+                            {d.pages.filter((p) => p.error).map((p) => (
+                              <li key={p.id} className="truncate">
+                                <span className="text-warn">{p.error}</span> · {p.url}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {(d.latest.notes?.length ?? 0) > 0 && (
+                          <details className="mt-3 text-xs">
+                            <summary className="disclosure text-ink-muted">Investigation log ({d.latest.notes!.length})</summary>
+                            <ol className="list-decimal pl-4 mt-1 space-y-0.5 text-ink-muted">
+                              {d.latest.notes!.map((n, i) => (
+                                <li key={i}>{n}</li>
+                              ))}
+                            </ol>
+                          </details>
+                        )}
+                      </Card>
+                    )}
+                    {d.facts.length > 0 && (
+                      <Card title="Verified facts" padded={false}>
+                        {FACT_GROUPS.map((g) => {
+                          const fields = FACT_FIELDS.filter((f) => f.group === g.key && f.key !== "summary");
+                          const rows = fields.map((f) => ({ field: f, fact: factByKey.get(f.key) })).filter((r) => r.fact?.status === "verified");
+                          if (!rows.length) return null;
+                          return (
+                            <div key={g.key} className="px-5 py-4 border-b border-line last:border-b-0">
+                              <div className="label mb-2">{g.label}</div>
+                              <dl className="divide-y divide-line">
+                                {rows.map(({ field, fact }) => (
+                                  <div key={field.key} className="grid md:grid-cols-[200px_1fr] gap-x-4 gap-y-1 py-2 text-sm">
+                                    <dt className="text-ink-muted flex items-center gap-1.5">
+                                      {fact!.status === "verified" ? <Icon name="check" className="w-3.5 h-3.5 text-ok" /> : <Icon name="minus" className="w-3.5 h-3.5 text-warn" />}
+                                      {field.label}
+                                    </dt>
+                                    <dd className="min-w-0">
+                                      {fact!.status === "verified" ? (
+                                        <>
+                                          <span className="font-medium">{factValueLabel(fact!.value)}</span>
+                                          {(fact!.evidenceQuote || fact!.sourceUrl) && (
+                                            <div className="text-xs text-ink-muted mt-0.5">
+                                              {fact!.evidenceQuote && fact!.evidenceQuote !== fact!.value && <q className="italic">{fact!.evidenceQuote}</q>}{" "}
+                                              {fact!.sourceUrl && (
+                                                <a href={fact!.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 whitespace-nowrap">
+                                                  source <Icon name="external" className="w-3 h-3" />
+                                                </a>
+                                              )}
+                                              <Badge className="ml-1" tone={fact!.method === "ai" ? "accent" : "neutral"}>{fact!.method === "detected" ? "detected" : fact!.method === "ai" ? "AI · quote verified" : fact!.method}</Badge>
+                                            </div>
+                                          )}
+                                        </>
+                                      ) : (
+                                        <span className="text-warn">Not found on the site{fact!.evidenceQuote ? <span className="text-ink-faint"> · {fact!.evidenceQuote}</span> : null}</span>
+                                      )}
+                                    </dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            </div>
+                          );
+                        })}
+                      </Card>
+                    )}
+                    {gaps.length > 0 && (
+                      <Callout tone="neutral" icon="info" title={`${gaps.length} thing${gaps.length === 1 ? "" : "s"} looked for and not found on the site`}>
+                        {gaps.map((g) => factLabel(g.key)).join(" · ")}. Not finding something proves nothing about how they work: these are questions to ask, never statements.
+                      </Callout>
+                    )}
+                    {d.pages.length > 0 && (
+                      <details>
+                        <summary className="disclosure text-xs text-ink-muted px-1 mb-2">Show the {d.pages.length} page{d.pages.length === 1 ? "" : "s"} that were read</summary>
+                      <Card title="Pages read" description={d.latest ? `Latest investigation · ${fmtDate(d.latest.startedAt)} · ${d.latest.pagesFetched} fetched, ${d.latest.pagesFailed} failed · ${d.latest.creditsUsed} Firecrawl credit(s)${d.latest.model ? ` · model ${d.latest.model} · $${d.latest.costUsd.toFixed(3)}` : ""}` : undefined} padded={false}>
+                        {d.pages.length === 0 ? (
+                          <EmptyState compact icon="file" title="No pages fetched" />
+                        ) : (
+                          <div className="overflow-x-auto">
+                            <table className="table">
+                              <thead>
+                                <tr>
+                                  <th>Kind</th>
+                                  <th>URL</th>
+                                  <th>Status</th>
+                                  <th className="text-right">Text</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {d.pages.map((p) => (
+                                  <tr key={p.id}>
+                                    <td>
+                                      <Badge>{p.kind}</Badge>
+                                      {p.renderer === "stored" && <Badge className="ml-1" tone="neutral" title="Reused from an earlier investigation; no credits">stored</Badge>}
+                                    </td>
+                                    <td className="text-xs max-w-[420px]">
+                                      <a href={p.url} target="_blank" rel="noreferrer" className="truncate block">
+                                        {p.url}
+                                      </a>
+                                      {p.title && <div className="text-ink-faint truncate">{p.title}</div>}
+                                    </td>
+                                    <td className="text-xs">{p.error ? <span className="text-bad">{p.error}</span> : <span className="text-ok">{p.statusCode}</span>}</td>
+                                    <td className="text-xs text-right tabular-nums">{p.textLength.toLocaleString()} chars</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                        {d.latest?.notes?.length ? <p className="text-xs text-ink-faint px-5 py-3 border-t border-line">{d.latest.notes.join(" · ")}</p> : null}
+                      </Card>
+                      </details>
+                    )}
+                  </div>
+                </details>
+              )}
+            </Step>
+
+            <Step n={2} title="Idea" state={!researched ? "later" : liveDrafts.length > 0 || emailed ? "done" : "now"} status={primary ? primary.title : researched ? "No idea found" : ""}>
               {primary && (
                 <Card
                   title={primary.title}
@@ -520,7 +638,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                 </Card>
               )}
               {secondary.length > 0 && (
-                <Card title="Other ideas you could offer" description="Different from the main one. Pick one to raise it instead: the email is then written about that idea." padded={false}>
+                <Card title="Other ideas you could offer" padded={false}>
                   <ul className="divide-y divide-line">
                     {secondary.map((o) => (
                       <li key={o.id} className="px-5 py-3 text-sm">
@@ -549,16 +667,14 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                   </ul>
                 </Card>
               )}
-            </>
-          )}
+              {!primary && <div className="surface p-5 text-sm text-ink-muted">The research found no idea worth raising with this business.</div>}
+            </Step>
 
-          {tab === "outreach" && (
-            <>
+            <Step n={3} title="Email" state={!primary ? "later" : emailed && openReplies === 0 ? "done" : "now"} status={emailed ? (openReplies > 0 ? `Emailed · ${openReplies} repl${openReplies === 1 ? "y" : "ies"} to answer` : `Emailed · ${stageLabel(stage)}`) : liveDrafts[0] ? ({ ready: "Written, ready to review", needs_review: "Written, needs review", approved: "Approved", excluded: "Excluded" }[liveDrafts[0].status] ?? "Written") : primary ? "Not written yet" : ""}>
               {liveDrafts.length === 0 && (
                 <EmptyState
                   icon="mail"
                   title="No email yet"
-                  description={!primary ? "Research the business first: an email is written from one solid idea." : b.verdict === "qualified" ? (cfg.ai.enabled ? "It is written automatically and appears here when it has passed its checks." : "Writing emails needs a model key (ANTHROPIC_API_KEY).") : "Emails are written automatically for qualified businesses. You can also have one written now."}
                   action={
                     primary && cfg.ai.enabled && !busy ? (
                       <form action={generateDraftAction}>
@@ -571,285 +687,246 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                   }
                 />
               )}
-              {liveDrafts.map((dr) => (
-                <Card
-                  key={dr.id}
-                  title={
-                    <span className="flex items-center gap-2 flex-wrap">
-                      {dr.step > 0 ? "Follow-up" : "First email"} <StatusPill status={dr.status} label={dr.status === "failed" ? "Not sent" : undefined} />
-                    </span>
-                  }
-                  description={`${dr.subject ?? ""}${dr.toEmail ? ` · to ${dr.toEmail}` : ""}${dr.sentAt ? ` · sent ${fmtDate(dr.sentAt)}` : dr.scheduledAt && dr.status === "queued" ? ` · scheduled ${fmtDate(dr.scheduledAt)}` : ""}`}
-                  actions={
-                    <Link href={`/outreach/${dr.id}`} className="btn btn-sm">
-                      {["needs_review", "ready", "approved"].includes(dr.status) ? "Review" : "Open"}
-                    </Link>
-                  }
-                >
-                  <p className="letter-text whitespace-pre-wrap">{dr.body}</p>
-                  {dr.lastError && <p className="text-xs text-bad mt-3">{dr.lastError}</p>}
-                </Card>
-              ))}
-              {d.inbound.length > 0 && (
-                <Card title="What they wrote back" description="Picked up from your inbox. The original text is kept as it arrived; the label is a reading you can correct." padded={false}>
-                  <ul className="divide-y divide-line">
-                    {d.inbound.map((m) => (
-                      <li key={m.id} className="px-5 py-4 text-sm" data-inbound={m.id}>
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <Badge tone={m.kind === "bounce" ? "bad" : m.kind === "auto_reply" ? "neutral" : "info"}>{m.kind === "bounce" ? "Bounce" : m.kind === "auto_reply" ? "Automatic reply" : "Reply"}</Badge>
-                          <span className="font-medium">{m.fromName || m.fromEmail}</span>
-                          {m.classification && (
-                            <Badge tone={REPLY_TONE[m.classification] ?? "neutral"} title={m.classifiedBy === "operator" ? "Set by you" : m.classifiedBy === "rules" ? "Recognised by a fixed rule" : `Read by ${m.classifiedBy}${m.classificationConfidence != null ? `, confidence ${Math.round(m.classificationConfidence * 100)}%` : ""}`}>
-                              {REPLY_LABEL[m.classification] ?? m.classification}
-                            </Badge>
-                          )}
-                          {m.matchedBy === "address" && m.kind === "reply" && <Badge title="Matched by the sender's address, not by the email thread">probably about this</Badge>}
-                          {m.handledAt && <Badge tone="ok">handled</Badge>}
-                          <span className="text-xs text-ink-faint ml-auto">{fmtDate(m.receivedAt)}</span>
+              {/* The conversation in the order it happened: what you sent, what they answered, and last what waits for you now. */}
+              {thread.length > 0 && (
+                <ol className="space-y-3" aria-label="Conversation">
+                  {thread.map((t) =>
+                    t.kind === "ours" ? (
+                      <li key={t.draft.id} className={`surface overflow-hidden border-l-4 ${t.pending ? "border-l-accent" : "border-l-line-strong"}`}>
+                        <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b border-line">
+                          <span className="text-sm font-semibold">{t.pending ? `${stepLabel(t.draft.step)} · waiting for you` : `You · ${stepLabel(t.draft.step).toLowerCase()}`}</span>
+                          <StatusPill status={t.draft.status} label={t.draft.status === "failed" ? "Not sent" : undefined} />
+                          <span className="text-xs text-ink-faint">{t.draft.sentAt ? fmtDate(t.draft.sentAt) : t.draft.scheduledAt && t.draft.status === "queued" ? `goes out ${fmtDate(t.draft.scheduledAt)}` : ""}</span>
+                          <Link href={`/outreach/${t.draft.id}`} className={`btn btn-sm ml-auto ${t.pending ? "btn-primary" : ""}`}>
+                            {t.pending ? "Review" : "Open"}
+                          </Link>
                         </div>
-                        {m.classificationSummary && <p className="text-xs text-ink-muted mt-1.5">{m.classificationSummary}</p>}
-                        <p className="letter-text mt-2 whitespace-pre-wrap rounded-lg bg-surface-2 border border-line px-4 py-3">{stripQuoted(m.bodyText).slice(0, 3000)}</p>
-                        {m.suggestedReply && !m.handledAt && (
-                          <div className="mt-3">
-                            <div className="label">A possible answer (send it from your own mailbox; fill in anything in brackets)</div>
-                            <p className="whitespace-pre-wrap rounded-lg border border-dashed border-line px-3 py-2 text-ink-muted">{m.suggestedReply}</p>
+                        <div className="px-5 py-4">
+                          <div className="text-xs text-ink-faint mb-2">
+                            {t.draft.step > 0 ? "Re: " : ""}
+                            {t.draft.subject}
+                            {t.draft.toEmail ? ` · to ${t.draft.toEmail}` : ""}
                           </div>
-                        )}
-                        {m.kind === "reply" && (
-                          <div className="flex flex-wrap items-center gap-2 mt-3">
-                            {m.fromEmail && (
-                              <a className="btn btn-sm" href={`mailto:${m.fromEmail}?subject=${encodeURIComponent(/^re:/i.test(m.subject ?? "") ? (m.subject ?? "") : `Re: ${m.subject ?? ""}`)}${m.suggestedReply ? `&body=${encodeURIComponent(m.suggestedReply)}` : ""}`}>
-                                <Icon name="mail" /> Answer in my mail program
-                              </a>
-                            )}
-                            <form action={markReplyHandledAction}>
-                              <input type="hidden" name="inboundId" value={m.id} />
-                              <input type="hidden" name="returnTo" value={tabHref("outreach")} />
-                              <button className="btn btn-sm btn-ghost">{m.handledAt ? "Mark as open again" : "Mark as handled"}</button>
-                            </form>
-                            <form action={reclassifyReplyAction} className="flex items-center gap-1.5 ml-auto">
-                              <input type="hidden" name="inboundId" value={m.id} />
-                              <input type="hidden" name="returnTo" value={tabHref("outreach")} />
-                              <select className="select h-8 py-0 text-xs w-auto" name="category" defaultValue={m.classification ?? "other"} aria-label="What this reply says">
-                                {Object.entries(REPLY_LABEL).map(([k, v]) => (
-                                  <option key={k} value={k}>
-                                    {v}
-                                  </option>
-                                ))}
-                              </select>
-                              <button className="btn btn-sm btn-ghost">Correct</button>
-                            </form>
-                          </div>
-                        )}
+                          <p className="letter-text whitespace-pre-wrap">{t.draft.body}</p>
+                          {t.draft.lastError && <p className="text-sm text-bad mt-2">{t.draft.lastError}</p>}
+                        </div>
                       </li>
-                    ))}
-                  </ul>
-                </Card>
-              )}
-              {outreachHistory && outreachHistory.items.length > 0 && (
-                <Card title="Contact history" description="Emails, calls, meetings and notes, newest first." padded={false}>
-                  <ActivityTimeline activities={outreachHistory.items} />
-                </Card>
-              )}
-            </>
-          )}
-
-          {tab === "activity" && (
-            <Card id="activity" title="Activity" description="Notes, interactions, stage changes and system events." padded={false} className="scroll-mt-4">
-              <form action={addNoteAction} className="flex flex-wrap gap-2 p-5 border-b border-line bg-surface-2">
-                <input type="hidden" name="businessId" value={b.id} />
-                <select className="select w-36" name="type" defaultValue="note">
-                  <option value="note">Note</option>
-                  <option value="call">Call</option>
-                  <option value="email">Email sent</option>
-                  <option value="meeting">Meeting</option>
-                </select>
-                <input className="input flex-1 min-w-[200px]" name="content" placeholder="What happened? Logging a call, email or meeting marks the business as contacted." required />
-                <button className="btn btn-primary">
-                  <Icon name="plus" /> Add
-                </button>
-              </form>
-              {d.activityCount === 0 ? (
-                <EmptyState compact icon="note" title="No activity yet" />
-              ) : (
-                activity && (
-                  <ActivityTimeline
-                    activities={activity.items}
-                    kind={activityKind}
-                    kindHref={(k) => activityHref(k)}
-                    counts={kindCounts(activity.countsByType)}
-                    pagination={{ page: activityPage, pageSize: ACTIVITY_PAGE_SIZE, total: activity.total, href: (p) => activityHref(activityKind, p) }}
-                  />
-                )
-              )}
-            </Card>
-          )}
-
-        </div>
-
-        <aside className="space-y-4 lg:sticky lg:top-6 min-w-0">
-          <Card title="Contact">
-            <ul className="text-sm space-y-2.5">
-              <ContactRow icon="mail" label="Email">
-                {b.email ? (
-                  <>
-                    <a href={`mailto:${b.email}`} className="truncate block" title={b.email}>
-                      {b.email}
-                    </a>
-                    <span className="text-xs text-ink-faint block">
-                      {b.emailSource === "site" ? (
-                        b.emailSourceUrl ? (
-                          <a href={b.emailSourceUrl} target="_blank" rel="noreferrer">
-                            published on their website
-                          </a>
-                        ) : (
-                          "published on their website"
-                        )
-                      ) : b.emailSource === "manual" ? (
-                        "added by you"
-                      ) : (
-                        "from their listing"
-                      )}
-                      {b.emailStatus === "invalid" ? " · does not accept mail" : b.emailStatus === "valid" ? " · domain accepts mail" : ""}
-                    </span>
-                  </>
-                ) : (
-                  <span className="text-warn">none found</span>
-                )}
-                {b.contactName && <span className="text-xs text-ink-muted block">Contact named on the site: {b.contactName}</span>}
-                <details className="mt-1">
-                  <summary className="text-xs text-ink-faint cursor-pointer select-none">{b.email ? "Change" : "Add an address"}</summary>
-                  <form action={setBusinessEmailAction} className="flex gap-1.5 mt-1.5">
-                    <input type="hidden" name="businessId" value={b.id} />
-                    <input className="input h-8 text-xs" type="email" name="email" defaultValue={b.email ?? ""} placeholder="name@their-domain.com" required aria-label="Email address" />
-                    <button className="btn btn-sm">Save</button>
-                  </form>
-                </details>
-              </ContactRow>
-              <ContactRow icon="phone" label="Phone">{b.phone ? <a href={`tel:${b.phone}`}>{formatPhone(b.phone, b.country)}</a> : <span className="text-ink-faint">unknown</span>}</ContactRow>
-              <ContactRow icon="globe" label="Website">
-                {b.website ? (
-                  <span className="min-w-0 flex items-center gap-1.5 flex-wrap">
-                    <a href={b.website} target="_blank" rel="noreferrer" className="truncate inline-flex items-center gap-0.5" title={b.website}>
-                      {b.websiteDomain} <Icon name="external" className="w-3 h-3 shrink-0" />
-                    </a>
-                    {b.websiteSource && /^found_/.test(b.websiteSource) && <Badge tone="info" title="Located by the website finder and verified against the business phone/name">{b.websiteSource === "found_search" ? "found via search" : "found via domain guess"}</Badge>}
-                  </span>
-                ) : (
-                  <span className="text-ink-faint">none</span>
-                )}
-              </ContactRow>
-              {(b.street || b.city) && <ContactRow icon="building" label="Address">{[b.street, [b.city, b.region].filter(Boolean).join(", "), b.postalCode].filter(Boolean).join(" · ")}</ContactRow>}
-            </ul>
-          </Card>
-
-          <Card title="Pipeline" description="Where this business stands and what you do next.">
-            {(() => {
-              const due = d.prospect?.nextActionAt ? new Date(d.prospect.nextActionAt) : null;
-              const overdue = due ? due.getTime() < Date.now() : false;
-              const prio = d.prospect?.priority ?? "normal";
-              return (
-                <>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-sm font-semibold text-ink-muted">Stage</span>
-                    <Badge tone={stageTone(stage)} dot>
-                      {stageLabel(stage)}
-                    </Badge>
-                    {prio === "high" && <Badge tone="warn">high priority</Badge>}
-                  </div>
-                  <form action={updateStageAction} className="mt-2">
-                    <input type="hidden" name="businessId" value={b.id} />
-                    <label className="sr-only" htmlFor="stage">
-                      Move to stage
-                    </label>
-                    <div className="flex gap-2">
-                      <select id="stage" className="select" name="stage" defaultValue={stage}>
-                        {PIPELINE_STAGES.map((s) => (
-                          <option key={s.key} value={s.key}>
-                            {s.label}
-                          </option>
-                        ))}
-                      </select>
-                      <button className="btn shrink-0">Move</button>
-                    </div>
-                  </form>
-
-                  <div className="mt-4 pt-4 border-t border-line">
-                    <div className="text-sm font-semibold text-ink-muted mb-1.5">Next action</div>
-                    {d.prospect?.nextAction ? (
-                      <div className={`rounded-[var(--radius-sm)] border px-3 py-2.5 ${overdue ? "border-bad/40 bg-bad/5" : "border-accent/30 bg-accent-soft/40"}`}>
-                        <div className="text-sm font-medium text-ink">{d.prospect.nextAction}</div>
-                        <div className={`text-xs mt-0.5 ${overdue ? "text-bad" : "text-ink-muted"}`}>
-                          {due ? (
-                            <>
-                              <Icon name="clock" className="w-3 h-3 inline -mt-px mr-1" />
-                              {overdue ? "Overdue · " : "Due "}
-                              {fmtDate(d.prospect.nextActionAt)} ({fmtRelative(d.prospect.nextActionAt)})
-                            </>
-                          ) : (
-                            "No due date"
-                          )}
-                          {" · "}
-                          <span className="capitalize">{prio}</span> priority
-                        </div>
-                        <div className="flex items-center gap-2 mt-2">
-                          <form action={completeNextActionAction}>
-                            <input type="hidden" name="businessId" value={b.id} />
-                            <button className="btn btn-sm" title="Logs it on the Activity tab and clears it">
-                              <Icon name="check" /> Done
-                            </button>
-                          </form>
-                        </div>
-                      </div>
                     ) : (
-                      <p className="text-xs text-ink-faint mb-2">Nothing planned.</p>
-                    )}
-                    {(() => {
-                      const form = (
-                        <form action={setNextActionAction} className="space-y-3">
-                          <input type="hidden" name="businessId" value={b.id} />
-                          <div>
-                            <label className="label" htmlFor="nextAction">
-                              What to do
-                            </label>
-                            <input id="nextAction" className="input" name="nextAction" defaultValue={d.prospect?.nextAction ?? ""} placeholder="e.g. Call to confirm the estimate workflow" />
-                          </div>
-                          <div>
-                            <label className="label" htmlFor="nextActionAt">
-                              When
-                            </label>
-                            <input id="nextActionAt" className="input" type="datetime-local" name="nextActionAt" defaultValue={d.prospect?.nextActionAt ? toLocalInput(d.prospect.nextActionAt) : ""} />
-                          </div>
-                          <div>
-                            <label className="label" htmlFor="priority">
-                              Priority
-                            </label>
-                            <select id="priority" className="select" name="priority" defaultValue={prio}>
-                              <option value="low">Low</option>
-                              <option value="normal">Normal</option>
-                              <option value="high">High</option>
-                            </select>
-                          </div>
-                          <button className="btn">{d.prospect?.nextAction ? "Update next action" : "Save next action"}</button>
-                        </form>
-                      );
-                      return d.prospect?.nextAction ? (
-                        <details className="mt-2">
-                          <summary className="text-xs text-ink-muted cursor-pointer hover:text-ink select-none">Change the next action</summary>
-                          <div className="mt-3">{form}</div>
-                        </details>
-                      ) : (
-                        <details>
-                          <summary className="text-xs text-accent-text cursor-pointer select-none">Plan a next action</summary>
-                          <div className="mt-3">{form}</div>
-                        </details>
-                      );
-                    })()}
+                      <li key={t.msg.id} className="surface overflow-hidden border-l-4 border-l-ok bg-surface-2">
+                        <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-b border-line">
+                          <span className="text-sm font-semibold">{t.msg.fromName || t.msg.fromEmail || "They"}</span>
+                          <Badge tone={t.msg.kind === "bounce" ? "bad" : t.msg.kind === "auto_reply" ? "neutral" : "info"}>{t.msg.kind === "bounce" ? "Bounce" : t.msg.kind === "auto_reply" ? "Automatic reply" : "Reply"}</Badge>
+                          {t.msg.classification && <Badge tone={REPLY_TONE[t.msg.classification] ?? "neutral"}>{REPLY_LABEL[t.msg.classification] ?? t.msg.classification}</Badge>}
+                          {t.msg.handledAt && <Badge tone="ok">handled</Badge>}
+                          <span className="text-xs text-ink-faint ml-auto">{fmtDate(t.msg.receivedAt)}</span>
+                        </div>
+                        <div className="px-5 py-4">
+                          <p className="letter-text whitespace-pre-wrap">{stripQuoted(t.msg.bodyText).slice(0, 3000)}</p>
+                          {t.msg.kind === "reply" && (
+                            <div className="flex flex-wrap items-center gap-2 mt-4 pt-3 border-t border-line">
+                              <form action={markReplyHandledAction}>
+                                <input type="hidden" name="inboundId" value={t.msg.id} />
+                                <input type="hidden" name="returnTo" value={`/businesses/${b.id}`} />
+                                <button className="btn btn-sm">{t.msg.handledAt ? "Reopen" : "Mark as handled"}</button>
+                              </form>
+                              {t.msg.fromEmail && (
+                                <a className="btn btn-sm btn-ghost" href={`mailto:${t.msg.fromEmail}?subject=${encodeURIComponent(/^re:/i.test(t.msg.subject ?? "") ? (t.msg.subject ?? "") : `Re: ${t.msg.subject ?? ""}`)}`}>
+                                  Answer in my mail program
+                                </a>
+                              )}
+                              <form action={reclassifyReplyAction} className="flex items-center gap-1.5 ml-auto">
+                                <input type="hidden" name="inboundId" value={t.msg.id} />
+                                <input type="hidden" name="returnTo" value={`/businesses/${b.id}`} />
+                                <select name="category" className="select h-8 !min-h-0 text-xs w-auto" defaultValue={t.msg.classification ?? "other"} aria-label="What the reply says">
+                                  {Object.entries(REPLY_LABEL).map(([k, v]) => (
+                                    <option key={k} value={k}>
+                                      {v}
+                                    </option>
+                                  ))}
+                                </select>
+                                <button className="btn btn-sm btn-ghost">Correct</button>
+                              </form>
+                            </div>
+                          )}
+                        </div>
+                      </li>
+                    ),
+                  )}
+                </ol>
+              )}
+            </Step>
+          </ol>
+
+            {/* The whole history with its filters, when asked for from the short list on the right. */}
+            {showAllHistory && (
+              <section className="surface overflow-hidden" id="history" aria-label="All history">
+                <div className="flex items-center gap-2 px-5 py-3.5">
+                  <h2 className="text-[0.95rem] font-semibold">All history</h2>
+                  <span className="text-sm text-ink-faint">{d.activityCount}</span>
+                  <Link href={`/businesses/${b.id}`} className="ml-auto text-sm">Close</Link>
+                </div>
+                <div id="activity" className="scroll-mt-4 border-t border-line">
+                  <form action={addNoteAction} className="flex flex-wrap gap-2 p-5 border-b border-line bg-surface-2">
+                    <input type="hidden" name="businessId" value={b.id} />
+                    <select className="select w-36" name="type" defaultValue="note">
+                      <option value="note">Note</option>
+                      <option value="call">Call</option>
+                      <option value="email">Email sent</option>
+                      <option value="meeting">Meeting</option>
+                    </select>
+                    <input className="input flex-1 min-w-[160px]" name="content" placeholder="Add a note, call or meeting" required />
+                    <button className="btn btn-primary">
+                      <Icon name="plus" /> Add
+                    </button>
+                  </form>
+                  {d.activityCount === 0 ? (
+                    <EmptyState compact icon="note" title="No activity yet" />
+                  ) : (
+                    activity && (
+                      <ActivityTimeline
+                        activities={activity.items}
+                        kind={activityKind}
+                        kindHref={(k) => activityHref(k)}
+                        counts={kindCounts(activity.countsByType)}
+                        pagination={{ page: activityPage, pageSize: ACTIVITY_PAGE_SIZE, total: activity.total, href: (p) => activityHref(activityKind, p) }}
+                      />
+                    )
+                  )}
+                </div>
+              </section>
+            )}
+          </div>
+          <aside className="min-w-0 space-y-4" aria-label="Status and history">
+          <section className="surface" aria-label="Stage and next action">
+            <div className="px-5 pt-4 pb-4">
+              <h2 className="text-[0.95rem] font-semibold mb-2.5">Stage</h2>
+              <form action={updateStageAction} className="flex gap-2">
+                <input type="hidden" name="businessId" value={b.id} />
+                <label className="sr-only" htmlFor="stage">
+                  Move to stage
+                </label>
+                <select id="stage" className="select" name="stage" defaultValue={stage}>
+                  {PIPELINE_STAGES.map((st) => (
+                    <option key={st.key} value={st.key}>
+                      {st.label}
+                    </option>
+                  ))}
+                </select>
+                <button className="btn shrink-0">Move</button>
+              </form>
+            </div>
+            {(() => {
+              const na = d.prospect?.nextAction ?? null;
+              const prio = d.prospect?.priority ?? "normal";
+              const due = d.prospect?.nextActionAt ? new Date(d.prospect.nextActionAt) : null;
+              const when = dueTag(d.prospect?.nextActionAt);
+              const form = (
+                <form action={setNextActionAction} className="space-y-3 mt-3">
+                  <input type="hidden" name="businessId" value={b.id} />
+                  <div>
+                    <label className="label" htmlFor="nextAction">
+                      What to do
+                    </label>
+                    <input id="nextAction" className="input" name="nextAction" defaultValue={na ?? ""} placeholder="e.g. Call about the estimate" />
                   </div>
-                </>
+                  <fieldset>
+                    <legend className="label">When</legend>
+                    <div className="flex flex-wrap gap-1.5">
+                      {DUE_CHOICES.map((c) => (
+                        <label key={c.days} className="chip cursor-pointer has-[:checked]:bg-accent-soft has-[:checked]:text-accent-text has-[:checked]:border-transparent">
+                          <input type="radio" name="dueIn" value={c.days} className="sr-only" />
+                          {c.label}
+                        </label>
+                      ))}
+                    </div>
+                    <input id="nextActionAt" className="input mt-2" type="datetime-local" name="nextActionAt" defaultValue={d.prospect?.nextActionAt ? toLocalInput(d.prospect.nextActionAt) : ""} aria-label="Or an exact date and time" />
+                  </fieldset>
+                  <div>
+                    <label className="label" htmlFor="priority">
+                      Priority
+                    </label>
+                    <select id="priority" className="select" name="priority" defaultValue={prio}>
+                      <option value="low">Low</option>
+                      <option value="normal">Normal</option>
+                      <option value="high">High</option>
+                    </select>
+                  </div>
+                  <button className="btn btn-primary btn-sm">Save</button>
+                </form>
+              );
+              return (
+                <div className="border-t border-line px-5 pt-4 pb-5">
+                  <div className="flex items-center gap-2 mb-2">
+                    <h2 className="text-[0.95rem] font-semibold">Next action</h2>
+                    {na && when && <Badge tone={when.tone}>{when.label}</Badge>}
+                    {na && prio === "high" && <Badge tone="warn">High priority</Badge>}
+                  </div>
+                  {na ? (
+                    <>
+                      <p className="text-sm font-medium leading-snug">{na}</p>
+                      {due && <p className="text-xs text-ink-muted mt-1">{due.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</p>}
+                      {/* Done and Change side by side; the form opens under them. */}
+                      <details className="mt-3 group/plan">
+                        <summary className="list-none flex items-center gap-2 select-none">
+                          <button form="next-action-done" className="btn btn-sm btn-primary">
+                            <Icon name="check" /> Done
+                          </button>
+                          <span className="btn btn-sm cursor-pointer">
+                            Change <Icon name="chevronDown" className="w-3.5 h-3.5 transition-transform group-open/plan:rotate-180" />
+                          </span>
+                        </summary>
+                        {form}
+                      </details>
+                      <form id="next-action-done" action={completeNextActionAction}>
+                        <input type="hidden" name="businessId" value={b.id} />
+                      </form>
+                    </>
+                  ) : (
+                    <details className="group/plan">
+                      <summary className="btn btn-sm w-fit list-none cursor-pointer select-none">
+                        Plan a next action <Icon name="chevronDown" className="w-3.5 h-3.5 transition-transform group-open/plan:rotate-180" />
+                      </summary>
+                      {form}
+                    </details>
+                  )}
+                </div>
               );
             })()}
-          </Card>
+          </section>
+
+          <section className="surface" aria-label="History">
+            <div className="flex items-center gap-2 px-5 pt-4">
+              <h2 className="text-[0.95rem] font-semibold">History</h2>
+              <span className="text-sm text-ink-faint">{d.activityCount}</span>
+              {d.activityCount > recent.items.length && (
+                <Link href={`/businesses/${b.id}?tab=activity#history`} className="ml-auto text-sm">
+                  Show all
+                </Link>
+              )}
+            </div>
+            <form action={addNoteAction} className="flex gap-2 px-5 pt-3">
+              <input type="hidden" name="businessId" value={b.id} />
+              <input type="hidden" name="type" value="note" />
+              <input className="input h-9 flex-1 min-w-0" name="content" placeholder="Add a note" required aria-label="Add a note" />
+              <button className="btn btn-sm h-9">Add</button>
+            </form>
+            {recent.items.length === 0 ? (
+              <p className="px-5 py-4 text-sm text-ink-faint">Nothing yet.</p>
+            ) : (
+              <ol className="px-5 py-4 space-y-3">
+                {recent.items.map((a) => (
+                  <li key={a.id} className="flex gap-3 text-sm">
+                    <span className="w-1.5 h-1.5 rounded-full bg-line-strong mt-2 shrink-0" aria-hidden />
+                    <div className="min-w-0">
+                      <div className="line-clamp-2" title={a.content}>{a.content.replace(/\b[a-z]+(?:_[a-z]+)+\b/g, (k) => (PIPELINE_STAGES.some((st) => st.key === k) ? stageLabel(k).toLowerCase() : k))}</div>
+                      <div className="text-xs text-ink-faint">{fmtRelative(a.createdAt)}</div>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </section>
+
 
           <details className="surface">
             <summary className="px-5 py-3.5 text-[0.9rem] font-semibold select-none flex items-center gap-2">
@@ -857,15 +934,24 @@ export default async function BusinessPage({ params, searchParams }: { params: P
               Where it came from
             </summary>
             <div className="px-5 pb-5">
-            <div className="flex items-center gap-3">
-              {b.leadScore != null ? <ScoreRing value={b.leadScore} label="Lead" size={44} tone="neutral" /> : <span className="text-ink-faint text-xs">no lead score</span>}
+            <div className="flex items-start gap-3">
+              {b.leadScore != null ? <ScoreRing value={b.leadScore} label="Lead" size={44} /> : <span className="text-ink-faint text-xs">no lead score</span>}
               <div className="min-w-0 text-xs space-y-1">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <Badge tone={b.kind === "chain" ? "neutral" : "ok"}>{b.kind === "chain" ? "chain / franchise" : b.kind === "independent" ? "independent" : "kind unknown"}</Badge>
+                  <Badge tone={b.kind === "chain" ? "warn" : b.kind === "independent" ? "ok" : "neutral"}>{b.kind === "chain" ? "chain / franchise" : b.kind === "independent" ? "independent" : "kind unknown"}</Badge>
                   {b.operatingStatus && b.operatingStatus !== "unknown" && <Badge tone={b.operatingStatus === "closed" ? "bad" : "ok"}>{b.operatingStatus}</Badge>}
-                  {b.brand && <Badge tone="neutral" title="Brand attached by the discovery source">{b.brand}</Badge>}
+                  {b.brand && <Badge tone="info" title="Brand attached by the discovery source">{b.brand}</Badge>}
                 </div>
-                {(b.leadReasons?.length ?? 0) > 0 && <div className="text-ink-faint">{b.leadReasons!.join(" · ")}</div>}
+                {(b.leadReasons?.length ?? 0) > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {/* What counted for the score in green, what counted against it in amber. */}
+                    {b.leadReasons!.map((r) => (
+                      <Badge key={r} tone={/^no |\bno \w+ yet|chain|franchise|closed|missing|without/i.test(r) ? "warn" : "ok"}>
+                        {r}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
             <div className="mt-3 pt-3 border-t border-line text-xs">
@@ -879,7 +965,8 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                       <Link href={`/searches/${f.searchId}`} className="truncate">
                         {f.name}
                       </Link>
-                      <span className="text-ink-faint shrink-0">#{f.rank} · {fmtRelative(f.createdAt)}</span>
+                      <Badge tone="accent">#{f.rank}</Badge>
+                      <span className="text-ink-faint shrink-0">{fmtRelative(f.createdAt)}</span>
                     </li>
                   ))}
                 </ul>
@@ -891,7 +978,7 @@ export default async function BusinessPage({ params, searchParams }: { params: P
                 {d.sources.map((s) => (
                   <li key={s.id} className="min-w-0">
                     <div className="flex items-center gap-1.5 min-w-0">
-                      <Badge tone="neutral">{s.provider === "google_maps" ? "Google Maps" : s.provider === "overture" ? "Overture Maps" : s.provider === "osm" ? "OpenStreetMap" : s.provider === "csv" ? "CSV / manual" : s.provider}</Badge>
+                      <Badge tone={s.provider === "google_maps" ? "info" : "neutral"}>{s.provider === "google_maps" ? "Google Maps" : s.provider === "overture" ? "Overture Maps" : s.provider === "osm" ? "OpenStreetMap" : s.provider === "csv" ? "CSV / manual" : s.provider}</Badge>
                       {s.sourceUrl ? (
                         <a href={s.sourceUrl} target="_blank" rel="noreferrer" className="truncate inline-flex items-center gap-0.5" title={s.providerId ?? undefined}>
                           open listing <Icon name="external" className="w-3 h-3 shrink-0" />
@@ -913,9 +1000,46 @@ export default async function BusinessPage({ params, searchParams }: { params: P
             </div>
             </div>
           </details>
-        </aside>
+          </aside>
+        </div>
       </div>
     </>
+  );
+}
+
+/** One way to reach the business, in the line under its name. */
+function ContactItem({ icon, children }: { icon: React.ComponentProps<typeof Icon>["name"]; children: React.ReactNode }) {
+  return (
+    <li className="flex items-center gap-2 min-w-0">
+      <Icon name={icon} className="w-4 h-4 shrink-0 text-ink-faint" />
+      <span className="min-w-0">{children}</span>
+    </li>
+  );
+}
+
+/**
+ * One step of the work on a business. "now" is open, "done" folds to its heading (a click opens it again),
+ * "later" is only a heading: there is nothing to do there yet.
+ */
+function Step({ n, title, status, state, children }: { n: number; title: string; status: string; state: "done" | "now" | "later"; children?: React.ReactNode }) {
+  const head = (
+    <>
+      <span className={`w-7 h-7 rounded-full grid place-items-center text-sm font-bold shrink-0 ${state === "done" ? "bg-ok text-accent-fg" : state === "now" ? "bg-accent text-accent-fg" : "bg-surface-3 text-ink-faint border border-line-strong"}`}>{state === "done" ? <Icon name="check" className="w-4 h-4" /> : n}</span>
+      <span className={`text-lg font-semibold ${state === "later" ? "text-ink-faint" : ""}`}>{title}</span>
+      {status && <span className={`text-sm truncate ${state === "now" ? "text-ink-muted" : "text-ink-faint"}`}>{status}</span>}
+    </>
+  );
+  if (state === "later") return <li className="flex items-center gap-3 px-1 py-1">{head}</li>;
+  return (
+    <li>
+      <details open={state === "now" || undefined} className="group/step">
+        <summary className="flex items-center gap-3 px-1 py-1 cursor-pointer select-none list-none">
+          {head}
+          <Icon name="chevronRight" className="w-4 h-4 ml-auto shrink-0 text-ink-faint transition-transform group-open/step:rotate-90" />
+        </summary>
+        <div className="mt-3 space-y-4">{children}</div>
+      </details>
+    </li>
   );
 }
 
@@ -926,7 +1050,7 @@ function Fold({ title, hint, children }: { title: string; hint?: string; childre
       <summary className="flex items-center gap-2 py-3 cursor-pointer select-none hover:text-accent-text">
         <Icon name="chevronRight" className="chevron w-4 h-4 shrink-0 text-ink-faint transition-transform" />
         <span className="text-[0.95rem] font-semibold">{title}</span>
-        {hint && <span className="text-sm text-ink-faint truncate">{hint}</span>}
+        {hint && /\d/.test(hint) && <span className="text-sm text-ink-faint truncate">{hint}</span>}
       </summary>
       <div className="pb-5 pl-6">{children}</div>
     </details>

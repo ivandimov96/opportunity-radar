@@ -13,6 +13,8 @@ import { Logo } from "./logo";
 import { logoutAction } from "@/app/auth-actions";
 
 export interface NavCounts {
+  /** Planned next actions that are due today or overdue. */
+  todo: number;
   /** Businesses the research could not decide on. */
   businesses: number;
   /** Emails waiting for a decision: to review, failed a check, or not sent. */
@@ -28,6 +30,7 @@ export interface SetupGap {
 
 const items: { href: string; label: string; icon: IconName; hint: string; also?: string[]; count?: keyof NavCounts; countHint?: string }[] = [
   { href: "/", label: "Dashboard", icon: "home", hint: "What is waiting for you and where everything stands" },
+  { href: "/todo", label: "To do", icon: "check", hint: "Every planned next action, soonest first", count: "todo", countHint: "due today or overdue" },
   { href: "/businesses", label: "Businesses", icon: "building", hint: "Everything found and researched", also: ["/searches", "/import"], count: "businesses", countHint: "to judge yourself" },
   { href: "/outreach", label: "Outreach", icon: "mail", hint: "Review, approve and send emails", count: "outreach", countHint: "waiting for you" },
   { href: "/pipeline", label: "Pipeline", icon: "kanban", hint: "Where each conversation stands", count: "pipeline", countHint: "to answer" },

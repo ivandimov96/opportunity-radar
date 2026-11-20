@@ -95,16 +95,6 @@ export default async function PipelinePage({ searchParams }: { searchParams: Pro
             <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
             <input className="input pl-9" name="q" placeholder={view === "board" ? "Search the board by name, city or domain" : "Search the history by business"} defaultValue={t.q} aria-label="Search" />
           </div>
-          {view === "board" && (
-            <select className="select w-full sm:w-auto" name="industry" defaultValue={sp.industry ?? ""} aria-label="Industry">
-              <option value="">Any industry</option>
-              {listPlaybooks().map((p) => (
-                <option key={p.key} value={p.key}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          )}
           <button className="btn">Apply</button>
           {(t.q || sp.industry) && (
             <Link href={href({ q: null, industry: null, page: null })} className="btn btn-ghost">

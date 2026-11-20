@@ -12,7 +12,8 @@ import { nowIso } from "@/lib/ids";
 import { renderEvidencePack, type EvidencePack } from "@/lib/outreach/evidence";
 import { capitalizeSubject, checkEmailText, hasBlock, introLine, openingLine, stripSignoff, subjectIsClean, type EmailText } from "@/lib/outreach/validate";
 import { callStructured } from "./client";
-import { CHECK_SYSTEM, FOLLOWUP_SYSTEM, OUTREACH_SYSTEM, SUBJECTS_SYSTEM } from "./prompts";
+import { CHECK_BACK_SYSTEM, CHECK_SYSTEM, FOLLOWUP_SYSTEM, LAST_NOTE_SYSTEM, OUTREACH_SYSTEM, SUBJECTS_SYSTEM } from "./prompts";
+import { stepNoun, type WrittenStep } from "@/lib/outreach/steps";
 import { EmailCheckSchema, OutreachSchema, SubjectsSchema } from "./schemas";
 
 export interface OutreachContext {
@@ -36,9 +37,13 @@ export interface OutreachContext {
   /** A different idea from the research. The first email raises one idea only; this one can be the new angle of the follow-up. */
   also?: { inPlainWords: string; scope?: string | null } | null;
   pack: EvidencePack;
-  /** 0 = first email, 1 = follow-up in the same thread. */
-  step: 0 | 1;
+  /** 0 = first email; 1 follow-up, 2 last note, 3 check-back: all in the first email's thread (steps.ts). */
+  step: WrittenStep;
   firstEmail?: { subject: string; body: string } | null;
+  /** The follow-up that also went unanswered (for the last note). */
+  followUpEmail?: { body: string } | null;
+  /** What they answered and when (for the check-back after a "not now"). */
+  theirReply?: { receivedAt: string; summary: string } | null;
   /** Other emails in the batch, so this one does not repeat them. */
   others: { subject: string; body: string; label: string }[];
   /** What the operator asked for when regenerating. */
@@ -74,7 +79,7 @@ export function buildOutreachInput(ctx: OutreachContext, problems: string[] = []
 Greeting to use as the first line: ${ctx.greeting}
 
 Sender: ${ctx.sender.name || "the owner"}${ctx.sender.company ? ` of ${ctx.sender.company}` : ""}. What the sender does: ${ctx.sender.offer || "custom software, integrations and automation"}.
-Booking link: ${ctx.step === 1 ? ctx.sender.bookingLink || "(none: include no links)" : "(not used in a first email: include no links)"}
+Booking link: ${ctx.step === 1 || ctx.step === 3 ? ctx.sender.bookingLink || "(none: include no links)" : ctx.step === 2 ? "(not used in a last note: include no links)" : "(not used in a first email: include no links)"}
 ${ctx.sender.voiceSamples.trim() ? `\nVoice samples written by the sender (match rhythm and word choice only):\n<voice>\n${ctx.sender.voiceSamples.trim().slice(0, 4000)}\n</voice>\n` : ""}
 <website_content>
 ${renderEvidencePack(ctx.pack)}
@@ -94,11 +99,11 @@ ${ctx.also.inPlainWords.trim()}
 ` : ""}Background for you only, not for the email (do not list these parts; pick at most one as an example):
 What could be built: ${o.proposedSolution}
 Parts: ${o.components.map((c) => `${c.name} (${c.description})`).join("; ") || "(a single thing)"}
-${ctx.step === 1 && ctx.firstEmail ? `\nTHE FIRST EMAIL (unanswered; do not repeat it):\nSubject: ${ctx.firstEmail.subject}\n${ctx.firstEmail.body}\n` : ""}
+${ctx.step > 0 && ctx.firstEmail ? `\nTHE FIRST EMAIL (${ctx.step === 3 ? "the one they answered" : "unanswered"}; do not repeat it):\nSubject: ${ctx.firstEmail.subject}\n${ctx.firstEmail.body}\n` : ""}${ctx.step === 2 && ctx.followUpEmail ? `\nTHE FOLLOW-UP (also unanswered; do not repeat it):\n${ctx.followUpEmail.body}\n` : ""}${ctx.step === 3 && ctx.theirReply ? `\nTHEIR ANSWER on ${ctx.theirReply.receivedAt.slice(0, 10)} (today is ${new Date().toISOString().slice(0, 10)}), in the words of whoever read it for you:\n<reply_summary>\n${ctx.theirReply.summary.slice(0, 400)}\n</reply_summary>\n` : ""}
 Other emails in this batch (do not reuse their structure or phrasing):
 ${others || "(none yet)"}
 ${ctx.feedback?.trim() ? `\nThe sender asked for this change: ${ctx.feedback.trim().slice(0, 500)}\n` : ""}${problems.length ? `\nYour previous version was rejected. Fix every one of these and change nothing that was fine:\n${problems.map((p) => `- ${p}`).join("\n")}\n` : ""}
-Write the ${ctx.step === 1 ? "follow-up" : "email"}.`;
+Write the ${stepNoun(ctx.step)}.`;
 }
 
 export function buildCheckInput(email: EmailText, pack: EvidencePack): string {
@@ -172,17 +177,19 @@ Write five alternative subjects.`,
 
 export const MAX_WRITE_ATTEMPTS = 2;
 
+const SYSTEM_FOR_STEP: Record<WrittenStep, string> = { 0: OUTREACH_SYSTEM, 1: FOLLOWUP_SYSTEM, 2: LAST_NOTE_SYSTEM, 3: CHECK_BACK_SYSTEM };
+
 export async function writeOutreachEmail(ctx: OutreachContext): Promise<OutreachOutcome> {
   const cfg = getConfig();
   let costUsd = 0;
   let problems: string[] = [];
   let last: OutreachOutcome | null = null;
   for (let attempt = 1; attempt <= MAX_WRITE_ATTEMPTS; attempt++) {
-    const res = await callStructured({ stage: "outreach", effort: cfg.AI_OUTREACH_EFFORT, system: ctx.step === 1 ? FOLLOWUP_SYSTEM : OUTREACH_SYSTEM, user: buildOutreachInput(ctx, problems), schema: OutreachSchema, businessId: ctx.business.id, maxTokens: 8000 });
+    const res = await callStructured({ stage: "outreach", effort: cfg.AI_OUTREACH_EFFORT, system: SYSTEM_FOR_STEP[ctx.step], user: buildOutreachInput(ctx, problems), schema: OutreachSchema, businessId: ctx.business.id, maxTokens: 8000 });
     costUsd += res.usage.costUsd;
     const email: EmailText = {
       // A follow-up continues the thread, so it keeps the first email's subject.
-      subject: ctx.step === 1 && ctx.firstEmail ? ctx.firstEmail.subject : capitalizeSubject(res.data.subject),
+      subject: ctx.step > 0 && ctx.firstEmail ? ctx.firstEmail.subject : capitalizeSubject(res.data.subject),
       body: stripSignoff(res.data.body, ctx.sender.name),
       claims: res.data.claims.map((c) => ({ text: c.text, factKeys: [...new Set(c.fact_keys)] })),
     };

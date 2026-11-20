@@ -17,23 +17,35 @@ import { logActivity } from "@/lib/pipeline/prospects";
 import { getState, setState, getSettings, type AppSettings } from "@/lib/settings";
 import { buildEvidencePack, type EvidencePack } from "./evidence";
 import { campaignInWorkspace } from "./campaigns";
-import { contactBlockers } from "./eligibility";
-import { checkEmailText, hasBlock } from "./validate";
+import { recipientOf, sendBlockers } from "./eligibility";
+import { STEP, stepLabel } from "./steps";
+import { checkAnswerText, checkEmailText, hasBlock } from "./validate";
 
 export type Draft = typeof outreachDrafts.$inferSelect;
 /** Not yet handed to the mailbox: these can still be edited, replaced or excluded. */
 export const REVIEW_STATUSES = ["needs_review", "ready", "approved", "excluded"];
 
-/** The signature every email ends with. Written by code from Settings, never by the model. */
-export function signatureBlock(s: Pick<AppSettings, "senderName" | "senderTitle" | "senderCompany" | "senderWebsite" | "postalAddress">): string {
-  const lines = [s.senderName, [s.senderTitle, s.senderCompany].filter(Boolean).join(", "), s.senderWebsite, s.postalAddress].map((l) => l.trim()).filter(Boolean);
-  const optOut = `If this isn't relevant, just reply "no thanks" and I won't write again.`;
-  return lines.length ? `${lines.join("\n")}\n\n${optOut}` : optOut;
+type SignatureSettings = Pick<AppSettings, "senderName" | "senderTitle" | "senderCompany" | "senderWebsite" | "postalAddress"> & Partial<Pick<AppSettings, "signature" | "optOutLine">>;
+
+/** The signature lines without the opt-out sentence: the operator's own text when they wrote one, otherwise built from their details. */
+export function signatureLines(s: SignatureSettings): string {
+  const own = (s.signature ?? "").replace(/\r/g, "").trim();
+  if (own) return own;
+  return [s.senderName, [s.senderTitle, s.senderCompany].filter(Boolean).join(", "), s.senderWebsite, s.postalAddress].map((l) => l.trim()).filter(Boolean).join("\n");
+}
+
+/** The signature every email ends with: appended by code from Settings, never written by the model. */
+export function signatureBlock(s: SignatureSettings, step = 0): string {
+  const lines = signatureLines(s) ? signatureLines(s).split("\n") : [];
+  // Nothing is added after the signature (decision D55). An opt-out sentence the operator set themselves
+  // (`optOutLine`, no field for it at present) still follows it, except on an answer to someone who wrote to us.
+  const optOut = step === STEP.answer ? "" : (s.optOutLine ?? "").trim();
+  return [lines.join("\n"), optOut].filter(Boolean).join("\n\n");
 }
 
 /** The exact text that is sent: the reviewed body plus the signature. */
-export function composeEmailBody(body: string, s: Parameters<typeof signatureBlock>[0]): string {
-  return `${body.trim()}\n\n${signatureBlock(s)}`;
+export function composeEmailBody(body: string, s: Parameters<typeof signatureBlock>[0], step = 0): string {
+  return `${body.trim()}\n\n${signatureBlock(s, step)}`.trim();
 }
 
 /** The research an email rests on, and the other emails of its batch. */
@@ -100,17 +112,23 @@ export async function saveDraftEdit(draftId: string, subject: string, body: stri
   const draft = await draftInWorkspace(draftId);
   if (!draft) return { ok: false, error: "Email not found" };
   if (!REVIEW_STATUSES.includes(draft.status)) return { ok: false, error: "This email was already handed to the mailbox and can no longer be edited" };
-  const cleanSubject = subject.trim();
+  // An answer stays in its thread: its subject is the thread's and is not edited.
+  const cleanSubject = draft.step === STEP.answer ? (draft.subject ?? "") : subject.trim();
   const cleanBody = body.replace(/\r/g, "").trim();
   if (!cleanBody) return { ok: false, error: "The email body is empty" };
   const edited = cleanSubject !== (draft.subject ?? "") || cleanBody !== draft.body;
   if (!edited) return { ok: true };
   const biz = (await db.select().from(businesses).where(eq(businesses.id, draft.businessId)).get())!;
   const settings = await getSettings();
-  const { pack, others } = await draftEvidence(draft);
   const normalized = (s: string) => s.toLowerCase().replace(/\s+/g, " ");
   const claims = draft.claims.filter((c) => normalized(cleanBody).includes(normalized(c.text)));
-  const issues = [...checkEmailText({ subject: cleanSubject, body: cleanBody, claims }, { pack, bookingLink: settings.bookingLink, step: draft.step, others }), ...recipientIssues(await contactBlockers(biz, settings))];
+  let textIssues: DraftIssue[];
+  if (draft.step === STEP.answer) textIssues = checkAnswerText(cleanBody, { bookingLink: settings.bookingLink });
+  else {
+    const { pack, others } = await draftEvidence(draft);
+    textIssues = checkEmailText({ subject: cleanSubject, body: cleanBody, claims }, { pack, bookingLink: settings.bookingLink, step: draft.step, others });
+  }
+  const issues = [...textIssues, ...recipientIssues(await sendBlockers(draft, biz, settings))];
   // The claim check ran on the old text: its statements no longer describe this email.
   const validation: DraftValidation = { passed: !hasBlock(issues), issues, checkedBy: null, checkedAt: nowIso() };
   const status = draft.status === "excluded" ? "excluded" : validation.passed ? (draft.status === "approved" ? "approved" : "ready") : "needs_review";
@@ -120,25 +138,28 @@ export async function saveDraftEdit(draftId: string, subject: string, body: stri
 }
 
 /** Approves an email for sending. Recipient problems cannot be overridden; text checks can. */
-export async function approveDraft(draftId: string): Promise<{ ok: boolean; error?: string }> {
+export async function approveDraft(draftId: string, by: "operator" | "autopilot" = "operator"): Promise<{ ok: boolean; error?: string }> {
   const db = await getDb();
   const draft = await draftInWorkspace(draftId);
   if (!draft) return { ok: false, error: "Email not found" };
   if (draft.status === "approved") return { ok: true };
   if (!["needs_review", "ready"].includes(draft.status)) return { ok: false, error: `This email is ${draft.status} and cannot be approved` };
   const biz = (await db.select().from(businesses).where(eq(businesses.id, draft.businessId)).get())!;
-  const blockers = await contactBlockers(biz, await getSettings());
+  const blockers = await sendBlockers(draft, biz, await getSettings());
   if (blockers.length) return { ok: false, error: blockers.join(" ") };
   // An email from before the checks existed has never been read by them: run the fixed checks now, so an approval of it is an informed one.
   let textIssues = (draft.validation?.issues ?? []).filter((i) => i.code !== "recipient");
-  if (!draft.validation) {
+  if (!draft.validation && draft.step !== STEP.answer) {
     const { pack, others } = await draftEvidence(draft);
     textIssues = checkEmailText({ subject: draft.subject ?? "", body: draft.body, claims: draft.claims }, { pack, bookingLink: (await getSettings()).bookingLink, step: draft.step, others });
   }
   const overridden = hasBlock(textIssues);
   const validation: DraftValidation = { ...(draft.validation ?? { checkedAt: nowIso() }), passed: !overridden, issues: textIssues, overridden: overridden || undefined, checkedAt: draft.validation?.checkedAt ?? nowIso() };
-  await db.update(outreachDrafts).set({ status: "approved", toEmail: biz.email, validation, updatedAt: nowIso() }).where(eq(outreachDrafts.id, draftId)).run();
-  await logActivity(draft.businessId, "system", overridden ? "Outreach email approved by the operator although a check had failed." : "Outreach email approved for sending.", { draftId });
+  // The autopilot only ever passes on an email whose checks all passed: it has no last word to override them with.
+  if (by === "autopilot" && (overridden || draft.status !== "ready")) return { ok: false, error: "Only an email whose checks all passed goes out on its own" };
+  const claimed = await db.update(outreachDrafts).set({ status: "approved", approvedBy: by, toEmail: recipientOf(draft, biz), validation, updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draftId), eq(outreachDrafts.status, draft.status))).run();
+  if (!claimed.rowsAffected) return { ok: false, error: "This email changed meanwhile" };
+  await logActivity(draft.businessId, "system", by === "autopilot" ? `${stepLabel(draft.step)} passed on for sending by the autopilot (all checks passed, the waiting time is over).` : overridden ? "Outreach email approved by the operator although a check had failed." : "Outreach email approved for sending.", { draftId, by });
   return { ok: true };
 }
 
@@ -154,7 +175,7 @@ export async function approveAllReady(campaignId: string): Promise<number> {
 
 export async function unapproveDraft(draftId: string) {
   const db = await getDb();
-  await db.update(outreachDrafts).set({ status: "ready", updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draftId), eq(outreachDrafts.status, "approved"), inArray(outreachDrafts.businessId, businessIdsOf(db, await workspaceId())))).run();
+  await db.update(outreachDrafts).set({ status: "ready", approvedBy: null, updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draftId), eq(outreachDrafts.status, "approved"), inArray(outreachDrafts.businessId, businessIdsOf(db, await workspaceId())))).run();
 }
 
 /** Takes a recipient out of the batch without deleting the email. */

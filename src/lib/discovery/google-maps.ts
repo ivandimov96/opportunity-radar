@@ -16,6 +16,7 @@
  *  - Listings are Google's data served by Serper; every candidate carries the
  *    place id, the Google Maps URL and the raw listing for provenance.
  */
+import { pagesForResults } from "@/lib/search-cost";
 import { getConfig } from "@/lib/config";
 import { getPlaybook, selectorsFor } from "@/lib/industries";
 import { resolveSearchArea } from "./area";
@@ -222,9 +223,11 @@ export const googleMapsProvider: DiscoveryProvider = {
     let budgetStop: string | null = null;
     const radiusKm = area.radiusKm;
     const center = area.center;
+    // Search credits do not renew: read only as many pages as the number of businesses asked for needs.
+    const pages = pagesForResults(q.maxResults, cfg.SERPER_MAX_PAGES, PAGE_SIZE);
     outer: for (const base of queries) {
       const text = wholeCity && q.city ? `${base} in ${q.city}${q.region ? `, ${q.region}` : ""}` : base;
-      for (let page = 1; page <= cfg.SERPER_MAX_PAGES; page++) {
+      for (let page = 1; page <= pages; page++) {
         opts?.signal?.throwIfAborted();
         opts?.onProgress?.(`Google Maps: "${text}" page ${page}`);
         let fetched: MapsPageFetch;

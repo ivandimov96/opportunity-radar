@@ -9,6 +9,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { DEFAULT_RANGE, RANGE_OPTIONS, type RangeKey } from "@/lib/date-range";
 import { Icon } from "./icons";
+import { holdScroll } from "./keep-scroll";
 
 export function DateRangePicker({ basePath, params = {}, value, from, to, fields, field }: { basePath: string; params?: Record<string, string>; value: RangeKey; from: string | null; to: string | null; fields?: readonly { key: string; label: string }[]; field?: string }) {
   const router = useRouter();
@@ -28,7 +29,8 @@ export function DateRangePicker({ basePath, params = {}, value, from, to, fields
     for (const [k, v] of Object.entries(patch)) if (v) p.set(k, v);
     else p.delete(k);
     const q = p.toString();
-    router.push(`${basePath}${q ? `?${q}` : ""}`);
+    holdScroll();
+    router.push(`${basePath}${q ? `?${q}` : ""}`, { scroll: false });
   };
   const pick = (key: RangeKey) => {
     if (key === "custom") {

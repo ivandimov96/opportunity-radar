@@ -20,7 +20,36 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   // Navigation is five items; the dashboard says what is waiting.
   await page.goto("/");
   const nav = page.getByRole("navigation").first();
-  for (const name of ["Dashboard", "Businesses", "Outreach", "Pipeline", "Settings"]) await expect(nav.getByRole("link", { name, exact: true })).toBeVisible();
+  for (const name of ["Dashboard", "Businesses", "Pipeline", "Settings"]) await expect(nav.getByRole("link", { name, exact: true })).toBeVisible();
+  for (const name of ["To do", "Outreach"]) await expect(nav.getByRole("link", { name: new RegExp(`^${name}`) })).toBeVisible();
+  // Limits and usage are one card of five equal cells, each saying what is left.
+  const usage = page.getByLabel("Today and this month");
+  await expect(usage.getByRole("link")).toHaveCount(5);
+  await expect(usage).toContainText("Search credits");
+  await expect(usage).toContainText("left today");
+  // Nothing is forgotten: the app plans the next action for every business in play, and the list is one click away.
+  await page.goto("/todo");
+  await expect(page.getByRole("heading", { name: "To do" })).toBeVisible();
+  // A plan made by hand stays exactly as it was written; the app adds its own only where there is none.
+  const ownRow = page.locator("li", { hasText: "Review the email and approve it" });
+  await expect(ownRow).toContainText("Barton Creek Auto Care");
+  await expect(ownRow).toContainText("Mine");
+  await expect(page.locator("li", { hasText: "Research failed: try it again or remove the business" })).toContainText("Lone Star Euro Specialists");
+  await expect(page.locator("li", { hasText: "No website was found: add it or remove the business" })).toContainText("Quick Lube Corner");
+  await page.getByLabel("Kind of work").getByRole("link", { name: /^Decisions/ }).click();
+  await expect(page.locator("section li")).toHaveCount(2);
+  // The two rows work together: the "When" row now counts decisions only, and every choice keeps its place.
+  await expect(page.getByLabel("Show").getByRole("link", { name: /^Any time 2$/ })).toBeVisible();
+  await expect(page.getByLabel("Show").getByRole("link", { name: /^Today 2$/ })).toBeVisible();
+  await expect(page.getByLabel("Kind of work").getByRole("link", { name: /^My own 1$/ })).toBeVisible();
+  // Pressing the chosen filter again clears it.
+  await page.getByLabel("Kind of work").getByRole("link", { name: /^Decisions/ }).click();
+  await expect(page.getByLabel("Kind of work").getByRole("link", { name: /^Every kind 3$/ })).toHaveAttribute("aria-current", "page");
+  // Not today: one dropdown moves it to a later day, and it leaves "Today".
+  await ownRow.getByText("Later").click();
+  await ownRow.getByRole("button", { name: "Tomorrow" }).click();
+  await expect(page.getByRole("heading", { name: "Tomorrow" })).toBeVisible();
+  await page.goto("/");
   await expect(nav.getByRole("link", { name: "Patterns" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: /1 email to review/ })).toBeVisible(); // the next step, with one button
   await expect(page.getByRole("heading", { name: "Finish setting up" })).toBeVisible(); // no keys in the test environment
@@ -35,16 +64,16 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await page.goto("/searches");
   await page.getByRole("link", { name: /Auto repair, Austin TX \(fixture\)/ }).click();
   await expect(page.getByRole("link", { name: "Barton Creek Auto Care" })).toBeVisible();
-  await expect(page.getByRole("link", { name: /Export CSV/ })).toHaveAttribute("href", /\/api\/export\?searchId=/);
+  await expect(page.getByRole("link", { name: /^Export$/ })).toHaveAttribute("href", /\/api\/export\?searchId=/);
 
   // Outreach: one email is ready; nothing is approved, so nothing can be sent yet.
   await page.goto("/");
   await page.getByLabel("Waiting for you").getByRole("link", { name: /^Review/ }).click();
   await expect(page).toHaveURL(/\/outreach\?tab=ready/);
-  await expect(page.getByText(/Send approved emails/)).toHaveCount(0); // nothing is approved yet, so there is nothing to send
+  await expect(page.getByText(/Send approved/)).toHaveCount(0); // nothing is approved yet, so there is nothing to send
   const row = page.locator("tr", { hasText: "Barton Creek Auto Care" });
   await expect(row).toContainText("service@barton-creek-auto-care.example");
-  await expect(row).toContainText("Ready to review");
+  await expect(row).toContainText("Ready");
   await row.getByRole("link", { name: "Review" }).click();
 
   // Review: the exact email, why this business, the one idea, and the research behind each statement.
@@ -54,7 +83,6 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await expect(page.getByText("What the email says about them")).toBeVisible();
   await expect(page.getByText("Verified.").first()).toBeVisible();
   await expect(page.getByText(/Independent check: 2 supported/)).toBeVisible();
-  await expect(page.getByText(/If this isn't relevant, just reply "no thanks"/)).toBeVisible(); // the signature, added in code
   const subject = page.locator("#email-subject");
   const body = page.locator("#email-body");
   const original = await body.inputValue();
@@ -98,7 +126,23 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await page.locator("#sender").getByRole("button", { name: "Save" }).click();
   await expect(page.getByText("Saved.")).toBeVisible();
   await expect(page.locator("#signature pre")).toContainText("Ivan Dimov");
-  await page.goto("/settings?tab=mailbox");
+  // The signature can be edited: what is typed is used as written, and nothing is added after it.
+  const sig = page.locator("#signature");
+  await expect(sig.locator("textarea[name=signature]")).toHaveValue(/Ivan Dimov\nDimov Software/);
+  await sig.getByRole("button", { name: "Save signature" }).click(); // saved unchanged: it stays automatic
+  await page.waitForURL(/#signature/); // the save has come back before the next step types
+  await expect(sig.getByRole("button", { name: "Use my details" })).toHaveCount(0);
+  await sig.locator("textarea[name=signature]").fill("Ivan\nDimov Software, Austin");
+  await sig.getByRole("button", { name: "Save signature" }).click();
+  await expect(sig.locator("pre")).toContainText("Ivan\nDimov Software, Austin");
+  await expect(sig.locator("pre")).toHaveText("Ivan\nDimov Software, Austin"); // exactly what was typed, nothing after it
+  await expect(sig.getByRole("button", { name: "Use my details" })).toBeVisible();
+  await expect(sig.locator("textarea")).toHaveCount(1); // one box: the signature itself
+  // One button goes back to the signature built from the details.
+  await sig.getByRole("button", { name: "Use my details" }).click();
+  await expect(sig.locator("pre")).toContainText("Ivan Dimov");
+  await expect(sig.getByRole("button", { name: "Use my details" })).toHaveCount(0);
+  await page.goto("/settings?tab=sending");
   await page.locator('#sending input[name="sendWindowStart"]').fill("0");
   await page.locator('#sending input[name="sendWindowEnd"]').fill("24");
   await page.locator("#sending").getByRole("button", { name: "Save" }).click();
@@ -174,7 +218,6 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   for (const name of ["Lone Star Euro Specialists", "Quick Lube Corner"]) {
     await page.goto("/businesses?range=all");
     await page.getByRole("link", { name }).first().click();
-    await page.getByRole("link", { name: /^Activity/ }).click();
     await page.getByLabel("Move to stage").selectOption("replied");
     await page.getByRole("button", { name: "Move", exact: true }).click();
     await expect(page.getByLabel("Move to stage")).toHaveValue("replied");
@@ -217,15 +260,20 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await expect(latestMove).toContainText("moved on the pipeline board");
   await expect(page.locator('section[aria-label="Today"] li', { hasText: "outreach email sent" }).first()).toContainText("automatic");
 
-  // Business page: the overview (what they do, the one idea and what it rests on), then research, emails, notes.
+  // Business page: who they are on top, then the work as three steps (research, idea, email); finished steps fold to one line.
   await page.goto("/businesses");
   await page.getByRole("link", { name: "Barton Creek Auto Care" }).click();
-  await expect(page.getByText("Next step", { exact: true })).toBeVisible();
+  const steps = page.locator('ol[aria-label="Progress"] > li > details > summary');
+  // The way from found to won is always in view under the name.
+  await expect(page.getByLabel("Journey")).toContainText("Replied");
+  await expect(steps).toHaveCount(3);
   await expect(page.locator('select[name="stage"]')).toHaveValue("replied"); // the board move above, persisted
-  await expect(page.getByRole("link", { name: "Overview", exact: true })).toHaveAttribute("href", /tab=opportunities/);
+  await expect(page.getByText("Independent auto repair shop offering brake")).toBeHidden(); // research is done: folded
+  await steps.nth(0).click();
   await expect(page.getByText("Independent auto repair shop offering brake")).toBeVisible();
-  await expect(page.getByText("published on their website")).toBeVisible(); // where the email address came from
-  await expect(page.getByText("Automated estimate follow-up for pending approvals", { exact: true })).toBeVisible();
+  await expect(page.getByText("from their website").first()).toBeVisible(); // where the email address came from
+  await expect(steps.nth(1)).toContainText("Automated estimate follow-up for pending approvals"); // the idea, named on its folded step
+  await steps.nth(1).click();
   await expect(page.getByText("The one idea to raise")).toBeVisible();
   // The page leads with the idea, what it is worth and what to ask; the reasoning opens on a click.
   await expect(page.getByLabel("Progress")).toContainText("Emailed");
@@ -237,26 +285,27 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await expect(page.getByRole("button", { name: "Raise this idea instead" })).toHaveCount(0); // already emailed: the idea that was raised stays
   await page.getByText("How the two scores were calculated").click();
   await expect(page.getByText(/Evidence cited/).first()).toBeVisible();
-  await page.getByRole("link", { name: /^Research\d/ }).click(); // the tab: label + count
+  await page.getByText("Everything the research found").click();
   await expect(page.getByRole("heading", { name: "Verified facts" })).toBeVisible();
   await expect(page.getByText("How customers book", { exact: true })).toBeVisible();
   await expect(page.getByText("phone only").first()).toBeVisible();
   await expect(page.getByText(/looked for and not found on the site/)).toBeVisible(); // absences are listed once, never as facts
-  await page.getByRole("link", { name: /^Emails\d/ }).click();
+  await steps.nth(2).click();
   await expect(page.getByText("First email")).toBeVisible();
   await expect(page.getByText("Edited subject line").first()).toBeVisible();
-  await page.getByRole("link", { name: /^Activity\d/ }).click();
   await page.locator('input[name="content"]').fill("Owner called back, wants a demo next week");
   await page.getByRole("button", { name: "Add", exact: true }).click();
-  await expect(page.getByText("Owner called back, wants a demo next week")).toBeVisible();
+  await expect(page.getByText("Owner called back, wants a demo next week").first()).toBeVisible();
+  // The short list holds the latest few; the whole history, with its filters, is one click away.
+  await page.getByRole("link", { name: "Show all" }).click();
   await expect(page.locator("section li", { hasText: /Outreach email sent/ }).first()).toBeVisible();
 
   // A business the research set aside says so, and nothing was written for it.
   await page.goto("/businesses");
   await page.getByRole("link", { name: "Northside Transmission & Brake" }).click();
   await expect(page.getByText("Not a fit").first()).toBeVisible();
-  await page.getByRole("link", { name: /^Emails\d/ }).click();
-  await expect(page.getByText("No email yet")).toBeVisible();
+  await expect(page.getByText("The research found no idea worth raising with this business.")).toBeVisible();
+  await expect(page.getByText("No email yet")).toHaveCount(0); // no idea, so the email step has nothing to do
 
   // Remove it for good: the business goes, and it is remembered so a later search leaves it out.
   await page.getByRole("button", { name: "Remove", exact: true }).click();
@@ -290,6 +339,34 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await expect(page.locator("#do-not-contact li", { hasText: "blocked@example.com" })).toHaveCount(0);
   await page.goto("/settings?tab=system");
   await expect(page.getByText("Needs a key").first()).toBeVisible();
+
+  // Who presses Send: manual until the operator chooses otherwise; choosing it is not yet sending (too few emails sent by hand).
+  // Settings is a menu of sections, each about one thing.
+  await expect(page.getByLabel("Settings sections").getByRole("link")).toHaveText(["Your details", "Mailbox", "Sending limits", "Automatic sending", "Finding and research", "Budget and usage", "Do not contact", /^Connections/]);
+  await page.getByLabel("Settings sections").getByRole("link", { name: "Automatic sending" }).click();
+  await expect(page.locator("#autopilot input[name=sendMode][value=manual]")).toBeChecked();
+  await page.locator("#autopilot input[name=sendMode][value=hold]").check();
+  await page.locator("#autopilot #holdHours").fill("6");
+  await page.locator("#autopilot").getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#autopilot input[name=sendMode][value=hold]")).toBeChecked();
+  await expect(page.locator("#autopilot #holdHours")).toHaveValue("6");
+  await expect(page.locator("#autopilot").getByText("Chosen, but not sending yet")).toBeVisible();
+  await page.goto("/outreach");
+  await expect(page.getByText("Sending on its own is chosen, but not active yet")).toBeVisible();
+  // Searching on its own needs a target; a line that names one is kept.
+  await page.goto("/settings?tab=automation");
+  await page.locator("#automation #searchTargets").fill("sign makers | GB\nnonsense line");
+  await page.locator("#automation input[name=autoSearch]").check();
+  await page.locator("#automation").getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#automation #searchTargets")).toHaveValue("sign makers | GB");
+  await expect(page.locator("#automation input[name=autoSearch]")).toBeChecked();
+  // Back to manual, so nothing in this test database sends or searches on its own.
+  await page.locator("#automation input[name=autoSearch]").uncheck();
+  await page.locator("#automation").getByRole("button", { name: "Save" }).click();
+  await page.goto("/settings?tab=autopilot");
+  await page.locator("#autopilot input[name=sendMode][value=manual]").check();
+  await page.locator("#autopilot").getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("#autopilot input[name=sendMode][value=manual]")).toBeChecked();
 });
 
 test("new search form takes any kind of business in plain words and says what the search will cost", async ({ page }) => {
@@ -302,12 +379,50 @@ test("new search form takes any kind of business in plain words and says what th
   const kind = page.getByLabel("Kind of business");
   await kind.fill("sign makers");
   const cost = page.getByLabel("Expected cost");
+  // Only the pages the number asked for needs are read: up to 20 is one page (3 credits), 60 is three.
+  await page.getByRole("radio", { name: /Up to 20/ }).click();
+  await expect(cost).toContainText("3 search credits");
+  await page.getByRole("radio", { name: /Up to 60/ }).click();
   await expect(cost).toContainText("9 search credits");
-  await expect(cost).toContainText("Total");
-  await page.locator('input[name="maxResults"]').fill("20");
+  await page.getByRole("radio", { name: /Up to 20/ }).click();
+  await expect(cost).toContainText("3 search credits");
   await expect(cost).toContainText("Research, up to 20");
-  await page.getByText("Research them straight away").click(); // research off: only the search itself costs something
+  await page.getByRole("radio", { name: /^Save them/ }).click(); // research off: only the search itself costs something
   await expect(cost).toContainText("not started");
+  await expect(cost).toContainText("Total");
+  await expect(page.locator('input[name="autoInvestigate"]')).toHaveValue("off");
+  await expect(page.locator('input[name="autoSave"]')).toHaveValue("on");
+  await page.getByRole("radio", { name: /^Show me the list/ }).click();
+  await expect(page.locator('input[name="autoSave"]')).toHaveValue("off");
+  await page.getByRole("radio", { name: /^Save and research/ }).click();
+  await expect(page.locator('input[name="autoInvestigate"]')).toHaveValue("on");
+  await expect(page.getByText("The search will look for sign makers, exactly as written.")).toBeVisible();
+  // Ideas by field fill the box; typing part of a word offers the matching ones.
+  await page.getByRole("tab", { name: "Professional services" }).click();
+  await page.getByRole("button", { name: "Accountants" }).click();
+  await expect(kind).toHaveValue("accountants");
+  await kind.fill("roof");
+  await page.getByLabel("Matching ideas").getByRole("button", { name: "Roofers" }).click();
+  await expect(kind).toHaveValue("roofers");
+  await page.getByRole("button", { name: "Clear the field" }).click();
+  await expect(kind).toHaveValue("");
+  // Nothing chosen: the summary says what is missing and shows no table of zeros.
+  const summary = page.getByLabel("Your choices");
+  await expect(summary).toContainText("Choose a kind of business");
+  await expect(summary).toContainText("Choose a city");
+  await expect(page.getByText("Shown once you choose a kind of business.")).toBeVisible();
+  // The full list by field, narrowed by its own filter; a type from it fills the box, and words not in it can still be used.
+  await page.getByRole("button", { name: /^All types \(\d+\)$/ }).click();
+  await page.getByLabel("Filter all types").fill("hire");
+  const all = page.getByLabel("All types", { exact: true });
+  await expect(all.getByRole("button", { name: "Skip hire" })).toBeVisible();
+  await expect(all.getByRole("button", { name: "Accountants" })).toHaveCount(0);
+  await all.getByRole("button", { name: "Marquee hire" }).click();
+  await expect(kind).toHaveValue("marquee hire");
+  await page.getByLabel("Filter all types").fill("alpaca trekking");
+  await page.getByRole("button", { name: "use “alpaca trekking”" }).click();
+  await expect(kind).toHaveValue("alpaca trekking");
+  await kind.fill("");
   // Typing a word a ready-made type covers offers that type; it is never switched on its own.
   await kind.fill("dentist");
   await page.getByRole("button", { name: "Dental practices" }).first().click();
@@ -319,10 +434,117 @@ test("new search form takes any kind of business in plain words and says what th
   await expect(page.getByRole("option", { name: /Munich|München/ }).first()).toBeVisible();
 });
 
+test("where: allowed countries first, city shortcuts, the region follows the city, and a repeat is announced", async ({ page }) => {
+  await page.goto("/searches/new");
+  const city = page.locator('input[name="city"]');
+  const region = page.locator('select[name="region"]');
+  // The form opens on the last search (auto repair, Texas) with no city filled in: the city is always chosen anew.
+  await expect(city).toHaveValue("");
+  // No country limit is set: every country is offered alike, and none carries a warning.
+  await expect(page.locator('select[name="country"] optgroup')).toHaveCount(1);
+  // The largest cities are one click away; the one already searched for this kind of business is marked, and the next one is offered.
+  const largest = page.getByLabel("Largest cities");
+  await expect(largest.getByRole("button", { name: /Houston/ })).toBeVisible();
+  await expect(largest.getByRole("button", { name: /Austin/ })).toHaveAttribute("title", /Searched .*4 added/);
+  await expect(page.getByText("Next one you have not searched for automotive repair:")).toBeVisible();
+  await largest.getByRole("button", { name: /Austin/ }).click();
+  await expect(city).toHaveValue("Austin");
+  await expect(page.getByText(/You searched for automotive repair in Austin/)).toBeVisible();
+  await expect(page.getByText(/Austin, Texas, United States · about .* people\. The search covers the whole city: about \d+ km around the centre\./)).toBeVisible();
+  await expect(page.locator('input[name="centerLat"]')).not.toHaveValue("");
+  // Another kind of business in the same city is not a repeat.
+  await page.getByLabel("Kind of business").fill("sign makers");
+  await expect(page.getByText(/You searched for/)).toHaveCount(0);
+  // Without a state the city list covers the whole country, and picking a city fills its state in.
+  await region.selectOption("");
+  await city.fill("Minneap");
+  await page.getByRole("option", { name: /Minneapolis, Minnesota/ }).click();
+  await expect(region).toHaveValue("MN");
+  await expect(city).toHaveValue("Minneapolis");
+  await expect(page.getByText(/Minneapolis, Minnesota, United States · about/)).toBeVisible();
+  // A name typed but not picked is flagged; typing it in full and leaving the field picks it.
+  await city.fill("Rochest");
+  await expect(page.getByText(/“Rochest” is not picked from the list yet/)).toBeVisible();
+  await city.fill("Rochester");
+  await expect(page.getByRole("option", { name: /Rochester/ }).first()).toBeVisible();
+  await page.getByLabel("Kind of business").click();
+  await expect(page.getByText(/Rochester, Minnesota, United States · about/)).toBeVisible();
+  // "Around the centre" starts from a distance that fits the city.
+  await page.getByText("Around the centre", { exact: true }).click();
+  await expect(page.getByText(/The search covers \d+ km around the centre\./)).toBeVisible();
+  // The same search in more cities at once: each is a search of its own, and the cost covers all of them.
+  await page.getByRole("radio", { name: /Up to 20/ }).click();
+  const also = page.getByLabel("Also search");
+  await also.getByRole("button", { name: /Saint Paul/ }).click();
+  await also.getByRole("button", { name: /Duluth/ }).click();
+  const cost = page.getByLabel("Expected cost");
+  await expect(cost).toContainText("Finding them, 3 searches");
+  await expect(cost).toContainText("9 search credits");
+  await expect(page.getByText(/3 cities: Rochester, Saint Paul, Duluth/)).toBeVisible();
+  await expect(page.getByLabel("Your choices")).toContainText("Rochester and 2 more cities");
+  await expect(page.getByLabel("Your choices")).toContainText("Up to 20 in each city");
+  await expect(page.locator('input[name="moreCities"]')).toHaveValue(/Saint Paul.*Duluth/);
+  await page.getByRole("button", { name: "Only Rochester" }).click();
+  await expect(cost).toContainText("3 search credits");
+  // Review limits narrow the list to active businesses.
+  await page.getByRole("button", { name: "20+" }).click();
+  await expect(page.locator('input[name="minReviews"]')).toHaveValue("20");
+  await page.getByRole("button", { name: "4★" }).click();
+  await expect(page.locator('input[name="minRating"]')).toHaveValue("4");
+  // Any country can be searched and emailed; its region word is its own.
+  await page.locator('select[name="country"]').selectOption("GB");
+  await expect(page.getByText(/You limited emailing/)).toHaveCount(0);
+  await expect(page.locator('label[for="region"]')).toContainText("Nation");
+  await page.getByLabel("Largest cities").getByRole("button", { name: /Birmingham/ }).click();
+  await expect(city).toHaveValue("Birmingham");
+  await expect(region).toHaveValue("ENG");
+});
+
+test("loading: the radar greets on arrival only; the dashboard and the to-do list show their outline", async ({ page, context }) => {
+  // Just signed in (the test's own sign-in, seconds ago): the first page is announced by the radar.
+  const arriving = await (await page.request.get("/")).text();
+  expect(arriving).toContain("loader-in");
+  // Once the short "just arrived" mark is gone, the dashboard loads with its own outline and no radar.
+  await context.clearCookies({ name: "radar_welcome" });
+  const working = await (await page.request.get("/")).text();
+  expect(working).toContain("Loading the dashboard");
+  expect(working).not.toContain("loader-in");
+  expect(await (await page.request.get("/todo")).text()).toContain("Loading the to-do list");
+  // A visitor (no session) still gets the radar on the front page.
+  await context.clearCookies();
+  expect(await (await page.request.get("/")).text()).toContain("loader-in");
+});
+
+test("businesses: the filters offer what the data holds, and narrow the list", async ({ page }) => {
+  await page.goto("/businesses?range=all");
+  await page.getByText("More filters").click();
+  // Kinds, cities and searches come from the businesses themselves, with how many each has.
+  await expect(page.locator('select[name="category"] option')).toContainText(["Any kind", /^car repair \(\d\)$/]);
+  await expect(page.locator('select[name="city"] option')).toContainText(["Any city", /^Austin \(\d\)$/]);
+  await expect(page.locator('select[name="search"] option')).toContainText(["Any search", /^Auto repair, Austin TX \(fixture\) \(\d\)$/]);
+  await page.locator('select[name="result"]').selectOption("qualified");
+  await page.getByRole("button", { name: "Apply" }).click();
+  await expect(page.locator("tbody tr")).toHaveCount(1);
+  await expect(page.locator("tbody tr")).toContainText("Barton Creek Auto Care");
+  await expect(page.getByRole("link", { name: /Qualified/ }).filter({ has: page.locator("svg") }).first()).toBeVisible(); // the active filter as a removable pill
+  // Contact and next-action filters work on what is known about each business.
+  await page.goto("/businesses?range=all&contact=no_email");
+  await expect(page.locator("tbody tr").first()).toBeVisible();
+  await expect(page.locator("tbody tr", { hasText: "Barton Creek Auto Care" })).toHaveCount(0); // the one with an email is not among them
+  await page.goto("/businesses?range=all&due=planned");
+  await expect(page.locator("tbody tr").first()).toBeVisible();
+  // The search box also finds a business by its kind.
+  await page.goto("/businesses?range=all&q=car_repair");
+  await expect(page.locator("tbody tr", { hasText: "Barton Creek Auto Care" })).toHaveCount(1);
+  await page.goto("/businesses?range=all&q=no-such-kind");
+  await expect(page.locator("tbody tr")).toHaveCount(0);
+});
+
 test("search form validates inline, keeps values and suggests cities by state", async ({ page }) => {
   await page.goto("/searches/new");
   // Sub-category chips narrow the search; each one is its own query, and the cost says so.
   const cost = page.getByLabel("Expected cost");
+  await page.getByRole("radio", { name: /Up to 60/ }).click();
   await page.getByRole("button", { name: /Tire shops/ }).click();
   await expect(cost).toContainText("9 search credits");
   await page.getByRole("button", { name: /Transmission specialists/ }).click();
@@ -340,12 +562,12 @@ test("search form validates inline, keeps values and suggests cities by state", 
   // Invalid: no city, bad radius.
   await city.fill("");
   await page.locator('input[name="radiusKm"]').fill("500");
-  await page.locator('input[name="maxResults"]').fill("7");
+  await page.getByRole("radio", { name: /Up to 40/ }).click();
   await page.getByRole("button", { name: /Start search/ }).click();
   await expect(page.getByText(/things? to fix/).first()).toBeVisible(); // callout at the top and the note under the button
   await expect(page.getByText(/Enter a city: sources are read city by city/)).toBeVisible();
   await expect(page.getByText(/Radius must be at most 100 km/)).toBeVisible();
-  await expect(page.locator('input[name="maxResults"]')).toHaveValue("7");
+  await expect(page.locator('input[name="maxResults"]')).toHaveValue("40");
   await expect(page.locator('select[name="region"]')).toHaveValue("MN");
   await expect(page.getByRole("button", { name: /Tire shops/ })).toHaveAttribute("aria-pressed", "true");
 });
@@ -371,7 +593,7 @@ test("mobile layout exposes navigation and the primary action", async ({ page })
 
 test("list pages share one table model: search, sort, date range, pagination; system page shows jobs", async ({ page }) => {
   await page.goto("/businesses?pageSize=10");
-  await expect(page.getByRole("columnheader", { name: /Priority/ })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: /Score/ })).toBeVisible();
   await page.locator("th").getByRole("link", { name: "Business" }).click(); // sort by name
   await expect(page).toHaveURL(/sort=name/);
   await expect(page.getByRole("columnheader", { name: /^Business/ })).toHaveAttribute("aria-sort", /ascending|descending/);

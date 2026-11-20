@@ -629,3 +629,121 @@ The founder wants to open the product to paying users. Stage 1 of three, built n
 Stage 2 (not built): a workspace per user, which means a user on every table and a mailbox per
 user. Stage 3 (not built): plans and payments.
 
+
+## D50 — The app may run on its own: searching, a longer sequence, answers, and sending without a click (2026-11-20)
+The founder asked for "fully automated software for finding clients". Three steps still needed a person:
+starting a search, approving and sending, and answering replies. Each now has an automatic path, and
+every one of them is **off until the operator switches it on** in Settings. The defaults behave as before.
+
+- **Who presses Send** (`sendMode`: manual | hold | auto; `src/lib/outreach/autopilot.ts`). "hold" sends a
+  checked email once it has waited `holdHours` since it was written or last edited; "auto" sends it at
+  the next scheduler run. The autopilot uses the operator's own road (approve, then "Send approved" for
+  the open batch), so pacing, the daily limit, the send-time recipient check and at-most-once sending
+  are untouched. Guards, all in code:
+  - only emails whose checks ALL passed (`ready`); `needs_review` always waits for a person;
+  - not before the operator has sent 20 emails by hand (`approved_by` records who approved);
+  - a UK business whose name and pages show no legal form (Ltd, LLP, a company number) waits for the
+    operator: sole traders need consent (`automaticSendHold`);
+  - a daily limit that starts at 10 and rises by 5 a week up to the operator's number (`limits.ts`);
+  - a pause the app sets itself when ≥2 and ≥5% of the last 50 emails bounced or led to an opt-out, or
+    3 sends failed in a day, and when the operator presses "Stop sending". Only the operator resumes.
+  Rejected: a per-business-type trust count (more state than one operator needs) and a daily summary
+  email to the operator (the Outreach page shows what goes out and when).
+- **Sequence** (`steps.ts`): first email (0), follow-up (1), last note (2), then nothing. `followUpCount`
+  chooses 0, 1 or 2. A reply ends it: unsent steps are withdrawn and a queued one is refused at send
+  time. An automatic reply postpones the next step by a week (`prospects.hold_until`).
+- **"Not now"** sets `prospects.recontact_at` (`recontactDays`, default 90); one check-back (step 3) is
+  written when it comes due.
+- **Answers** (`answers.ts`): when a reply is read and an answer makes sense, the suggested answer
+  becomes an email of its own (step 9) in the same thread, to the person who wrote, without the opt-out
+  line. It is reviewed and sent like any email, which also records what was answered. On its own
+  (`autoAnswer`) only an answer that needs no decision may go: a booking link for a meeting request, a
+  "noted" for "not now". "Yes, send it", a question, a referral, a doubtful reading, a reply matched by
+  address only, and a third answer in one conversation always wait for the operator.
+- **Searching** (`discovery/auto-search.ts`): the operator lists targets ("sign makers | GB"); when
+  fewer than a day's research is in stock, the scheduler starts one search in the largest city of the
+  least-searched target that has not been searched for that kind of business. One page (20 listings,
+  3 credits), at most `searchesPerDay`, never beyond the credit budget.
+- The fixed checks for sending domains (`email/domain-health.ts`) read SPF and DMARC from public DNS
+  when the operator checks the mailbox connection.
+
+What this does not do: build the mock-up a "yes" asks for, write to a person a reply refers to, or
+check a company register. Those answers wait for the operator.
+
+## D51 — No country limit on emailing by default (2026-11-20)
+The founder: "we should be able to send to every kind of business a proposition". The allowed-countries
+list (default US, later US and GB) blocked every email to a business elsewhere. It is now empty by
+default, which means every country; the founder's own setting was emptied too. The setting stays as an
+optional limit ("Only email these countries") for an operator who wants one, and the search form only
+warns when such a limit is set. Accepted risk, stated to the founder beforehand: several countries
+(Germany and much of the EU, Canada) require consent before unasked-for business email, and the sender
+is responsible. Unchanged: the opt-out line, the do-not-contact list, never the same address twice,
+and the rule that automatic sending leaves a UK business that does not show it is a company to the operator.
+
+## D52 — The search form reworked, and a search reads only the pages it needs (2026-11-20)
+- **Pricing fix.** A search used to read every page allowed (3 pages, 9 credits) whatever number of
+  businesses was asked for. It now reads `ceil(asked / 20)` pages, at most `SERPER_MAX_PAGES`
+  (`pagesForResults` in `src/lib/search-cost.ts`, used by the provider and the estimate alike): 20
+  businesses cost 3 credits. The credits do not renew, so this triples what they buy. Trade-off: the
+  best 20 are picked from 20 listings, not from 60.
+- **Likely cost beside the ceiling.** The estimate shows "likely" (businesses without a public email
+  cost no AI; only the ones that qualify get an email, from the workspace's own outcomes once there
+  are ten) and "at most" (every one researched and written to).
+- **Kind of business:** ideas by field, suggestions while typing, and a long list of types
+  (`src/lib/business-kinds.ts`). The search passes words to Google Maps; the list is a guide.
+- **Where:** the city is picked first and brings its region; largest cities as shortcuts; cities
+  already searched for the same kind are marked; the same search can run in up to nine more cities
+  at once, each a search of its own (`extraCityRuns`).
+- **Which ones:** minimum review count and rating (`filters.minReviews`, `filters.minRating`;
+  a listing without the figure does not pass a limit).
+- **After the search** is one choice of three: show the list, save, save and research.
+
+## D53 — Nothing is forgotten: planned next actions for every business, and a To do page (2026-11-20)
+The founder: "follow up on every business … much more organized". Until now a next action existed only
+when a reply arrived or the operator typed one.
+- **Rules in one place** (`plannedAction` in `src/lib/pipeline/follow-up.ts`, pure and tested): a reply to
+  answer comes first; then an email waiting for a decision (failed send, needs a look, to review, to
+  send); then a check-in for the stages set by hand (meeting scheduled, proposal sent, replied); then
+  the sequence ("the follow-up is written on this day", and after the last email "call them or close
+  as lost"); then research that needs a person (failed, no website, needs review, no email). A business
+  that was only found, or is won or lost, has none.
+- **Applied by `planFollowUps`**: by the scheduler every minute and when the dashboard or the To do
+  page opens. It costs nothing and sends nothing. `prospects.next_action_key` says which rule planned an
+  action (null = the operator's own, never replaced); `next_action_done` remembers the one the operator
+  ticked off so it does not come back; an action whose key is unchanged is left alone, so a pushed-back
+  date stays. `prospects.updated_at` is not touched (migration `0019_follow_up`).
+- **To do page** (`/todo`, `src/lib/pipeline/todo.ts`): every open action in groups (overdue, today,
+  tomorrow, this week, later, no date), filtered by group, by kind of work (replies, my own, emails,
+  decisions, follow-ups, waiting) and by high priority; inside a day the kind decides the order. A row
+  opens where the work is done (an email action opens that email), is ticked off with "Done" or moved
+  with "Later". The sidebar shows how many are due today or overdue; the dashboard shows the five most
+  pressing and links to the rest; the Businesses table shows the due tag under the stage.
+- **Due dates in words** (`src/lib/due.ts`), counted in whole days: "Today", never "overdue by seconds".
+- Checked with 43 actions on a private copy of the data (keys blanked, nothing spent): that is what
+  showed the dashboard list hid most of them, which is why the page exists.
+- Also this day: the business page rebuilt as a header (score, contact, journey from found to won),
+  three work steps (research, idea, email) and a right column (stage and next action, short history,
+  where it came from); one typeface (Inter); the Businesses table as data columns that always fit.
+
+## D54 — Settings as a menu of eight sections (2026-11-20)
+The five tabs had grown long and mixed things (the mailbox with sending limits; automatic sending with
+searching, research and budgets). Settings is now a side menu in four groups, each section about one
+thing and saved on its own: You (Your details, Mailbox), Sending (Sending limits, Automatic sending),
+Automation (Finding and research, Budget and usage), Safety and setup (Do not contact, Connections).
+"Sending limits" is grouped into how much and when, what happens when nobody answers, and where. The
+monthly AI budget moved beside the usage figures it limits. On a phone the menu is one row that scrolls.
+`src/lib/settings-nav.ts` maps every section id to its menu entry; links go through `settingsHref`.
+
+## D55 — The signature is the operator's own text, and nothing is added after it (2026-11-20)
+The founder asked for an editable signature and then for the sentence the app added after it
+("If this isn't relevant, just reply "no thanks" and I won't write again.") to be removed.
+- `settings.signature`: the operator's own text, used as written. Empty = built from name, title,
+  company, website and address as before. Saving the pre-filled box unchanged keeps it automatic;
+  "Use my details" goes back to it.
+- No opt-out sentence is appended any more. `settings.optOutLine` stays in the code (empty by default,
+  no field) for an operator who wants one; it can also simply be typed into the signature.
+- Unchanged: a reply that asks not to be contacted, in any words, is recognised and the address is
+  never written to again; bounced addresses are suppressed; the `List-Unsubscribe` header is still set.
+- Accepted risk, stated to the founder: US and UK rules for unasked-for business email expect each
+  message to say how to opt out. The landing page, privacy page and acceptable-use page no longer
+  claim that every email says so.

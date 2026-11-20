@@ -23,6 +23,11 @@ import { cancelQueued, retryFailed, sendCampaign } from "@/lib/outreach/send";
 import { contactBlockers } from "@/lib/outreach/eligibility";
 import { addSuppression, removeSuppression } from "@/lib/email/suppression";
 import { checkEmailAddress, normalizeAddress } from "@/lib/email/address";
+import { senderDomainHealth } from "@/lib/email/domain-health";
+import { resumeAutopilot } from "@/lib/outreach/autopilot-state";
+import { isWrittenStep } from "@/lib/outreach/steps";
+import { dueInDays } from "@/lib/due";
+import { rememberDone } from "@/lib/pipeline/follow-up";
 import { getSettings, saveSettings, type AppSettings } from "@/lib/settings";
 import { settingsHref } from "@/lib/settings-nav";
 import { chooseIdea } from "@/lib/outreach/ideas";
@@ -31,9 +36,9 @@ import { getMailProvider, mailboxFor, syncMailboxKey } from "@/lib/mail";
 import { applyReplyClassification } from "@/lib/jobs/mail-handlers";
 import { maybeAutoDraft } from "@/lib/jobs/handlers";
 import { REPLY_CATEGORIES, type ReplyCategory } from "@/lib/ai/schemas";
-import { composeEmailBody } from "@/lib/outreach/drafts";
+import { composeEmailBody, signatureLines } from "@/lib/outreach/drafts";
 import { makeMessageId } from "@/lib/outreach/send";
-import { parseSearchForm, type RawSearchValues, type SearchFieldErrors } from "@/lib/search-input";
+import { extraCityRuns, parseSearchForm, type RawSearchValues, type SearchFieldErrors } from "@/lib/search-input";
 import { assertBusinessInWorkspace, businessIdsOf, draftInWorkspace, searchInWorkspace, workspaceId } from "@/lib/workspace";
 
 const str = (fd: FormData, k: string) => (fd.get(k)?.toString() ?? "").trim();
@@ -57,16 +62,22 @@ export async function createSearch(_prev: CreateSearchState, fd: FormData): Prom
   await requireOwner();
   const parsed = parseSearchForm(fd);
   if (!parsed.ok) return { errors: parsed.errors, values: parsed.raw };
-  const { values: v, filters, name } = parsed;
-  const id = newId();
+  // "Also search" cities: the same search once more per city, each a search of its own with its own results and cost.
+  const runs = [parsed, ...extraCityRuns(fd, parsed.values.city ?? "")];
   const db = await getDb();
-  await db
-    .insert(searches)
-    .values({ id, workspaceId: await workspaceId(), name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoInvestigate: v.autoInvestigate, filters, providers: v.providers as DiscoveryProviderKey[], status: "queued" })
-    .run();
-  await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
+  const ws = await workspaceId();
+  const ids: string[] = [];
+  for (const { values: v, filters, name } of runs) {
+    const id = newId();
+    await db
+      .insert(searches)
+      .values({ id, workspaceId: ws, name, industry: v.industry, categoryQuery: v.categoryQuery ?? null, keywords: v.keywords ?? null, country: v.country, region: v.region ?? null, city: v.city ?? null, maxResults: v.maxResults, requireWebsite: v.requireWebsite, autoInvestigate: v.autoInvestigate, filters, providers: v.providers as DiscoveryProviderKey[], status: "queued" })
+      .run();
+    await enqueueJob("discover_search", { searchId: id }, { idempotencyKey: `discover:${id}` });
+    ids.push(id);
+  }
   kickWorker();
-  redirect(`/searches/${id}`);
+  redirect(ids.length === 1 ? `/searches/${ids[0]}` : `/searches?ok=${encodeURIComponent(`${ids.length} searches started, one per city.`)}`);
 }
 
 export async function rerunSearch(fd: FormData) {
@@ -124,7 +135,10 @@ export async function investigateManyAction(fd: FormData) {
 export async function generateDraftAction(fd: FormData) {
   await requireOwner();
   const businessId = str(fd, "businessId");
-  await enqueueOutreach(businessId, { step: str(fd, "step") === "1" ? 1 : 0, feedback: str(fd, "feedback") || null });
+  // An answer to a reply is not written from research: it is edited by hand, never rewritten here.
+  const step = Number(str(fd, "step") || 0);
+  if (!isWrittenStep(step)) return;
+  await enqueueOutreach(businessId, { step, feedback: str(fd, "feedback") || null });
   kickWorker();
   revalidatePath(`/businesses/${businessId}`);
   revalidatePath("/outreach");
@@ -182,11 +196,29 @@ export async function setNextActionAction(fd: FormData) {
   await requireOwner();
   const businessId = str(fd, "businessId");
   const nextAction = str(fd, "nextAction") || null;
-  const at = str(fd, "nextActionAt") || null;
+  // A quick choice that was pressed ("Tomorrow", "In 3 days") wins; otherwise the exact date and time in the field.
+  const dueIn = str(fd, "dueIn");
+  const at = /^\d{1,3}$/.test(dueIn) ? dueInDays(Number(dueIn)).toISOString() : str(fd, "nextActionAt") || null;
   const priority = ["low", "normal", "high"].includes(str(fd, "priority")) ? str(fd, "priority") : undefined;
   await assertBusinessInWorkspace(businessId);
-  await setNextAction(businessId, nextAction, at ? new Date(at).toISOString() : null, priority);
+  // The operator's own plan: no rule key, so the app leaves it alone.
+  await setNextAction(businessId, nextAction, at ? new Date(at).toISOString() : null, priority, null);
   revalidatePath(`/businesses/${businessId}`);
+  revalidatePath("/");
+}
+
+/** Not now: the planned next action keeps its text and moves to a later day (9:00 that morning). */
+export async function snoozeNextActionAction(fd: FormData) {
+  await requireOwner();
+  const businessId = str(fd, "businessId");
+  const days = Number(str(fd, "days"));
+  if (!Number.isInteger(days) || days < 1 || days > 365) return;
+  await assertBusinessInWorkspace(businessId);
+  const db = await getDb();
+  const p = await db.select().from(prospects).where(eq(prospects.businessId, businessId)).get();
+  if (!p?.nextAction) return;
+  await setNextAction(businessId, p.nextAction, dueInDays(days).toISOString());
+  for (const path of ["/todo", "/", "/businesses", `/businesses/${businessId}`]) revalidatePath(path);
 }
 
 /** The planned next action was carried out: log it and clear it. */
@@ -198,9 +230,13 @@ export async function completeNextActionAction(fd: FormData) {
   const p = await db.select().from(prospects).where(eq(prospects.businessId, businessId)).get();
   if (!p?.nextAction) return;
   await logActivity(businessId, "note", `Done: ${p.nextAction}`, { nextActionAt: p.nextActionAt });
-  await setNextAction(businessId, null, null);
+  // An action the app planned is remembered as done, so the same one does not come back.
+  await rememberDone(businessId);
+  await setNextAction(businessId, null, null, undefined, null);
   revalidatePath(`/businesses/${businessId}`);
   revalidatePath("/");
+  revalidatePath("/businesses");
+  revalidatePath("/todo");
 }
 
 export async function updateWebsiteAction(fd: FormData) {
@@ -597,14 +633,42 @@ export async function saveSettingsAction(fd: FormData) {
   const section = str(fd, "section");
   const fields: Record<string, (keyof AppSettings)[]> = {
     sender: ["senderName", "senderTitle", "senderCompany", "senderWebsite", "postalAddress", "offer", "bookingLink", "voiceSamples"],
-    sending: ["dailySendCap", "sendSpacingSeconds", "sendWindowStart", "sendWindowEnd", "allowedCountries", "followUpDays"],
-    automation: ["autoDraft", "autoResearch", "researchPerDay", "readyBuffer", "monthlyAiBudgetUsd"],
+    sending: ["dailySendCap", "sendSpacingSeconds", "sendWindowStart", "sendWindowEnd", "allowedCountries", "followUpDays", "followUpCount", "recontactDays"],
+    automation: ["autoDraft", "autoResearch", "researchPerDay", "readyBuffer", "autoSearch", "searchTargets", "searchesPerDay"],
+    budget: ["monthlyAiBudgetUsd"],
+    autopilot: ["sendMode", "holdHours", "autoAnswer"],
+    signature: ["signature"],
   };
+  const switches: (keyof AppSettings)[] = ["autoDraft", "autoResearch", "autoSearch", "autoAnswer"];
   const patch: Partial<Record<keyof AppSettings, unknown>> = {};
-  for (const key of fields[section] ?? []) patch[key] = key === "autoDraft" || key === "autoResearch" ? fd.get(key) === "on" : (fd.get(key)?.toString() ?? "");
-  await saveSettings(patch);
+  for (const key of fields[section] ?? []) patch[key] = switches.includes(key) ? fd.get(key) === "on" : (fd.get(key)?.toString() ?? "");
+  const before = await getSettings();
+  if (section === "signature") {
+    // The form opens filled in with what is used today. Saving that unchanged must not freeze it:
+    // text equal to the automatic signature is stored as "not set".
+    const norm = (v: unknown) => String(v ?? "").replace(/\r/g, "").trim();
+    if (norm(patch.signature) === signatureLines({ ...before, signature: "" })) patch.signature = "";
+    // "Use my details": back to the signature built from the details, whatever is in the box.
+    if (fd.get("useDetails")) patch.signature = "";
+  }
+  const after = await saveSettings(patch);
+  // Choosing to send on its own is the operator's decision and is written down as one.
+  if (section === "autopilot" && after.sendMode !== before.sendMode) console.log(`[autopilot] sending mode changed from ${before.sendMode} to ${after.sendMode} by the operator`);
+  if (section === "automation" && after.autoSearch && !after.searchTargets.length) {
+    revalidatePath("/settings");
+    redirect(withMessage(settingsHref(section), "error", "Saved, but no search will start on its own yet: add at least one line like “sign makers | GB” under “Who to look for”."));
+  }
   revalidatePath("/settings");
   redirect(withMessage(settingsHref(section), "ok", "Saved."));
+}
+
+/** Lifts the autopilot's pause. Only the operator does this; the safety checks start counting again from now. */
+export async function resumeAutopilotAction() {
+  await requireOwner();
+  await resumeAutopilot();
+  revalidatePath("/settings");
+  revalidatePath("/");
+  redirect(withMessage(settingsHref("autopilot"), "ok", "Sending on its own is switched back on."));
 }
 
 export async function addSuppressionAction(fd: FormData) {
@@ -629,7 +693,11 @@ export async function testMailboxAction() {
   if (!provider) redirect(withMessage(settingsHref("mailbox"), "error", box.reason ?? "No mailbox is connected."));
   const r = await provider.verify();
   const problems = [r.smtp ? `Sending: ${r.smtp}` : null, r.imap ? `Reading: ${r.imap}` : null].filter(Boolean);
-  redirect(withMessage(settingsHref("mailbox"), problems.length ? "error" : "ok", problems.length ? problems.join(" · ") : `Connected as ${provider.address}: sending and reading both work.`));
+  if (problems.length) redirect(withMessage(settingsHref("mailbox"), "error", problems.join(" · ")));
+  // Signing in is half of it: whether the mail is trusted on arrival depends on the domain's public sending records.
+  const health = await senderDomainHealth(provider.address).catch(() => null);
+  const records = health && !health.freeMailbox && !health.advice.length ? ` ${health.domain} has its SPF and DMARC records.` : health?.advice.length ? ` ${health.advice.join(" ")}` : "";
+  redirect(withMessage(settingsHref("mailbox"), "ok", `Connected as ${provider.address}: sending and reading both work.${records}`));
 }
 
 /** Sends one test email to the operator's own address, with the signature exactly as recipients will see it. */

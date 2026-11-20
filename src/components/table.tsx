@@ -72,18 +72,47 @@ export function Pagination({ basePath, sp, params, total, label = "rows" }: { ba
         {start}–{end} of {total} {label}
       </span>
       <div className="flex items-center gap-1">
-        <Link aria-disabled={params.page <= 1} className={`btn btn-sm btn-ghost ${params.page <= 1 ? "pointer-events-none opacity-40" : ""}`} href={`${basePath}${buildQuery(sp, { page: Math.max(1, params.page - 1) })}`}>
+        <Link data-scroll="top" aria-disabled={params.page <= 1} className={`btn btn-sm btn-ghost ${params.page <= 1 ? "pointer-events-none opacity-40" : ""}`} href={`${basePath}${buildQuery(sp, { page: Math.max(1, params.page - 1) })}`}>
           Previous
         </Link>
         <span className="tabular-nums px-1">
           page {params.page} / {pages}
         </span>
-        <Link aria-disabled={params.page >= pages} className={`btn btn-sm btn-ghost ${params.page >= pages ? "pointer-events-none opacity-40" : ""}`} href={`${basePath}${buildQuery(sp, { page: Math.min(pages, params.page + 1) })}`}>
+        <Link data-scroll="top" aria-disabled={params.page >= pages} className={`btn btn-sm btn-ghost ${params.page >= pages ? "pointer-events-none opacity-40" : ""}`} href={`${basePath}${buildQuery(sp, { page: Math.min(pages, params.page + 1) })}`}>
           Next
         </Link>
       </div>
     </div>
   );
+}
+
+/** The same footer for a list that is cut into pages by the page itself: "1–25 of 80 emails · Previous · page 1 / 4 · Next". */
+export function Pager({ page, perPage, total, hrefFor, label = "rows" }: { page: number; perPage: number; total: number; hrefFor: (page: number) => string; label?: string }) {
+  const pages = pageCount(total, perPage);
+  if (total === 0) return null;
+  return (
+    <nav className="flex items-center justify-between gap-3 px-4 py-2.5 border-t border-line text-xs text-ink-muted" aria-label="Pages">
+      <span className="tabular-nums">
+        {(page - 1) * perPage + 1}–{Math.min(total, page * perPage)} of {total} {label}
+      </span>
+      <div className="flex items-center gap-1">
+        <Link data-scroll="top" aria-disabled={page <= 1} className={`btn btn-sm btn-ghost ${page <= 1 ? "pointer-events-none opacity-40" : ""}`} href={hrefFor(Math.max(1, page - 1))}>
+          Previous
+        </Link>
+        <span className="tabular-nums px-1">
+          page {page} / {pages}
+        </span>
+        <Link data-scroll="top" aria-disabled={page >= pages} className={`btn btn-sm btn-ghost ${page >= pages ? "pointer-events-none opacity-40" : ""}`} href={hrefFor(Math.min(pages, page + 1))}>
+          Next
+        </Link>
+      </div>
+    </nav>
+  );
+}
+
+/** The page asked for, kept inside what exists. */
+export function clampPage(raw: string | undefined, total: number, perPage: number) {
+  return Math.min(pageCount(total, perPage), Math.max(1, Math.floor(Number(raw) || 1)));
 }
 
 export function TableEmpty({ title, description, action, icon = "list" }: { title: string; description?: string; action?: ReactNode; icon?: "list" | "search" | "building" | "kanban" | "bolt" }) {

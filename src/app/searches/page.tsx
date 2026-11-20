@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { PROVIDER_LABEL } from "@/lib/discovery";
 import { listSearches } from "@/lib/queries";
-import { Badge, Card, Icon, PageHeader, StatusPill, fmtRelative } from "@/components/ui";
+import { Badge, Card, Flash, Icon, PageHeader, StatusPill, fmtRelative } from "@/components/ui";
 import { FilterBar, Pagination, SortHeader, TableEmpty } from "@/components/table";
 import { dateBounds, parseTableParams } from "@/lib/table";
 import { getPlaybook } from "@/lib/industries";
 import { describeFilters } from "@/lib/search-input";
+import { countryName, regionName } from "@/lib/geo/world";
 
 
 export default async function SearchesPage({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
@@ -18,8 +19,7 @@ export default async function SearchesPage({ searchParams }: { searchParams: Pro
   return (
     <>
       <PageHeader
-        title="Discover"
-        subtitle="Each search pulls businesses from the selected sources, ranks them, and merges them into one deduplicated list."
+        title="Searches"
         actions={
           <>
             <Link href="/import" className="btn">
@@ -31,7 +31,8 @@ export default async function SearchesPage({ searchParams }: { searchParams: Pro
           </>
         }
       />
-      {(total > 0 || anyFilter) && <FilterBar basePath={base} sp={sp} params={t} placeholder="Search by name, city, state or industry" dateFields={[{ key: "createdAt", label: "Created" }]} />}
+      <Flash msg={sp.ok} />
+      {(total > 0 || anyFilter) && <FilterBar basePath={base} sp={sp} params={t} placeholder="Search by name, kind or city" dateFields={[{ key: "createdAt", label: "Created" }]} />}
       <Card padded={false}>
         {rows.length === 0 ? (
           anyFilter ? (
@@ -59,9 +60,8 @@ export default async function SearchesPage({ searchParams }: { searchParams: Pro
               <thead>
                 <tr>
                   <SortHeader label="Search" field="name" sp={sp} params={t} basePath={base} defaultDir="asc" />
-                  <th>Industry · filters</th>
-                  <th>Location</th>
-                  <th>Sources</th>
+                  <th>Kind of business</th>
+                  <th>Where</th>
                   <SortHeader label="Status" field="status" sp={sp} params={t} basePath={base} defaultDir="asc" />
                   <SortHeader label="Businesses" field="results" sp={sp} params={t} basePath={base} className="text-right" />
                   <SortHeader label="Created" field="created" sp={sp} params={t} basePath={base} />
@@ -76,27 +76,10 @@ export default async function SearchesPage({ searchParams }: { searchParams: Pro
                       </Link>
                     </td>
                     <td className="text-ink-muted">
-                      {getPlaybook(r.industry).label}
-                      <div className="text-xs text-ink-faint max-w-[260px] truncate" title={describeFilters(r).join(" · ")}>
-                        {describeFilters(r).join(" · ")}
-                      </div>
+                      <span title={describeFilters(r).join(" · ")}>{r.filters?.customCategory || getPlaybook(r.industry).label}</span>
                     </td>
                     <td className="text-ink-muted">
-                      {[r.city, r.region, r.country].filter(Boolean).join(", ")}
-                      {r.stats?.area ? (
-                        <div className="text-xs text-ink-faint max-w-[220px] truncate" title={r.stats.area}>
-                          {r.stats.area}
-                        </div>
-                      ) : null}
-                    </td>
-                    <td>
-                      <div className="flex gap-1 flex-wrap">
-                        {r.providers.map((p) => (
-                          <Badge key={p} tone="neutral">
-                            {PROVIDER_LABEL[p] ?? p}
-                          </Badge>
-                        ))}
-                      </div>
+                      {[r.city, r.region ? regionName(r.country, r.region) : null, countryName(r.country)].filter(Boolean).join(", ")}
                     </td>
                     <td>
                       <StatusPill status={r.status} />

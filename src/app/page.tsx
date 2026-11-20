@@ -7,6 +7,10 @@
  *  4. Replies to answer and planned actions, only when there are any.
  *  5. The latest events.
  */
+import { planFollowUps } from "@/lib/pipeline/follow-up";
+import { listTodo } from "@/lib/pipeline/todo";
+import { dueTag } from "@/lib/due";
+import { completeNextActionAction } from "@/app/actions";
 import Link from "next/link";
 import { Landing } from "@/components/landing";
 import { currentUser } from "@/lib/auth";
@@ -48,6 +52,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   // The period: the last 7 days unless the URL says otherwise (see src/lib/date-range.ts).
   const range = resolveRange(await searchParams);
   const ranged = range.key !== "all";
+  await planFollowUps(); // next actions in line with where every business stands, before they are counted and shown
   const [d, period, nav, settings, aiSpent, aiBudget, crawl, searchCredits, sentNow, recent, allTime] = await Promise.all([dashboardData(), funnelForPeriod(rangeBounds(range)), navStatus(), getSettings(), monthSpendUsd(), monthlyAiBudgetUsd(), creditsUsedThisMonth(), usageTotal("serper"), sentToday(), pipelineHistory({ kind: "all", page: 1, pageSize: 6 }), funnelForPeriod({ fromIso: null, toIso: null })]);
   const hour = new Date().getHours();
   const firstName = settings.senderName.trim().split(/\s+/)[0] || "";
@@ -65,8 +70,14 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
   const o = d.outreach;
   const attention = o.review + o.failed;
 
+  // Replies are worked through on the To do page (one row per business, tick off or put off); the card further down is a preview.
+  const todo = await listTodo();
+  const todoReplies = todo.filter((i) => i.kind === "reply").length;
+  const replyCount = Math.max(todoReplies, d.openReplies.length);
+  const repliesHref = todoReplies > 0 ? "/todo?kind=reply" : d.openReplies[0] ? `/businesses/${d.openReplies[0].business.id}?tab=outreach` : "/todo";
+
   const all: { n: number; title: string; body: string; href: string; cta: string; icon: IconName; tone: Tone }[] = [
-    { n: d.openReplies.length, title: `${plural(d.openReplies.length, "reply", "replies")} to answer`, body: "Someone wrote back. Read it and answer from your mailbox.", href: "#replies", cta: "Read", icon: "mail", tone: "ok" },
+    { n: replyCount, title: `${plural(replyCount, "reply", "replies")} to answer`, body: "Someone wrote back. An answer is written for you under Outreach when one makes sense.", href: repliesHref, cta: "Read", icon: "mail", tone: "ok" },
     { n: o.approved, title: `${plural(o.approved, "approved email")} ready to send`, body: "Reviewed and approved. One button sends the batch.", href: "/outreach/send", cta: "Send", icon: "play", tone: "accent" },
     { n: o.ready, title: `${plural(o.ready, "email")} to review`, body: "Written from verified research and checked. Read, edit, approve.", href: "/outreach?tab=ready", cta: "Review", icon: "eye", tone: "accent" },
     { n: attention, title: `${plural(attention, "email")} ${attention === 1 ? "needs" : "need"} a closer look`, body: "A check failed or sending did not work.", href: o.failed ? "/outreach?tab=sent" : "/outreach?tab=review", cta: "Open", icon: "alert", tone: "warn" },
@@ -91,7 +102,12 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
     { label: "Won", value: period.won, href: "/pipeline", hint: null },
   ];
 
+  /** Money for the figures: dollars with cents, or whole dollars for a budget. */
+  const money = (n: number, digits = 2) => `$${n.toFixed(digits)}`;
   const top = waiting[0] ?? null;
+  /** The dashboard shows the most pressing few; the whole list has its own page. */
+  const TODO_ON_DASHBOARD = 5;
+  const todoTotal = todo.length;
   return (
     <>
       <PageHeader
@@ -129,43 +145,33 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
         </section>
       )}
 
-      {/* 1. The next step: one line of text and one button, the full width. */}
+      {/* 1. What is waiting for you: one row per kind of work, each with its own button; the first is the one to do now. */}
       <section className="surface overflow-hidden mb-5" aria-label="Waiting for you">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-3 px-6 py-5">
-          <div className="min-w-0 flex-1 basis-80">
-            <div className={`text-sm font-semibold ${top ? "text-accent-text" : "text-ok"}`}>{top ? "Your next step" : firstRun ? "Welcome" : "All caught up"}</div>
-            <h2 className="font-serif text-[1.5rem] leading-snug font-semibold mt-0.5">{top ? top.title : firstRun ? "Start by finding businesses" : "Nothing is waiting for you"}</h2>
-            <p className="text-[0.95rem] text-ink-muted mt-1">
-              {top
-                ? top.body
-                : firstRun
-                  ? "Pick a type of business and a city. Research and email writing then run on their own; you review and send."
-                  : busy
-                    ? `In the background: ${working.join(", ")}. New emails appear here when they are ready.`
-                    : d.notResearched > 0
-                      ? `${plural(d.notResearched, "saved business", "saved businesses")} ${d.notResearched === 1 ? "is" : "are"} not researched yet${cfg.firecrawl.enabled && settings.autoResearch ? "; they are picked up automatically, best leads first." : "."}`
-                      : "Find more businesses to keep the pipeline moving."}
-            </p>
-          </div>
-          {top ? (
-            <Link href={top.href} className="btn btn-primary btn-lg shrink-0">
-              {top.cta} <Icon name="arrowRight" />
-            </Link>
-          ) : (
-            <Link href={!firstRun && d.notResearched > 0 ? "/businesses?quick=needs_investigation&range=all" : "/searches/new"} className="btn btn-lg shrink-0">
-              {!firstRun && d.notResearched > 0 ? "See them" : "Find businesses"} <Icon name="arrowRight" />
-            </Link>
-          )}
+        <div className="flex items-center gap-2 px-5 py-3 border-b border-line">
+          <h2 className="text-base font-semibold leading-6">Waiting for you</h2>
+          {waiting.length > 0 && <span className="text-sm text-ink-faint">{waiting.length}</span>}
+          {busy && <span className="ml-auto text-sm text-ink-muted truncate">In the background: {working.join(", ")}</span>}
         </div>
-        {waiting.length > 1 && (
-          <ul className="border-t border-line grid sm:grid-cols-2 lg:grid-cols-4">
-            {waiting.slice(1).map((t) => (
-              <li key={t.title} className="border-line border-b sm:border-b-0 sm:border-r last:border-0">
-                <Link href={t.href} className="flex items-center gap-3 px-6 py-3 h-full hover:no-underline hover:bg-surface-2">
-                  <span className={`w-8 h-8 rounded-lg grid place-items-center shrink-0 ${TONE_BG[t.tone]}`}>
-                    <Icon name={t.icon} className="w-4 h-4" />
-                  </span>
-                  <span className="min-w-0 flex-1 text-sm font-semibold text-ink">{t.title}</span>
+        {waiting.length === 0 ? (
+          <div className="flex flex-wrap items-center gap-4 px-5 py-5">
+            <span className={`w-10 h-10 rounded-lg grid place-items-center shrink-0 ${firstRun ? TONE_BG.accent : TONE_BG.ok}`}>
+              <Icon name={firstRun ? "search" : "check"} className="w-5 h-5" />
+            </span>
+            <h3 className="min-w-0 flex-1 text-lg font-semibold">{firstRun ? "Start by finding businesses" : "Nothing is waiting for you"}</h3>
+            <Link href={!firstRun && d.notResearched > 0 ? "/businesses?quick=needs_investigation&range=all" : "/searches/new"} className={`btn btn-lg shrink-0 ${firstRun ? "btn-primary" : ""}`}>
+              {!firstRun && d.notResearched > 0 ? `See ${plural(d.notResearched, "business", "businesses")} not researched` : "Find businesses"} <Icon name="arrowRight" />
+            </Link>
+          </div>
+        ) : (
+          <ul className="divide-y divide-line">
+            {waiting.map((t, i) => (
+              <li key={t.title} className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3.5">
+                <span className={`w-10 h-10 rounded-lg grid place-items-center shrink-0 ${TONE_BG[t.tone]}`}>
+                  <Icon name={t.icon} className="w-5 h-5" />
+                </span>
+                <h3 className={`min-w-0 flex-1 font-semibold ${i === 0 ? "text-lg" : "text-[0.95rem]"}`}>{t.title}</h3>
+                <Link href={t.href} className={`btn shrink-0 min-w-[7.5rem] justify-center ${i === 0 ? "btn-primary btn-lg" : ""}`}>
+                  {t.cta} <Icon name="arrowRight" />
                 </Link>
               </li>
             ))}
@@ -173,26 +179,76 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
         )}
       </section>
 
-      {/* 2. Four figures in one row: today, replies, money, research. */}
-      <div className="grid gap-5 mb-5 grid-cols-2 lg:grid-cols-4" aria-label="Today and this month">
-        {[
-          { label: "Emails sent today", value: String(sentNow), of: `of ${settings.dailySendCap}`, pct: (sentNow / Math.max(1, settings.dailySendCap)) * 100, href: "/outreach?tab=sent", note: "" },
-          { label: "Replies so far", value: String(allTime.replied), of: `of ${allTime.contacted} contacted${replyRate != null ? ` (${replyRate}%)` : ""}`, pct: replyRate ?? 0, href: "/pipeline", note: "" },
-          { label: "Spent on AI this month", value: `$${aiSpent.toFixed(2)}`, of: `of $${aiBudget}`, pct: (aiSpent / Math.max(0.01, aiBudget)) * 100, href: settingsHref("automation"), note: "" },
-          { label: "Website research this month", value: String(crawl.credits), of: `of ${cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET.toLocaleString()} credits`, pct: (crawl.credits / Math.max(1, cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET)) * 100, href: settingsHref("automation"), note: `Business search: ${searchCredits} of ${cfg.SERPER_CREDIT_BUDGET.toLocaleString()} credits` },
-        ].map((t) => (
-          <Link key={t.label} href={t.href} className="surface px-5 py-4 min-w-0 hover:no-underline hover:bg-surface-2">
-            <span className="block text-sm text-ink-muted">{t.label}</span>
-            <span className="block mt-1">
-              <span className="text-3xl font-semibold tabular-nums text-ink">{t.value}</span> <span className="text-sm text-ink-faint">{t.of}</span>
-            </span>
-            <span className="block h-1.5 rounded-full bg-surface-3 mt-3 overflow-hidden" aria-hidden>
-              <span className={`block h-full rounded-full ${t.pct >= 90 ? "bg-warn" : "bg-ok"}`} style={{ width: `${Math.min(100, Math.max(0, t.pct))}%` }} />
-            </span>
-            {t.note && <span className="block text-xs text-ink-faint mt-1.5 truncate">{t.note}</span>}
-          </Link>
-        ))}
-      </div>
+      {/* 1b. What you planned to do, soonest first: overdue and today's stand out. */}
+      {d.dueActions.length > 0 && (
+        <section className="surface mb-5" aria-label="Next actions">
+          <div className="flex items-center gap-2 px-5 pt-4 pb-2">
+            <h2 className="text-base font-semibold">Next actions</h2>
+            <span className="text-sm text-ink-faint">{todoTotal}</span>
+            <Link href="/todo" className="ml-auto text-sm">
+              {todoTotal > TODO_ON_DASHBOARD ? `See all ${todoTotal}` : "Open the list"}
+            </Link>
+          </div>
+          <ul className="divide-y divide-line">
+            {d.dueActions.slice(0, TODO_ON_DASHBOARD).map((a) => {
+              const tag = dueTag(a.nextActionAt);
+              return (
+                <li key={a.business.id} className="flex items-center gap-3 px-5 py-3">
+                  <span className={`w-1 self-stretch rounded-full shrink-0 ${tag?.tone === "bad" ? "bg-bad" : tag?.tone === "accent" ? "bg-accent" : "bg-line-strong"}`} aria-hidden />
+                  <Link href={`/businesses/${a.business.id}`} className="min-w-0 flex-1 hover:no-underline group">
+                    <span className="block text-sm font-medium text-ink truncate group-hover:underline">{a.nextAction}</span>
+                    <span className="block text-xs text-ink-faint truncate">
+                      {a.business.name} · {stageLabel(a.stage)}
+                    </span>
+                  </Link>
+                  {tag && <Badge tone={tag.tone}>{tag.label}</Badge>}
+                  <form action={completeNextActionAction}>
+                    <input type="hidden" name="businessId" value={a.business.id} />
+                    <button className="btn btn-sm" title="Mark it done">
+                      <Icon name="check" /> Done
+                    </button>
+                  </form>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
+
+      {/* 2. Limits and what is used, as one card of equal cells (the same shape as "Progress" below): icon, name, figure, bar, what is left. */}
+      <section className="surface mb-5 overflow-hidden" aria-label="Today and this month">
+        <div className="px-5 py-3 border-b border-line">
+          <h2 className="text-base font-semibold leading-6">Today and this month</h2>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5">
+          {(
+            [
+              { icon: "mail", tone: "var(--accent)", label: "Sent today", value: String(sentNow), of: `of ${settings.dailySendCap}`, pct: (sentNow / Math.max(1, settings.dailySendCap)) * 100, limit: true, note: `${Math.max(0, settings.dailySendCap - sentNow)} left today`, href: "/outreach?tab=sent" },
+              { icon: "note", tone: "var(--ok)", label: "Replies", value: String(allTime.replied), of: `of ${allTime.contacted} emailed`, pct: replyRate ?? 0, limit: false, note: replyRate != null ? `${replyRate}% reply rate` : "No emails out yet", href: "/pipeline" },
+              { icon: "sparkles", tone: "var(--info)", label: "AI spend", value: money(aiSpent), of: `of ${money(aiBudget, 0)}`, pct: (aiSpent / Math.max(0.01, aiBudget)) * 100, limit: true, note: `${money(Math.max(0, aiBudget - aiSpent))} left this month`, href: settingsHref("usage") },
+              { icon: "globe", tone: "var(--warn)", label: "Websites read", value: crawl.credits.toLocaleString(), of: `of ${cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET.toLocaleString()}`, pct: (crawl.credits / Math.max(1, cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET)) * 100, limit: true, note: `${Math.max(0, cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET - crawl.credits).toLocaleString()} left this month`, href: settingsHref("usage") },
+              { icon: "search", tone: "var(--stamp)", label: "Search credits", value: searchCredits.toLocaleString(), of: `of ${cfg.SERPER_CREDIT_BUDGET.toLocaleString()}`, pct: (searchCredits / Math.max(1, cfg.SERPER_CREDIT_BUDGET)) * 100, limit: true, note: `${Math.max(0, cfg.SERPER_CREDIT_BUDGET - searchCredits).toLocaleString()} left in total`, href: settingsHref("usage") },
+            ] as const
+          ).map((t) => (
+            <Link key={t.label} href={t.href} className="group min-w-0 px-5 py-4 border-line border-b xl:border-b-0 border-r last:border-r-0 hover:no-underline hover:bg-surface-2">
+              <span className="flex items-center gap-2.5">
+                <span className="fact-icon w-7 h-7 rounded-full grid place-items-center shrink-0" style={{ "--c": t.tone } as React.CSSProperties}>
+                  <Icon name={t.icon} className="w-3.5 h-3.5" />
+                </span>
+                <span className="text-sm font-semibold text-ink-muted truncate">{t.label}</span>
+              </span>
+              <span className="block mt-2.5 whitespace-nowrap">
+                <span className="text-[1.75rem] leading-none font-semibold tabular-nums text-ink">{t.value}</span> <span className="text-sm text-ink-faint">{t.of}</span>
+              </span>
+              <span className="block h-1.5 rounded-full bg-surface-3 mt-3 overflow-hidden" aria-hidden>
+                {/* A limit turns amber near its end and red when used up; the reply rate is simply green. */}
+                <span className={`block h-full rounded-full ${t.limit && t.pct >= 100 ? "bg-bad" : t.limit && t.pct >= 85 ? "bg-warn" : "bg-ok"}`} style={{ width: `${Math.min(100, Math.max(0, t.pct))}%` }} />
+              </span>
+              <span className="block text-xs text-ink-faint mt-2 truncate">{t.note}</span>
+            </Link>
+          ))}
+        </div>
+      </section>
 
       {/* 3. From found to won, as one line of connected steps. */}
       <section className="surface mb-5 overflow-hidden" aria-label="From found to won">
@@ -244,7 +300,7 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
       {/* 4. Replies and planned actions appear only when there are any. */}
       {d.openReplies.length > 0 && (
         <div className="mb-5">
-          <Card id="replies" className="scroll-mt-4" title="Replies to answer" description="Picked up from your inbox. Answer from your own mailbox, then tick them off on the business page." padded={false}>
+          <Card title="Replies to answer" padded={false} actions={<Link href={repliesHref} className="text-sm">{replyCount > d.openReplies.length ? `All ${replyCount}` : "Work through them"}</Link>}>
             {d.openReplies.length === 0 ? (
               <EmptyLine>{d.sentEver ? "No open replies. New ones show up here." : "Replies appear here once emails are out."}</EmptyLine>
             ) : (
@@ -266,25 +322,6 @@ export default async function DashboardPage({ searchParams }: { searchParams: Pr
           </Card>
         </div>
       )}
-      <div className={d.dueActions.length > 0 ? "mb-5" : ""}>{d.dueActions.length > 0 && (
-            <Card title="Planned next actions" description="What you planned, or what a reply calls for." padded={false}>
-              <ul className="divide-y divide-line">
-                {d.dueActions.map((a) => (
-                  <li key={a.business.id}>
-                    <Link href={`/businesses/${a.business.id}`} className="flex items-center gap-3 px-5 py-3 hover:no-underline hover:bg-surface-2">
-                      <span className="min-w-0 flex-1">
-                        <span className="block text-sm text-ink truncate">{a.nextAction}</span>
-                        <span className="block text-xs text-ink-faint">
-                          {a.business.name} · {stageLabel(a.stage)}
-                        </span>
-                      </span>
-                      {a.nextActionAt && <span className={`text-xs shrink-0 ${new Date(a.nextActionAt).getTime() < Date.now() ? "text-warn" : "text-ink-faint"}`}>{fmtRelative(a.nextActionAt)}</span>}
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            </Card>
-          )}</div>
 
       {/* 5. What just happened, the full width. */}
       <Card

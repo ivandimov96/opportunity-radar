@@ -5,6 +5,9 @@
  * (src/proxy.ts) can check a cookie without opening the database.
  */
 export const SESSION_COOKIE = "radar_session";
+/** Set for a few seconds when someone has just signed in or up: the first page they land on greets them with the radar. */
+export const WELCOME_COOKIE = "radar_welcome";
+export const WELCOME_SECONDS = 15;
 export type Role = "owner" | "member";
 
 function secret(): string {

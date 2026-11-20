@@ -286,7 +286,6 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
     save(item.id, item.stage, item.name);
   };
 
-  const total = BOARD.reduce((n, stage) => n + countOf(stage), 0);
 
   return (
     <DndContext id={dndId} sensors={sensors} collisionDetection={collision} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd} onDragCancel={() => { setActive(null); restore(); }}>
@@ -299,10 +298,7 @@ export function PipelineBoard({ items: initial, hidden = {}, moreQuery = "" }: {
             </button>
           </div>
         )}
-        <p className="text-sm text-ink-faint mb-2 px-0.5">
-          {total} on the board. <span className="hidden md:inline">Drag a card to another column, or between cards to put it in an exact place.</span>
-          <span className="md:hidden">Swipe sideways to see the other stages.</span>
-        </p>
+        <p className="md:hidden text-sm text-ink-faint mb-2 px-0.5">Swipe sideways to see the other stages.</p>
         {/* One row of columns. It scrolls sideways when the window is narrower than the board. */}
         <div role="group" aria-label="Stages" data-board className="flex items-stretch gap-2.5 overflow-x-auto pb-3 scrollbar-thin snap-x snap-mandatory md:snap-none -mx-4 px-4 md:mx-0 md:px-0">
           {BOARD.map((stage) => {
@@ -421,9 +417,10 @@ function CardBody({ it, overlay = false, onMove }: { it: BoardItem; overlay?: bo
       )}
       {/* What is going on with this business right now, and for how long; its score on the right. */}
       <div className="flex items-end justify-between gap-2 mt-2.5">
-        <span className="min-w-0 text-xs text-ink-muted leading-snug" title={it.movedAt ? new Date(it.movedAt).toLocaleString() : undefined}>
+        {/* The time is worked out twice, on the server and in the browser, a moment apart and in different time zones: the browser's is the one kept. */}
+        <span className="min-w-0 text-xs text-ink-muted leading-snug" title={it.movedAt ? new Date(it.movedAt).toLocaleString() : undefined} suppressHydrationWarning>
           <span className="block">{it.nextAction ?? STATUS[it.stage] ?? label(it.stage)}</span>
-          <span className="block text-ink-faint">{it.nextActionAt ? fmtRelative(it.nextActionAt) : it.movedAt ? `for ${fmtRelative(it.movedAt).replace(/ ago$/, "")}` : ""}</span>
+          <span className="block text-ink-faint" suppressHydrationWarning>{it.nextActionAt ? fmtRelative(it.nextActionAt) : it.movedAt ? `for ${fmtRelative(it.movedAt).replace(/ ago$/, "")}` : ""}</span>
         </span>
         {it.priority != null && <ScoreRing value={it.priority} size={30} />}
       </div>

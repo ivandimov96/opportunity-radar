@@ -24,19 +24,19 @@ export function Badge({ tone = "neutral", children, title, dot, className = "" }
 }
 
 const STATUS: Record<string, { tone: Tone; label: string; pulse?: boolean }> = {
-  new: { tone: "neutral", label: "Not investigated" },
+  new: { tone: "neutral", label: "Not researched" },
   queued: { tone: "info", label: "Queued", pulse: true },
-  investigating: { tone: "accent", label: "Investigating", pulse: true },
+  investigating: { tone: "accent", label: "Researching", pulse: true },
   running: { tone: "accent", label: "Running", pulse: true },
-  profiled: { tone: "ok", label: "Investigated" },
+  profiled: { tone: "ok", label: "Researched" },
   done: { tone: "ok", label: "Done" },
   failed: { tone: "bad", label: "Failed" },
   no_website: { tone: "warn", label: "No website" },
   qualified: { tone: "ok", label: "Qualified" },
   needs_review: { tone: "warn", label: "Needs review" },
   not_a_fit: { tone: "neutral", label: "Not a fit" },
-  no_contact: { tone: "warn", label: "No public email" },
-  insufficient_evidence: { tone: "warn", label: "Insufficient evidence" },
+  no_contact: { tone: "warn", label: "No email" },
+  insufficient_evidence: { tone: "warn", label: "Too little info" },
   cancelled: { tone: "neutral", label: "Cancelled" },
   ready: { tone: "accent", label: "Ready to review" },
   approved: { tone: "ok", label: "Approved" },
@@ -134,7 +134,7 @@ export function ScoreRing({ value, label, size = 56, tone, sub }: { value: numbe
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} className="block">
         <circle cx={size / 2} cy={size / 2} r={r} stroke="var(--border)" strokeWidth={stroke} fill="none" />
         <circle cx={size / 2} cy={size / 2} r={r} stroke={color} strokeWidth={stroke} fill="none" strokeLinecap="round" strokeDasharray={`${(pct / 100) * c} ${c}`} transform={`rotate(-90 ${size / 2} ${size / 2})`} />
-        <text x="50%" y="50%" dominantBaseline="central" textAnchor="middle" fontSize={size * 0.3} fontWeight={600} fill="var(--text)">
+        <text x="50%" y="50%" dominantBaseline="central" textAnchor="middle" fontSize={size * 0.3} fontWeight={700} fill={t === "neutral" ? "var(--text)" : color}>
           {value}
         </text>
       </svg>

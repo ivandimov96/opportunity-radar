@@ -1,5 +1,55 @@
 # Implementation status
 
+## 2026-11-20 (evening): follow-up, To do page, redesigned pages, regression walk (decisions D51 to D53)
+
+- New: next actions planned for every business in play and a To do page (D53); data-driven filters on
+  Businesses; the business page as header, three steps and a side column; the search form reworked and
+  a search that reads only the pages it needs (D52); no country limit by default (D51); one typeface.
+- Regression walk on a private copy (sample `.example` businesses, no keys, in-memory mailbox): every
+  public and signed-in page at 1440, 1024 and 390 pixels, light and dark. No console error, failed
+  request or sideways overflow remains. Found and fixed: the search form was 33 px too wide on a phone;
+  two landing-page statements about sending were no longer true; the Searches pages still used the old
+  columns and descriptions; raw category codes ("car_repair") on two pages; the signature shown in a
+  monospace box; a stale hint in Settings; step names cut off on a phone.
+- 273 unit and integration tests and 9 browser tests pass; type check clean.
+- NOT run: anything live. No search, website reading, model call or real email was made in this pass.
+  The last-note, check-back and reply prompts are still unseen on real output.
+- The founder's database was emptied at their request (account, settings, usage records and the
+  do-not-contact list kept).
+
+## 2026-11-20 (night): lists, scrolling and the search page
+
+- Outreach: every tab and the "No address on record" list are in pages of 25; a row
+  action comes back to the page it was on. The two header buttons are the same size
+  with their counts in pills; the bounced count left the subtitle.
+- The window stays where it was after a filter, sort, search, dropdown or row action
+  (`KeepScroll`); see docs/DESIGN.md, Layout rules.
+- A search's page: one primary button at a time, Research and Run again confirm
+  because they can spend credits, four plain figures, the technical detail folded
+  under "How this search ran", the source column only when there is more than one.
+- Dashboard: "Read" on replies opens To do filtered to Replies (the old link only
+  scrolled the page and did nothing the second time); the count is no longer capped at 8.
+- Pipeline: the hint line above the board is gone.
+- The sample businesses used to try the screens were removed from the local database;
+  `tests/fixtures/seed-scenarios.ts` can add them again (it spends nothing).
+- Checked on a private copy without keys; unit, integration and browser tests pass.
+
+## 2026-11-20: the app can run on its own (decision D50)
+
+- New, all off by default: searches started from targets in Settings; sending without a click
+  (after a waiting time, or at once) with a trust gate, a warm-up limit and a safety pause; simple
+  answers to replies sent on their own.
+- New, on by default: a last note after an unanswered follow-up; one check-back 90 days after a
+  "not now"; an answer to a reply written as an email under Outreach; an out-of-office reply
+  postpones the next email by a week; a queued follow-up is not sent when they answered meanwhile.
+- "Check the connection" also reads the sending domain's SPF and DMARC records.
+- Migration `0018_autopilot` (four nullable columns). 255 unit and integration tests and 6 browser
+  tests pass; type check clean.
+- NOT run: any live model call. The last-note and check-back prompts and the changed reply prompt
+  (answers may be sent as written) have never produced a real email: read the first ones closely.
+  No automatic search and no automatic send has run against the real mailbox or Serper.
+- Not built: the mock-up a "yes" asks for, writing to a referred contact, a company-register check.
+
 ## 2026-11-19: smaller ask, shorter opening, varied main idea (decision D42)
 
 - No reply to the first eight emails after one working day. Three changes chosen by the founder,

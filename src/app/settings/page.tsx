@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { ConfirmButton } from "@/components/confirm-button";
-import { Badge, Callout, Card, Flash, Icon, KeyValue, PageHeader, Tabs, type Tone, EmptyLine } from "@/components/ui";
+import { Badge, Callout, Card, Flash, Icon, KeyValue, PageHeader, type Tone, EmptyLine } from "@/components/ui";
 import { usageSummary } from "@/lib/ai/usage";
 import { getConfig, integrationStatus, MAIL_PRESETS } from "@/lib/config";
 import { mailboxFor, NO_WORKSPACE_MAILBOX } from "@/lib/mail";
@@ -8,12 +8,14 @@ import { listSuppressions } from "@/lib/email/suppression";
 import { listRemoved } from "@/lib/pipeline/removed";
 import { verdictLabel } from "@/lib/pipeline/stages";
 import { workerStatus } from "@/lib/jobs/worker";
-import { signatureBlock } from "@/lib/outreach/drafts";
+import { signatureBlock, signatureLines } from "@/lib/outreach/drafts";
 import { creditsUsedThisMonth } from "@/lib/research/stored";
 import { usageTotal } from "@/lib/discovery/usage";
-import { getSettings, getState, missingSenderDetails, monthlyAiBudgetUsd } from "@/lib/settings";
+import { getSettings, getState, missingSenderDetails, monthlyAiBudgetUsd, searchTargetsText } from "@/lib/settings";
+import { autopilotStatus, TRUST_MIN_MANUAL } from "@/lib/outreach/autopilot";
+import { AUTO_SEARCH_CREDITS, AUTO_SEARCH_RESULTS } from "@/lib/discovery/auto-search";
 import { SETTINGS_TABS, settingsHref, type SettingsTab } from "@/lib/settings-nav";
-import { addSuppressionAction, allowBusinessAgainAction, removeSuppressionAction, saveSettingsAction, sendTestEmailAction, syncMailboxAction, testMailboxAction } from "@/app/actions";
+import { addSuppressionAction, allowBusinessAgainAction, removeSuppressionAction, resumeAutopilotAction, saveSettingsAction, sendTestEmailAction, syncMailboxAction, testMailboxAction } from "@/app/actions";
 
 export const metadata = { title: "Settings" };
 
@@ -25,6 +27,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
   const box = await mailboxFor();
   const [s, usage, aiLimit, credits, serperUsed, suppressions, lastSync] = await Promise.all([getSettings(), usageSummary(), monthlyAiBudgetUsd(), creditsUsedThisMonth(), usageTotal("serper"), listSuppressions(200), getState<{ at: string; replies: number; bounces: number; fetched: number }>("mail.lastSync")]);
   const removed = tab === "do-not-contact" ? await listRemoved() : [];
+  const pilot = await autopilotStatus(s);
   /** The removed list can grow long: it has its own search and pages. */
   const REMOVED_PER_PAGE = 20;
   const removedQuery = (sp.rq ?? "").trim().slice(0, 80);
@@ -70,11 +73,30 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       <PageHeader title="Settings" />
       <Flash msg={sp.ok} />
       <Flash msg={sp.error} tone="bad" />
-      <Tabs items={SETTINGS_TABS.map((t) => ({ href: `/settings?tab=${t.key}`, label: t.label, count: tabBadge[t.key] || null, active: tab === t.key }))} />
+      <div className="grid lg:grid-cols-[230px_minmax(0,1fr)] gap-x-8 gap-y-5 items-start">
+        {/* The sections, grouped. On a phone the menu is one row that scrolls sideways. */}
+        <nav className="flex lg:flex-col gap-1 overflow-x-auto lg:overflow-visible lg:sticky lg:top-6 -mx-1 px-1 pb-1" aria-label="Settings sections">
+          {SETTINGS_TABS.map((t, i) => {
+            const active = tab === t.key;
+            const firstOfGroup = i === 0 || SETTINGS_TABS[i - 1].group !== t.group;
+            const n = tabBadge[t.key] || 0;
+            return (
+              <div key={t.key} className="contents lg:block">
+                {firstOfGroup && <div className={`hidden lg:block text-xs font-semibold text-ink-faint px-3 pb-1 ${i === 0 ? "" : "pt-4"}`}>{t.group}</div>}
+                <Link href={`/settings?tab=${t.key}`} aria-current={active ? "page" : undefined} className={`flex items-center gap-2.5 rounded-lg px-3 h-10 text-sm whitespace-nowrap hover:no-underline ${active ? "bg-accent-soft text-accent-text font-semibold" : "text-ink-muted hover:bg-surface-2 hover:text-ink"}`}>
+                  <Icon name={t.icon} className="w-4 h-4 shrink-0" />
+                  <span className="lg:flex-1">{t.label}</span>
+                  {n > 0 && <span className="rounded-full bg-warn-soft text-warn text-xs font-bold px-1.5 leading-5 tabular-nums">{n}</span>}
+                </Link>
+              </div>
+            );
+          })}
+        </nav>
+        <div className="min-w-0">
 
       {tab === "sender" && (
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
-          <Card id="sender" className="scroll-mt-4" title="You, the sender" description="Appended to every email by the system. The writer never invents who you are.">
+        <div className="grid xl:grid-cols-[minmax(0,1fr)_300px] gap-5 items-start">
+          <Card id="sender" className="scroll-mt-4" title="Your details" description="Appended to every email by the system. The writer never invents who you are.">
             {missing.length > 0 && (
               <div className="mb-4">
                 <Callout tone="warn" title="Needed before anything can be sent">
@@ -102,14 +124,35 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               </div>
             </form>
           </Card>
-          <Card id="signature" title="Your signature" description="Added under every email, exactly like this.">
-            <pre className="letter-text whitespace-pre-wrap text-ink">{signatureBlock(s)}</pre>
+          <Card id="signature" title="Your signature">
+            {/* Editable: what is typed here is used as written. Left as it is, it follows the details on the left. */}
+            <form action={saveSettingsAction} className="space-y-3">
+              <input type="hidden" name="section" value="signature" />
+              <div>
+                <label className="label" htmlFor="signatureText">
+                  Under every email
+                </label>
+                <textarea id="signatureText" name="signature" className="textarea letter-text font-sans" rows={5} defaultValue={signatureLines(s)} placeholder="Your name&#10;Your title, your company&#10;Your address" />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <button className="btn btn-primary">Save signature</button>
+                {s.signature && (
+                  <button className="btn btn-ghost" name="useDetails" value="1" title="Build the signature from your details again">
+                    Use my details
+                  </button>
+                )}
+              </div>
+            </form>
+            <div className="mt-5 pt-4 border-t border-line">
+              <div className="label">As it is sent</div>
+              <pre className="letter-text font-sans whitespace-pre-wrap text-ink-muted">{signatureBlock(s)}</pre>
+            </div>
           </Card>
         </div>
       )}
 
       {tab === "mailbox" && (
-        <div className="grid lg:grid-cols-2 gap-5 items-stretch">
+        <div className="space-y-5 max-w-3xl">
           <Card id="mailbox" className="scroll-mt-4" title="Mailbox" description="Emails go out from your own address and replies are read from its inbox.">
             {box.enabled ? (
               <>
@@ -152,15 +195,98 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
               </>
             )}
           </Card>
-          <Card id="sending" className="scroll-mt-4" title="Sending" description="“Send approved emails” queues them; these limits decide when each one actually leaves.">
+        </div>
+      )}
+
+      {tab === "sending" && (
+        <div className="space-y-5 max-w-3xl">
+          <Card id="sending" className="scroll-mt-4" title="Sending limits" description="“Send approved” queues them; these limits decide when each one actually leaves.">
             <form action={saveSettingsAction} className="grid sm:grid-cols-2 gap-4">
               <input type="hidden" name="section" value="sending" />
-              <Field label="Emails per day, at most" name="dailySendCap" type="number" value={s.dailySendCap} hint="Keep it low from a personal mailbox: 20 is a sensible ceiling." />
+              <h3 className="sm:col-span-2 text-sm font-semibold text-ink-muted">How much, and when</h3>
+              <Field label="Emails per day, at most" name="dailySendCap" type="number" value={s.dailySendCap} hint={pilot.cap.warmingUp ? `Keep it low from a personal mailbox: 20 is a sensible ceiling. While the app sends on its own the limit in force is ${pilot.cap.cap} a day for now: it starts at 10 and rises by 5 each week up to your number.` : "Keep it low from a personal mailbox: 20 is a sensible ceiling."} />
               <Field label="Pause between emails (seconds)" name="sendSpacingSeconds" type="number" value={s.sendSpacingSeconds} />
               <Field label="Send from (hour, 0-23)" name="sendWindowStart" type="number" value={s.sendWindowStart} />
               <Field label="Send until (hour, 1-24)" name="sendWindowEnd" type="number" value={s.sendWindowEnd} hint="This computer's local time." />
-              <Field label="Countries you may email" name="allowedCountries" value={s.allowedCountries.join(", ")} hint="Two-letter codes, comma separated. Empty = any. Rules for unsolicited business email differ by country; add one only after checking its rules." />
-              <Field label="Follow up after (working days)" name="followUpDays" type="number" value={s.followUpDays} hint="One follow-up is drafted for your approval when nobody answers. 0 = never." />
+              <h3 className="sm:col-span-2 text-sm font-semibold text-ink-muted pt-4 mt-1 border-t border-line">When nobody answers</h3>
+              <Field label="Follow up after (working days)" name="followUpDays" type="number" value={s.followUpDays} hint="The wait before each next email when nobody answers. 0 = never follow up." />
+              <div>
+                <label className="label" htmlFor="followUpCount">
+                  Emails after an unanswered first email
+                </label>
+                <select className="select" id="followUpCount" name="followUpCount" defaultValue={s.followUpCount}>
+                  <option value={0}>None</option>
+                  <option value={1}>One follow-up</option>
+                  <option value={2}>A follow-up, then a short last note</option>
+                </select>
+                <p className="hint">The sequence stops the moment they answer. An out-of-office reply postpones the next email by a week.</p>
+              </div>
+              <Field label="Check back after a “not now” (days)" name="recontactDays" type="number" value={s.recontactDays} hint="One check-back email is written when the time comes. 0 = never." />
+              <div />
+              <h3 className="sm:col-span-2 text-sm font-semibold text-ink-muted pt-4 mt-1 border-t border-line">Where</h3>
+              <Field label="Only email these countries (optional)" name="allowedCountries" value={s.allowedCountries.join(", ")} placeholder="Every country" hint="Leave empty to email businesses in any country. To limit yourself, list two-letter codes, comma separated (e.g. US, GB). You are responsible for following each country's rules on unasked-for business email." />
+              <div />
+              <div className="sm:col-span-2">
+                <button className="btn btn-primary">Save</button>
+              </div>
+            </form>
+          </Card>
+        </div>
+      )}
+
+      {tab === "autopilot" && (
+        <div className="space-y-5 max-w-3xl">
+          <Card id="autopilot" className="scroll-mt-4" title="Automatic sending" description="You decide how much the app does on its own. An email whose checks did not all pass always waits for you, whatever you choose here.">
+            {pilot.paused ? (
+              <Callout tone="warn" title="Sending on its own is paused">
+                <p>{pilot.paused.reason}</p>
+                <p className="text-xs text-ink-muted mt-1">Paused {new Date(pilot.paused.at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}. Emails are still written and you can still send by hand.</p>
+                <form action={resumeAutopilotAction} className="mt-2">
+                  <ConfirmButton confirmLabel="Resume" className="btn btn-sm" message="Let the app send on its own again?">
+                    Resume sending on its own
+                  </ConfirmButton>
+                </form>
+              </Callout>
+            ) : pilot.mode !== "manual" && pilot.waitingFor ? (
+              <Callout tone="info" title="Chosen, but not sending yet">
+                {pilot.waitingFor}
+              </Callout>
+            ) : pilot.active ? (
+              <Callout tone="ok" title="The app is sending on its own">
+                {pilot.mode === "hold" ? `A checked email goes out ${s.holdHours} hour${s.holdHours === 1 ? "" : "s"} after it is written unless you exclude it.` : "A checked email goes out as soon as it is written."} At most {pilot.cap.cap} a day{pilot.cap.warmingUp ? " for now (the limit rises week by week)" : ""}, inside your sending hours.
+              </Callout>
+            ) : null}
+            <form action={saveSettingsAction} className="grid sm:grid-cols-2 gap-4 mt-4">
+              <input type="hidden" name="section" value="autopilot" />
+              <fieldset className="sm:col-span-2 space-y-2.5">
+                <legend className="label">Sending</legend>
+                {(
+                  [
+                    ["manual", "I approve and send every email", "Nothing leaves without your click. This is how the app has worked so far."],
+                    ["hold", "Send checked emails after a waiting time", "Every email waits under Outreach for the hours below. Exclude or edit it in that time and it does not go; otherwise it is sent for you."],
+                    ["auto", "Send checked emails right away", "No waiting time. Choose this only once the emails have been right for a while."],
+                  ] as const
+                ).map(([value, title, text]) => (
+                  <label key={value} className="flex items-start gap-2.5 text-sm">
+                    <input type="radio" name="sendMode" value={value} defaultChecked={s.sendMode === value} className="mt-0.5" />
+                    <span>
+                      <strong>{title}</strong>
+                      <span className="block text-xs text-ink-muted">{text}</span>
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+              <Field label="Waiting time (hours)" name="holdHours" type="number" value={s.holdHours} hint="Counted from when the email was written or last edited." />
+              <div className="text-xs text-ink-muted self-end pb-1">
+                Sending on its own starts after you have sent {TRUST_MIN_MANUAL} emails yourself ({pilot.sentByHand} so far). It pauses itself when too many emails bounce, too many people opt out or the mailbox fails, and when you press “Stop sending”.
+              </div>
+              <label className="flex items-start gap-2.5 text-sm sm:col-span-2">
+                <input type="checkbox" name="autoAnswer" defaultChecked={s.autoAnswer} className="mt-0.5" />
+                <span>
+                  <strong>Also send simple answers to replies</strong>
+                  <span className="block text-xs text-ink-muted">Only answers that need no decision: your booking link when they ask for a call, a short “noted” when they say not now. A “yes”, a question or a referral to someone else is written for you and always waits for you.</span>
+                </span>
+              </label>
               <div className="sm:col-span-2">
                 <button className="btn btn-primary">Save</button>
               </div>
@@ -170,10 +296,26 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       )}
 
       {tab === "automation" && (
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
-          <Card id="automation" className="scroll-mt-4" title="Automation and budgets" description="What runs without you. Sending is never automatic.">
+        <div className="space-y-5 max-w-3xl">
+          <Card id="automation" className="scroll-mt-4" title="Finding and research" description="What is prepared without you: finding, research and writing.">
             <form action={saveSettingsAction} className="grid sm:grid-cols-2 gap-4">
               <input type="hidden" name="section" value="automation" />
+              <label className="flex items-start gap-2.5 text-sm sm:col-span-2">
+                <input type="checkbox" name="autoSearch" defaultChecked={s.autoSearch} className="mt-0.5" />
+                <span>
+                  <strong>Find new businesses on its own</strong> when few are left to research
+                  <span className="block text-xs text-ink-muted">Works through the cities of each line below, largest first, and never searches the same city twice for the same kind of business. Each search reads {AUTO_SEARCH_RESULTS} listings and costs {AUTO_SEARCH_CREDITS} search credits.</span>
+                </span>
+              </label>
+              <div className="sm:col-span-2">
+                <label className="label" htmlFor="searchTargets">
+                  Who to look for
+                </label>
+                <textarea className="input font-mono text-sm" id="searchTargets" name="searchTargets" rows={3} defaultValue={searchTargetsText(s.searchTargets)} placeholder={"sign makers | GB\nforklift training | GB | ENG\nroofers | US | TX"} />
+                <p className="hint">One per line: the kind of business in plain words, then the country code, then (optional) the region code.</p>
+              </div>
+              <Field label="Searches started per day, at most" name="searchesPerDay" type="number" value={s.searchesPerDay} />
+              <div />
               <label className="flex items-start gap-2.5 text-sm sm:col-span-2">
                 <input type="checkbox" name="autoResearch" defaultChecked={s.autoResearch} className="mt-0.5" />
                 <span>
@@ -187,16 +329,27 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
                 <input type="checkbox" name="autoDraft" defaultChecked={s.autoDraft} className="mt-0.5" />
                 <span>
                   <strong>Write the email as soon as a business qualifies</strong>
-                  <span className="block text-xs text-ink-muted">It lands under Outreach for your review. Nothing is sent.</span>
+                  <span className="block text-xs text-ink-muted">It lands under Outreach. Whether it then waits for you or goes out is decided under “Who presses Send” above.</span>
                 </span>
               </label>
-              <Field label="AI budget per month (USD)" name="monthlyAiBudgetUsd" type="number" value={s.monthlyAiBudgetUsd ?? ""} placeholder={`${cfg.AI_SPEND_LIMIT_USD} (from .env)`} hint="Research and writing stop for the month when this is reached." />
               <div className="sm:col-span-2">
                 <button className="btn btn-primary">Save</button>
               </div>
             </form>
           </Card>
-          <Card id="usage" title="This month" description="Budgets reset on the first of the month.">
+        </div>
+      )}
+
+      {tab === "usage" && (
+        <div className="space-y-5 max-w-3xl">
+          <Card id="usage" title="Budget and usage this month" description="Budgets reset on the first of the month.">
+            <form action={saveSettingsAction} className="flex flex-wrap items-end gap-3 pb-5 mb-5 border-b border-line">
+              <input type="hidden" name="section" value="budget" />
+              <div className="flex-1 min-w-[14rem]">
+                <Field label="AI budget per month (USD)" name="monthlyAiBudgetUsd" type="number" value={s.monthlyAiBudgetUsd ?? ""} placeholder={`${cfg.AI_SPEND_LIMIT_USD} (from .env)`} hint="Research and writing stop for the month when this is reached." />
+              </div>
+              <button className="btn btn-primary">Save</button>
+            </form>
             <div className="space-y-4">
               <div>
                 <div className="label">AI (research, writing, checks)</div>
@@ -346,7 +499,7 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
       )}
 
       {tab === "system" && (
-        <div className="grid lg:grid-cols-[minmax(0,1fr)_340px] gap-5 items-start">
+        <div className="grid xl:grid-cols-[minmax(0,1fr)_300px] gap-5 items-start">
           <Card id="connections" title="Connections" description="Keys live in the .env file on this computer, never here." padded={false}>
             <ul className="divide-y divide-line">
               {[integ.googleMaps, integ.websiteResearch, integ.ai, integ.webSearch, integ.storage].map((i) => (
@@ -379,6 +532,8 @@ export default async function SettingsPage({ searchParams }: { searchParams: Pro
           </Card>
         </div>
       )}
+        </div>
+      </div>
     </>
   );
 }

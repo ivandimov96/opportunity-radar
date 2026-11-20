@@ -401,6 +401,11 @@ export async function runDiscovery(db: Db, search: SearchRow, opts: RunOptions =
       stats.skippedChains!++;
       continue;
     }
+    // Review limits: a listing that does not show the figure cannot pass a limit set on it.
+    if ((filters.minReviews && (hints.reviewCount ?? 0) < filters.minReviews) || (filters.minRating && (hints.rating ?? 0) < filters.minRating)) {
+      stats.skippedReviews = (stats.skippedReviews ?? 0) + 1;
+      continue;
+    }
     // Removed by the operator earlier: never listed or saved again, whatever the filters say.
     if (await findRemoved(db, m)) {
       stats.skippedRemoved = (stats.skippedRemoved ?? 0) + 1;
@@ -415,7 +420,7 @@ export async function runDiscovery(db: Db, search: SearchRow, opts: RunOptions =
   }
   ranked.sort((a, b) => b.lead.score - a.lead.score || (PROVIDER_RANK[a.m.primary.provider] ?? 9) - (PROVIDER_RANK[b.m.primary.provider] ?? 9));
   stats.ranked = ranked.length;
-  note(`Ranking: ${merged.length} unique business(es); ${stats.skippedClosed} closed, ${stats.skippedNoWebsite} without website, ${stats.skippedNoPhone} without phone, ${stats.skippedChains} chain(s), ${stats.skippedKnown} already known skipped, ${stats.skippedRemoved ?? 0} removed by you earlier; ${ranked.length} ranked by lead score; cap ${search.maxResults}`);
+  note(`Ranking: ${merged.length} unique business(es); ${stats.skippedClosed} closed, ${stats.skippedNoWebsite} without website, ${stats.skippedNoPhone} without phone, ${stats.skippedChains} chain(s), ${stats.skippedReviews ?? 0} below the review limits, ${stats.skippedKnown} already known skipped, ${stats.skippedRemoved ?? 0} removed by you earlier; ${ranked.length} ranked by lead score; cap ${search.maxResults}`);
 
   // ---- 5. Store candidates (every source kept), replacing the previous run's.
   const listed = ranked.slice(0, search.maxResults);

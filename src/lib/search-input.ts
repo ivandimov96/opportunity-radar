@@ -21,6 +21,8 @@ export const DEFAULT_FILTERS: SearchFilters = {
   autoInvestigateLimit: 25,
   customCategory: null,
   autoSave: true,
+  minReviews: 0,
+  minRating: 0,
 };
 
 export const SearchInput = z
@@ -47,6 +49,8 @@ export const SearchInput = z
     minLeadScore: z.coerce.number().int().min(0).max(100).default(DEFAULT_FILTERS.minLeadScore),
     autoInvestigateLimit: z.coerce.number().int().min(1).max(500).nullable().default(DEFAULT_FILTERS.autoInvestigateLimit),
     autoSave: z.boolean().default(true),
+    minReviews: z.coerce.number().int("Whole number").min(0, "0 or more").max(100000).default(0),
+    minRating: z.coerce.number().min(0, "Between 0 and 5").max(5, "Between 0 and 5").default(0),
     providers: z.array(z.enum(["google_maps", "foursquare", "web_search", "linkedin"])).min(1, "Pick at least one source"),
   })
   .superRefine((v, ctx) => {
@@ -95,6 +99,8 @@ export function rawSearchValues(fd: FormData) {
     autoSave: bool(fd, "autoSave", true),
     minLeadScore: str(fd, "minLeadScore") || String(DEFAULT_FILTERS.minLeadScore),
     autoInvestigateLimit: str(fd, "autoInvestigateLimit"),
+    minReviews: str(fd, "minReviews") || "0",
+    minRating: str(fd, "minRating") || "0",
     providers: fd.getAll("providers").map(String),
   };
 }
@@ -127,7 +133,7 @@ export function parseSearchForm(fd: FormData): { ok: true; values: SearchInputVa
   const where = v.areaMode === "radius" && v.city ? `${v.radiusKm} km around ${v.city}` : [v.city, v.region].filter(Boolean).join(", ") || v.country;
   const segs = v.segments.length && v.segments.length < playbook.segments.length ? ` (${v.segments.map((k) => playbook.segments.find((s) => s.key === k)?.label ?? k).join(", ")})` : "";
   const name = v.name || `${playbook.key === "generic" && v.customCategory ? v.customCategory : playbook.label}${segs} · ${where}`;
-  const filters: SearchFilters = { segments: v.segments, areaMode: v.areaMode, radiusKm: v.radiusKm, requirePhone: v.requirePhone, excludeChains: v.excludeChains, skipKnown: v.skipKnown, minLeadScore: v.minLeadScore, autoInvestigateLimit: v.autoInvestigateLimit, centerLat: v.centerLat, centerLon: v.centerLon, customCategory: v.customCategory ?? null, autoSave: v.autoSave };
+  const filters: SearchFilters = { segments: v.segments, areaMode: v.areaMode, radiusKm: v.radiusKm, requirePhone: v.requirePhone, excludeChains: v.excludeChains, skipKnown: v.skipKnown, minLeadScore: v.minLeadScore, autoInvestigateLimit: v.autoInvestigateLimit, centerLat: v.centerLat, centerLon: v.centerLon, customCategory: v.customCategory ?? null, autoSave: v.autoSave, minReviews: v.minReviews, minRating: v.minRating };
   return { ok: true, values: v, filters, name };
 }
 
@@ -148,7 +154,42 @@ export function describeFilters(search: { filters?: SearchFilters | null; requir
   if (f.excludeChains) out.push("chains excluded");
   if (f.skipKnown) out.push("known businesses skipped");
   if (f.customCategory) out.push(`category "${f.customCategory}"`);
+  if (f.minReviews) out.push(`at least ${f.minReviews} reviews`);
+  if (f.minRating) out.push(`rated ${f.minRating} or more`);
   if (f.autoSave === false) out.push("results reviewed before saving");
   out.push(search.autoInvestigate ? `auto-investigate${f.autoInvestigateLimit ? ` top ${f.autoInvestigateLimit}` : ""} (lead ≥ ${f.minLeadScore})` : "manual investigation");
   return out;
+}
+
+/** The extra cities of a search form ("Also search"): at most nine, each with a name and coordinates. */
+export const MAX_MORE_CITIES = 9;
+export function moreCitiesOf(fd: FormData): { name: string; region: string | null; lat: number; lon: number }[] {
+  try {
+    const raw: unknown = JSON.parse(str(fd, "moreCities") || "[]");
+    if (!Array.isArray(raw)) return [];
+    const seen = new Set<string>();
+    return raw
+      .map((c) => ({ name: String(c?.name ?? "").trim().slice(0, 80), region: c?.region ? String(c.region).slice(0, 12) : null, lat: Number(c?.lat), lon: Number(c?.lon) }))
+      .filter((c) => c.name && Number.isFinite(c.lat) && Number.isFinite(c.lon) && Math.abs(c.lat) <= 90 && Math.abs(c.lon) <= 180 && !seen.has(c.name.toLowerCase()) && Boolean(seen.add(c.name.toLowerCase())))
+      .slice(0, MAX_MORE_CITIES);
+  } catch {
+    return [];
+  }
+}
+
+/** The same form once more for each extra city: validated and named like the main search, with that city's own centre. */
+export function extraCityRuns(fd: FormData, mainCity: string) {
+  const runs: Extract<ReturnType<typeof parseSearchForm>, { ok: true }>[] = [];
+  for (const c of moreCitiesOf(fd)) {
+    if (c.name.toLowerCase() === mainCity.trim().toLowerCase()) continue;
+    const copy = new FormData();
+    for (const [k, val] of fd.entries()) if (!["city", "region", "centerLat", "centerLon", "name", "moreCities"].includes(k)) copy.append(k, val);
+    copy.set("city", c.name);
+    copy.set("region", c.region ?? str(fd, "region"));
+    copy.set("centerLat", String(c.lat));
+    copy.set("centerLon", String(c.lon));
+    const extra = parseSearchForm(copy);
+    if (extra.ok) runs.push(extra);
+  }
+  return runs;
 }

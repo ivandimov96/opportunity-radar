@@ -96,9 +96,10 @@
   --color-info: var(--info);
   --color-info-soft: var(--info-soft);
   --color-stamp: var(--stamp);
-  /* Two families: a humanist sans for everything you operate, a book serif for page titles and for the letter itself. */
-  --font-sans: "Avenir Next", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
-  --font-serif: Charter, "Bitstream Charter", "Sitka Text", Cambria, Georgia, serif;
+  /* One family, Inter, for everything: interface, page titles and the email text. `--font-serif` is kept as a name
+     (titles and figures ask for it) and points at the same family, so nothing in the product is set in a serif. */
+  --font-sans: var(--font-inter), "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: var(--font-sans);
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -126,12 +127,11 @@ a:hover {
   background: var(--accent-soft);
 }
 h1 {
-  font-family: var(--font-serif);
-  font-weight: 600;
-  letter-spacing: -0.005em;
+  font-weight: 700;
+  letter-spacing: -0.022em;
 }
 h2, h3 {
-  letter-spacing: -0.005em;
+  letter-spacing: -0.012em;
 }
 /* Line breaks. A heading that needs two lines gets two lines of about the same length, never one long line and a
    single word left over; running text never ends on a line with one word alone. */
@@ -240,6 +240,27 @@ details[open] > summary .chevron {
   padding: 0 0.7rem;
   font-size: 0.8rem;
 }
+/* The number a button acts on ("Send approved 5"): a small pill inside the button, instead of brackets. */
+.btn-count {
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.4rem;
+  margin-right: -0.3rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  background: var(--surface-3);
+  color: var(--text);
+}
+.btn-primary .btn-count {
+  background: color-mix(in srgb, var(--accent-fg) 16%, transparent);
+  color: var(--accent-fg);
+}
 .btn-lg {
   height: 2.85rem;
   padding: 0 1.3rem;
@@ -280,12 +301,50 @@ details[open] > summary .chevron {
   background: var(--surface-2);
   color: var(--text-muted);
 }
+/* A dropdown says it is one: a clear arrow, a pointer, and a border that answers the mouse. */
 .select {
   appearance: none;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%238d95a5' stroke-width='2.5'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  cursor: pointer;
+  font-weight: 500;
+  min-height: 2.4rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%236b7385' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
-  background-position: right 0.6rem center;
-  padding-right: 1.9rem;
+  background-position: right 0.65rem center;
+  padding-right: 2.2rem;
+  text-overflow: ellipsis;
+}
+.select:hover:not(:disabled) {
+  border-color: var(--accent);
+  background-color: var(--surface-2);
+}
+.select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+/* A line of text that opens something: an arrow in front that turns when it is open. */
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+  user-select: none;
+  border-radius: var(--radius-sm);
+}
+.disclosure::before {
+  content: "";
+  width: 0.9rem;
+  height: 0.9rem;
+  flex-shrink: 0;
+  background-color: currentColor;
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 6 6 6-6 6'/%3E%3C/svg%3E") center / contain no-repeat;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m9 6 6 6-6 6'/%3E%3C/svg%3E") center / contain no-repeat;
+  transition: transform 0.12s ease;
+}
+.disclosure:hover {
+  color: var(--text);
+}
+details[open] > .disclosure::before {
+  transform: rotate(90deg);
 }
 .label {
   display: block;
@@ -366,6 +425,17 @@ details[open] > summary .chevron {
   .table td:empty {
     display: none;
   }
+  /* In a card there is room below, not beside: text that is cut with "…" in a table column wraps here instead,
+     so one long name or subject can never make the page wider than the screen. */
+  /* `!important` on purpose: the utility classes `table` and `truncate` come later in the cascade and would win. */
+  .table {
+    display: block !important;
+  }
+  .table td .truncate,
+  .table td.truncate {
+    white-space: normal !important;
+    overflow-wrap: anywhere;
+  }
   .table tbody tr:hover td {
     background: transparent;
   }
@@ -383,6 +453,10 @@ details[open] > summary .chevron {
   font-size: 0.8rem;
   font-weight: 600;
   white-space: nowrap;
+  /* A chip never pushes the page wider than the screen: a very long one is cut with an ellipsis. */
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
   text-decoration: none !important;
 }
 .chip:hover {
@@ -412,9 +486,8 @@ details[open] > summary .chevron {
 }
 /* The email itself, shown and edited as a letter. */
 .letter-text {
-  font-family: var(--font-serif);
-  font-size: 1.02rem;
-  line-height: 1.7;
+  font-size: 0.98rem;
+  line-height: 1.65;
 }
 /* The one dialog of the product (see components/confirm-button.tsx). */
 .modal {

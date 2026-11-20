@@ -11,7 +11,7 @@ export default async function AcceptableUsePage() {
     { title: "The idea in one sentence", body: ["Use Opportunity Radar to write a small number of honest, relevant emails to businesses you could genuinely help, and never to send bulk or deceptive mail."] },
     {
       title: "What you may do",
-      body: [["Write to businesses, about something relevant to their business.", "Use the contact details a business has published itself.", "Send in small numbers from your own mailbox, each email read and approved by you.", "Follow up once when there is no answer."]],
+      body: [["Write to businesses, about something relevant to their business.", "Use the contact details a business has published itself.", "Send in small numbers from your own mailbox, each email approved by you or sent under the automatic sending you switched on and keep watching.", "Follow up at most twice when there is no answer, then stop."]],
     },
     {
       title: "What you may not do",
@@ -29,7 +29,7 @@ export default async function AcceptableUsePage() {
         ],
       ],
     },
-    { title: "Opt-outs", body: ["Every email sent through the service says how to opt out. When a business replies that it does not want further contact, or its address bounces, that address goes on your do-not-contact list and the service will not write to it again. You must respect opt-outs that reach you in any other way too."] },
+    { title: "Opt-outs", body: ["When a business replies that it does not want further contact, or its address bounces, that address goes on your do-not-contact list and the service will not write to it again. You must respect opt-outs that reach you in any other way too."] },
     { title: "What happens if these rules are broken", body: ["We may hold back emails, limit sending, suspend the account or close it, depending on how serious it is. We may also do so when a mailbox provider, a recipient or an authority reports abuse. Where we reasonably can, we will tell you what happened and why."] },
     { title: "Reporting abuse", body: [op.email ? `If you received an email through Opportunity Radar that breaks these rules, write to ${op.email} and include the email you received. We look at every report.` : "If you received an email through Opportunity Radar that breaks these rules, reply to it saying so and contact us; we look at every report."] },
   ];

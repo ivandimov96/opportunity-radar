@@ -19,7 +19,7 @@ import { drainQueue } from "@/lib/jobs/worker";
 import { enqueueOutreach, maybeAutoDraft } from "@/lib/jobs/handlers";
 import { approveAllReady, approveDraft, excludeDraft, restoreDraft, saveDraftEdit } from "@/lib/outreach/drafts";
 import { addSuppression, isSuppressed } from "@/lib/email/suppression";
-import { getSettings, saveSettings, missingSenderDetails } from "@/lib/settings";
+import { getSettings, missingSenderDetails, saveSettings } from "@/lib/settings";
 import { ensureProspect } from "@/lib/pipeline/prospects";
 
 const BODY = `Hi Northside Air team,
@@ -78,7 +78,7 @@ describe("outreach engine", () => {
     await enqueueOutreach(id);
     expect(await drainQueue(["generate_outreach"])).toBe(1);
     const [d] = await draftOf(id);
-    expect(d).toMatchObject({ status: "ready", step: 0, toEmail: "office@northside.example", subject: "Booking your in-home estimates", model: "writer-model", promptVersion: "outreach-10" });
+    expect(d).toMatchObject({ status: "ready", step: 0, toEmail: "office@northside.example", subject: "Booking your in-home estimates", model: "writer-model", promptVersion: "outreach-11" });
     expect(d.costUsd).toBeCloseTo(0.025);
     expect(d.validation).toMatchObject({ passed: true, checkedBy: "check-model" });
     expect(d.validation?.issues).toEqual([{ severity: "warn", code: "tone", message: "Tone: slightly formal" }]);
@@ -138,6 +138,9 @@ describe("outreach engine", () => {
   });
 
   it("keeps a good email out of the ready queue when the recipient cannot be emailed, and refuses to approve it", async () => {
+    // By default every country may be emailed; the operator can limit that, and here does.
+    expect((await getSettings()).allowedCountries).toEqual([]);
+    await saveSettings({ allowedCountries: ["US"] });
     const noEmail = await seed("No Mail Co", null);
     const suppressed = await seed("Opted Out Co", "owner@optedout.example");
     const abroad = await seed("Berlin Co", "info@berlin.example", { country: "DE" });

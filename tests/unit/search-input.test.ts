@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeFilters, parseSearchForm, DEFAULT_FILTERS } from "@/lib/search-input";
+import { describeFilters, extraCityRuns, moreCitiesOf, parseSearchForm, DEFAULT_FILTERS } from "@/lib/search-input";
 import { getPlaybook, selectorsFor } from "@/lib/industries";
 
 const form = (entries: Record<string, string | string[]>) => {
@@ -50,5 +50,32 @@ describe("segments → selectors → Overpass", () => {
     expect(selectorsFor(pb, []).osmSelectors.length).toBeGreaterThan(3);
     expect(selectorsFor(getPlaybook("generic"), []).osmSelectors).toEqual([]);
     expect(selectorsFor(pb, ["hvac", "tires"]).googleQueries).toEqual(["tire shop"]);
+  });
+  it("reads review limits and describes them", () => {
+    const r = parseSearchForm(form({ industry: "generic", customCategory: "sign makers", country: "GB", city: "Leeds", providers: "google_maps", minReviews: "20", minRating: "4.5" }));
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.filters).toMatchObject({ minReviews: 20, minRating: 4.5 });
+    expect(describeFilters({ filters: r.filters, requireWebsite: false, autoInvestigate: false, industry: "generic" })).toEqual(expect.arrayContaining(["at least 20 reviews", "rated 4.5 or more"]));
+    const bad = parseSearchForm(form({ industry: "generic", customCategory: "sign makers", country: "GB", city: "Leeds", providers: "google_maps", minRating: "7" }));
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors.minRating).toBe("Between 0 and 5");
+  });
+  it("turns the extra cities of a form into searches of their own, each with its own name and centre", () => {
+    const more = JSON.stringify([
+      { name: "Bradford", region: "ENG", lat: 53.79, lon: -1.75 },
+      { name: "Leeds", region: "ENG", lat: 53.8, lon: -1.55 }, // the main city again: not searched twice
+      { name: "bradford", region: "ENG", lat: 1, lon: 1 }, // the same city twice
+      { name: "Nowhere", lat: "x", lon: 2 }, // no usable coordinates
+      { name: "Glasgow", region: "SCT", lat: 55.86, lon: -4.25 },
+    ]);
+    const fd = form({ industry: "generic", customCategory: "sign makers", country: "GB", region: "ENG", city: "Leeds", centerLat: "53.8", centerLon: "-1.55", providers: "google_maps", maxResults: "20", name: "My Leeds search", moreCities: more });
+    expect(moreCitiesOf(fd).map((c) => c.name)).toEqual(["Bradford", "Leeds", "Glasgow"]);
+    const runs = extraCityRuns(fd, "Leeds");
+    expect(runs.map((r) => r.name)).toEqual(["sign makers · Bradford, ENG", "sign makers · Glasgow, SCT"]);
+    expect(runs.map((r) => [r.values.city, r.values.region, r.filters.centerLat, r.filters.centerLon, r.values.maxResults])).toEqual([["Bradford", "ENG", 53.79, -1.75, 20], ["Glasgow", "SCT", 55.86, -4.25, 20]]);
+    expect(extraCityRuns(form({ industry: "generic", customCategory: "x", country: "GB", city: "Leeds", providers: "google_maps", moreCities: "not json" }), "Leeds")).toEqual([]);
+    const many = JSON.stringify(Array.from({ length: 15 }, (_, i) => ({ name: `City ${i}`, lat: 50 + i / 10, lon: -1 })));
+    expect(moreCitiesOf(form({ moreCities: many }))).toHaveLength(9);
   });
 });

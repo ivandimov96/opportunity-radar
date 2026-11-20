@@ -10,14 +10,16 @@ import { randomUUID } from "node:crypto";
 import { and, eq, gte, inArray, isNotNull, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { businesses, campaigns, emailEvents, jobs, outreachDrafts } from "@/db/schema";
-import { emailDomain, normalizeAddress } from "@/lib/email/address";
+import { emailDomain } from "@/lib/email/address";
 import { newId, nowIso } from "@/lib/ids";
 import { enqueueJob } from "@/lib/jobs/queue";
 import { getSettings, missingSenderDetails, type AppSettings } from "@/lib/settings";
 import { mailboxFor } from "@/lib/mail";
 import { businessIdsOf, workspaceId } from "@/lib/workspace";
 import { campaignInWorkspace, openCampaign, type Campaign } from "./campaigns";
-import { contactBlockers } from "./eligibility";
+import { recipientOf, sendBlockers } from "./eligibility";
+import { dailyCapInForce, type DailyCap } from "./limits";
+import { pauseAutopilot } from "./autopilot-state";
 
 export type Draft = typeof outreachDrafts.$inferSelect;
 type Business = typeof businesses.$inferSelect;
@@ -96,6 +98,8 @@ export interface Preflight {
   /** Approved emails that will NOT go out, with the reason. */
   blocked: { draft: Draft; business: Business; reasons: string[] }[];
   counts: { approved: number; ready: number; needsReview: number; excluded: number };
+  /** The daily limit in force (lower than the setting while the mailbox is warming up under autopilot). */
+  dailyCap: DailyCap;
   /** When the sendable emails would go out if sent now. */
   plan: { firstAt: string; lastAt: string; perDay: [string, number][] } | null;
   canSend: boolean;
@@ -120,8 +124,8 @@ export async function sendPreflight(campaignId: string, now = new Date()): Promi
     else if (r.draft.status === "excluded") counts.excluded++;
     if (r.draft.status !== "approved") continue;
     counts.approved++;
-    const reasons = await contactBlockers(r.business, settings);
-    const email = normalizeAddress(r.business.email);
+    const reasons = await sendBlockers(r.draft, r.business, settings);
+    const email = recipientOf(r.draft, r.business);
     if (email && seen.has(email)) reasons.push(`${email} is already a recipient in this batch (${seen.get(email)}).`);
     if (!r.draft.body.trim() || !(r.draft.subject ?? "").trim()) reasons.push("The email has no subject or no text.");
     if (r.draft.validation && !r.draft.validation.passed && !r.draft.validation.overridden) reasons.push("The email has not passed its checks.");
@@ -136,17 +140,18 @@ export async function sendPreflight(campaignId: string, now = new Date()): Promi
   const box = await mailboxFor();
   const mailbox = { ok: box.enabled, reason: box.reason, address: box.address };
   let plan: Preflight["plan"] = null;
+  const dailyCap = await dailyCapInForce(settings, now);
   if (sendable.length) {
-    const times = planSendTimes(now, sendable.length, { ...planOptions(settings), usedByDay: await usedByDay(now), jitter: () => 1 });
+    const times = planSendTimes(now, sendable.length, { ...planOptions(settings, dailyCap.cap), usedByDay: await usedByDay(now), jitter: () => 1 });
     const perDay = new Map<string, number>();
     for (const t of times) perDay.set(dayKey(t), (perDay.get(dayKey(t)) ?? 0) + 1);
     plan = { firstAt: times[0].toISOString(), lastAt: times[times.length - 1].toISOString(), perDay: [...perDay.entries()] };
   }
   const problem = campaign.status !== "open" ? "This batch was already sent." : !mailbox.ok ? (mailbox.reason ?? "No mailbox is connected.") : senderMissing.length ? `Before sending, add ${senderMissing.join(", ")} under Settings.` : !sendable.length ? (counts.approved ? "None of the approved emails can be sent (see the reasons below)." : "No email is approved yet.") : null;
-  return { campaign, mailbox, senderMissing, sendable, blocked, counts, plan, canSend: problem === null, problem };
+  return { campaign, mailbox, senderMissing, sendable, blocked, counts, dailyCap, plan, canSend: problem === null, problem };
 }
 
-const planOptions = (s: AppSettings) => ({ dailyCap: s.dailySendCap, spacingSeconds: s.sendSpacingSeconds, windowStart: s.sendWindowStart, windowEnd: s.sendWindowEnd });
+const planOptions = (s: AppSettings, dailyCap: number) => ({ dailyCap, spacingSeconds: s.sendSpacingSeconds, windowStart: s.sendWindowStart, windowEnd: s.sendWindowEnd });
 
 /** Queues every sendable approved email of the batch at its planned time and closes the batch. Safe to call twice. */
 export async function sendCampaign(campaignId: string, now = new Date()): Promise<{ ok: boolean; error?: string; queued: number; skipped: number; firstAt?: string; lastAt?: string }> {
@@ -155,15 +160,15 @@ export async function sendCampaign(campaignId: string, now = new Date()): Promis
   if (!pre.canSend) return { ok: false, error: pre.problem ?? "Nothing to send", queued: 0, skipped: pre.blocked.length };
   const db = await getDb();
   const settings = await getSettings();
-  const times = planSendTimes(now, pre.sendable.length, { ...planOptions(settings), usedByDay: await usedByDay(now) });
+  const times = planSendTimes(now, pre.sendable.length, { ...planOptions(settings, pre.dailyCap.cap), usedByDay: await usedByDay(now) });
   let queued = 0;
   for (const [i, { draft, business }] of pre.sendable.entries()) {
     const at = times[i];
     const messageId = draft.messageId ?? makeMessageId(pre.mailbox.address!);
     // Claim approved → queued in one statement: a second click (or a second tab) finds nothing left to queue.
-    const claimed = await db.update(outreachDrafts).set({ status: "queued", scheduledAt: at.toISOString(), messageId, toEmail: normalizeAddress(business.email), lastError: null, updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draft.id), eq(outreachDrafts.status, "approved"))).run();
+    const claimed = await db.update(outreachDrafts).set({ status: "queued", scheduledAt: at.toISOString(), messageId, toEmail: recipientOf(draft, business), lastError: null, updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draft.id), eq(outreachDrafts.status, "approved"))).run();
     if (!claimed.rowsAffected) continue;
-    await db.insert(emailEvents).values({ id: newId(), draftId: draft.id, businessId: business.id, type: "queued", detail: { scheduledAt: at.toISOString(), to: business.email } }).run();
+    await db.insert(emailEvents).values({ id: newId(), draftId: draft.id, businessId: business.id, type: "queued", detail: { scheduledAt: at.toISOString(), to: recipientOf(draft, business) } }).run();
     await enqueueJob("send_email", { draftId: draft.id }, { idempotencyKey: `send:${draft.id}`, delayMs: Math.max(0, at.getTime() - Date.now()), maxAttempts: 4 });
     queued++;
   }
@@ -211,6 +216,8 @@ export async function cancelQueued(campaignId: string): Promise<number> {
   }
   await carryOverUnsent(campaignId);
   await closeCampaignIfDone(campaignId);
+  // Stop means stop: with the autopilot on, the emails just taken back would be queued again within the minute.
+  if (n && (await getSettings()).sendMode !== "manual") await pauseAutopilot("You stopped a batch that was going out. Nothing is sent on its own until you resume.");
   return n;
 }
 

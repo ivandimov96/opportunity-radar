@@ -20,14 +20,18 @@ export async function searchCostBasis(): Promise<SearchCostBasis> {
   const cfg = getConfig();
   const db = await getDb();
   const ws = await workspaceId();
-  const [serperUsed, crawl, settings, research, emails, pages] = await Promise.all([
+  const [serperUsed, crawl, settings, research, emails, pages, outcomes] = await Promise.all([
     usageTotal("serper"),
     creditsUsedThisMonth(),
     getSettings(),
     db.get<{ n: number; avg: number | null }>(sql`select count(*) as n, avg(c) as avg from (select sum(estimated_cost_usd) as c from ai_usage where workspace_id = ${ws} and stage = 'investigate' and business_id is not null group by business_id)`),
     db.get<{ n: number; avg: number | null }>(sql`select count(*) as n, avg(c) as avg from (select sum(estimated_cost_usd) as c from ai_usage where workspace_id = ${ws} and stage in ('outreach', 'check') and business_id is not null group by business_id)`),
     db.get<{ avg: number | null }>(sql`select avg(i.credits_used) as avg from investigations i join businesses b on b.id = i.business_id where b.workspace_id = ${ws} and i.status = 'done' and i.credits_used > 0`),
+    // How research has ended so far: no public email (stops early, no AI), or qualified (gets an email).
+    db.get<{ n: number; noEmail: number; qualified: number }>(sql`select count(*) as n, coalesce(sum(verdict = 'no_contact'), 0) as noEmail, coalesce(sum(verdict = 'qualified'), 0) as qualified from businesses where workspace_id = ${ws} and investigated_at is not null`),
   ]);
+  const seen = Number(outcomes?.n ?? 0);
+  const ownShares = seen >= MIN_HISTORY * 2;
   const own = Number(research?.n ?? 0) >= MIN_HISTORY;
   const ai = cfg.ai.enabled;
   return {
@@ -41,5 +45,8 @@ export async function searchCostBasis(): Promise<SearchCostBasis> {
     pageCreditsLeft: Math.max(0, cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET - crawl.credits),
     measuredFrom: own && ai ? Number(research?.n ?? 0) : 0,
     autoDraft: settings.autoDraft && ai,
+    noEmailShare: ownShares ? Number(outcomes!.noEmail) / seen : TYPICAL_COST.noEmailShare,
+    qualifiedShare: ownShares ? Number(outcomes!.qualified) / seen : TYPICAL_COST.qualifiedShare,
+    cacheDays: cfg.SERPER_CACHE_DAYS,
   };
 }

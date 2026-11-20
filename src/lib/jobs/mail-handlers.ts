@@ -21,9 +21,12 @@ import { getMailProvider, mailboxFor, MailSendError } from "@/lib/mail";
 import { asksToUnsubscribe, stripQuoted } from "@/lib/mail/parse";
 import { syncMailbox } from "@/lib/mail/sync";
 import { composeEmailBody } from "@/lib/outreach/drafts";
-import { contactBlockers } from "@/lib/outreach/eligibility";
+import { recipientOf, sendBlockers } from "@/lib/outreach/eligibility";
+import { dailyCapInForce } from "@/lib/outreach/limits";
 import { closeCampaignIfDone, dayKey, planSendTimes, sentToday, usedByDay } from "@/lib/outreach/send";
-import { advanceStageIfBehind, logActivity, setNextAction } from "@/lib/pipeline/prospects";
+import { SEQUENCE_STEPS, STEP, stepLabel } from "@/lib/outreach/steps";
+import { draftAnswer, withdrawAnswers } from "@/lib/outreach/answers";
+import { advanceStageIfBehind, logActivity, setNextAction, setRecontact } from "@/lib/pipeline/prospects";
 import { getSettings, missingSenderDetails } from "@/lib/settings";
 import { businessIdsOf, draftInWorkspace, workspaceId } from "@/lib/workspace";
 import { NonRetryableError, RetryableError, type ProgressFn } from "./handlers";
@@ -68,8 +71,9 @@ export async function handleSendEmail(job: JobRow, _progress: ProgressFn, signal
 
   const settings = await getSettings();
   // The daily cap is checked again at the moment of sending; an email over the cap moves to the next free slot.
-  if ((await sentToday()) >= settings.dailySendCap) {
-    const [next] = planSendTimes(new Date(), 1, { dailyCap: settings.dailySendCap, spacingSeconds: settings.sendSpacingSeconds, windowStart: settings.sendWindowStart, windowEnd: settings.sendWindowEnd, usedByDay: { ...(await usedByDay()), [dayKey(new Date())]: settings.dailySendCap } });
+  const { cap } = await dailyCapInForce(settings);
+  if ((await sentToday()) >= cap) {
+    const [next] = planSendTimes(new Date(), 1, { dailyCap: cap, spacingSeconds: settings.sendSpacingSeconds, windowStart: settings.sendWindowStart, windowEnd: settings.sendWindowEnd, usedByDay: { ...(await usedByDay()), [dayKey(new Date())]: cap } });
     await db.update(outreachDrafts).set({ scheduledAt: next.toISOString(), updatedAt: nowIso() }).where(eq(outreachDrafts.id, draftId)).run();
     await enqueueJob("send_email", { draftId }, { idempotencyKey: `send:${draftId}:${next.getTime()}`, delayMs: Math.max(0, next.getTime() - Date.now()), maxAttempts: 4 });
     await event(draftId, draft.businessId, "rescheduled", { scheduledAt: next.toISOString(), reason: "daily cap reached" });
@@ -79,8 +83,12 @@ export async function handleSendEmail(job: JobRow, _progress: ProgressFn, signal
   // Last look at the recipient: an opt-out or bounce may have arrived since the email was approved.
   const biz = await db.select().from(businesses).where(eq(businesses.id, draft.businessId)).get();
   if (!biz) throw new NonRetryableError("Business not found");
-  const blockers = [...(await contactBlockers(biz, settings)), ...missingSenderDetails(settings).map((m) => `Settings are missing ${m}.`)];
+  const blockers = [...(await sendBlockers(draft, biz, settings)), ...missingSenderDetails(settings).map((m) => `Settings are missing ${m}.`)];
   if (!draft.messageId) blockers.push("The email has no Message-ID.");
+  // A follow-up or last note is for someone who has not answered. If they answered after it was queued, it must not go.
+  if ((SEQUENCE_STEPS as readonly number[]).includes(draft.step) && (await db.select({ id: inboundEmails.id }).from(inboundEmails).where(and(eq(inboundEmails.businessId, biz.id), eq(inboundEmails.kind, "reply"))).limit(1).get())) blockers.push("They answered in the meantime.");
+  const to = recipientOf(draft, biz);
+  if (!to) blockers.push("No address to send to.");
   if (blockers.length) {
     await fail(`Not sent: ${blockers.join(" ")}`, "cancelled");
     throw new NonRetryableError(`Not sent: ${blockers.join(" ")}`);
@@ -90,16 +98,16 @@ export async function handleSendEmail(job: JobRow, _progress: ProgressFn, signal
   const claimed = await db.update(outreachDrafts).set({ status: "sending", attempts: sql`${outreachDrafts.attempts} + 1`, updatedAt: nowIso() }).where(and(eq(outreachDrafts.id, draftId), eq(outreachDrafts.status, "queued"))).returning().get();
   if (!claimed) return;
   draft = claimed;
-  await event(draftId, draft.businessId, "attempt", { attempt: draft.attempts, to: biz.email });
+  await event(draftId, draft.businessId, "attempt", { attempt: draft.attempts, to });
   signal.throwIfAborted();
 
   const subject = draft.step > 0 && !/^re:/i.test(draft.subject ?? "") ? `Re: ${draft.subject ?? ""}` : (draft.subject ?? "");
   try {
     const res = await provider.send({
       from: { name: settings.senderName, address: provider.address },
-      to: biz.email!,
+      to: to!,
       subject,
-      text: composeEmailBody(draft.body, settings),
+      text: composeEmailBody(draft.body, settings, draft.step),
       messageId: draft.messageId!,
       inReplyTo: draft.inReplyTo,
       references: draft.inReplyTo ? [draft.inReplyTo] : undefined,
@@ -120,9 +128,9 @@ export async function handleSendEmail(job: JobRow, _progress: ProgressFn, signal
       // The receiving server says the address is not there: record the bounce and never write to it again.
       await db.update(outreachDrafts).set({ status: "bounced", lastError: `Rejected by the recipient's server: ${err.message}`, sentAt: nowIso(), updatedAt: nowIso() }).where(eq(outreachDrafts.id, draftId)).run();
       await event(draftId, draft.businessId, "bounced", { message: err.message, responseCode: err.responseCode });
-      await addSuppression(biz.email!, "bounced", "Rejected while sending");
-      await db.update(businesses).set({ emailStatus: "invalid", updatedAt: nowIso() }).where(eq(businesses.id, biz.id)).run();
-      await logActivity(biz.id, "email", `The email to ${biz.email} was rejected by the recipient's server (the address does not accept mail; it will not be written to again).`, { draftId });
+      await addSuppression(to!, "bounced", "Rejected while sending");
+      if (draft.step !== STEP.answer) await db.update(businesses).set({ emailStatus: "invalid", updatedAt: nowIso() }).where(eq(businesses.id, biz.id)).run();
+      await logActivity(biz.id, "email", `The email to ${to} was rejected by the recipient's server (the address does not accept mail; it will not be written to again).`, { draftId });
       await closeCampaignIfDone(draft.campaignId);
       return;
     }
@@ -146,7 +154,9 @@ async function markSent(draft: typeof outreachDrafts.$inferSelect, response: str
   const at = nowIso();
   await db.update(outreachDrafts).set({ status: "sent", sentAt: draft.sentAt ?? at, lastError: null, updatedAt: at }).where(eq(outreachDrafts.id, draft.id)).run();
   await event(draft.id, draft.businessId, reconciled ? "reconciled" : "sent", { response });
-  await logActivity(draft.businessId, "email", `${draft.step > 0 ? "Follow-up" : "Outreach email"} sent: "${draft.subject ?? ""}"${draft.toEmail ? ` to ${draft.toEmail}` : ""}`, { draftId: draft.id });
+  await logActivity(draft.businessId, "email", `${draft.step === 0 ? "Outreach email" : stepLabel(draft.step)} sent: "${draft.subject ?? ""}"${draft.toEmail ? ` to ${draft.toEmail}` : ""}${draft.approvedBy === "autopilot" ? " (passed on by the autopilot)" : ""}`, { draftId: draft.id });
+  // An answered reply needs nothing more from the operator.
+  if (draft.step === STEP.answer && draft.inboundId) await db.update(inboundEmails).set({ handledAt: at }).where(and(eq(inboundEmails.id, draft.inboundId), sql`${inboundEmails.handledAt} is null`)).run();
   if (draft.step === 0) await advanceStageIfBehind(draft.businessId, "contacted", "outreach email sent");
   await closeCampaignIfDone(draft.campaignId);
 }
@@ -190,7 +200,13 @@ export async function applyReplyClassification(inboundId: string, category: Repl
     for (const address of new Set([row.fromEmail, draft?.toEmail].filter((a): a is string => Boolean(a)))) await addSuppression(address, "unsubscribed", "Asked not to be contacted again");
     await logActivity(row.businessId, "system", "Asked not to be contacted again: the address is on the do-not-contact list.", { inboundId });
   }
-  await setNextAction(row.businessId, NEXT_ACTION[category], nowIso());
+  // "Not now" earns one check-back later; any other reading of the reply cancels a check-back that was planned.
+  const settings = await getSettings();
+  await setRecontact(row.businessId, category === "not_now" && settings.recontactDays > 0 ? new Date(new Date(row.receivedAt).getTime() + settings.recontactDays * 86_400_000).toISOString() : null);
+  // A "no" or an opt-out is never answered: an answer written under an earlier reading is taken back.
+  if (category === "declined" || category === "unsubscribe" || category === "other") await withdrawAnswers(inboundId);
+  const answerId = by === "operator" ? null : await draftAnswer(row, category, extra.suggestedReply ?? null, extra.confidence ?? null, by === "rules" ? null : by);
+  await setNextAction(row.businessId, answerId ? `${NEXT_ACTION[category]}: an answer is written under Outreach` : NEXT_ACTION[category], nowIso(), undefined, `reply:${inboundId}`);
 }
 
 export async function handleProcessReply(job: JobRow, progress: ProgressFn) {

@@ -24,15 +24,36 @@ export interface AppSettings {
   bookingLink: string;
   /** A few emails the operator wrote, so the writer can match the voice. */
   voiceSamples: string;
+  /** The operator's own signature, used as written. Empty = built from the name, title, company, website and address above. */
+  signature: string;
+  /** An opt-out sentence added after the signature. Empty (the default) = none: the signature is sent exactly as shown. */
+  optOutLine: string;
   /** Emails sent per day at most, the pause between two sends, and the hours (local time) sending may happen. */
   dailySendCap: number;
   sendSpacingSeconds: number;
   sendWindowStart: number;
   sendWindowEnd: number;
-  /** ISO country codes that may be emailed; empty = any. */
+  /** Optional limit: when not empty, only businesses in these ISO countries may be emailed. Empty (the default) = every country. */
   allowedCountries: string[];
-  /** One follow-up is drafted this many working days after an unanswered first email (0 = never). */
+  /** Each next email of the sequence is drafted this many working days after the previous one went unanswered (0 = never). */
   followUpDays: number;
+  /** How many emails follow an unanswered first email: 0, 1 (a follow-up) or 2 (a follow-up, then a short last note). */
+  followUpCount: number;
+  /** Someone who answered "not now" gets one check-back email after this many days (0 = never). */
+  recontactDays: number;
+  /**
+   * Who presses Send. "manual": the operator approves and sends every email. "hold": an email whose checks all
+   * passed goes out on its own once it has waited `holdHours` without being excluded. "auto": it goes out at the next run.
+   */
+  sendMode: SendMode;
+  holdHours: number;
+  /** Answers to replies that need no decision (a meeting link, a polite "noted") are written and sent the same way. */
+  autoAnswer: boolean;
+  /** Start searches on its own from the targets below when few businesses are left to research. */
+  autoSearch: boolean;
+  searchTargets: SearchTarget[];
+  /** Searches the app may start on its own per day. */
+  searchesPerDay: number;
   /** Write an email automatically for every qualified business with a usable address. */
   autoDraft: boolean;
   /** Research saved businesses on its own, best leads first, to keep emails ready. */
@@ -44,6 +65,33 @@ export interface AppSettings {
   monthlyAiBudgetUsd: number | null;
 }
 
+export const SEND_MODES = ["manual", "hold", "auto"] as const;
+export type SendMode = (typeof SEND_MODES)[number];
+
+/** One line of "who to look for": a kind of business in plain words and where. The app walks the cities of that area itself. */
+export interface SearchTarget {
+  what: string;
+  /** ISO country code. */
+  country: string;
+  /** Region code inside the country (a US state, a UK nation); empty = the whole country. */
+  region: string;
+}
+
+/** "sign makers | GB" or "roofers | US | TX", one per line. Lines that name no business type or no country are dropped. */
+export function parseSearchTargets(input: unknown): SearchTarget[] {
+  const rows: unknown[] = Array.isArray(input) ? input : String(input ?? "").split(/\r?\n/);
+  const out: SearchTarget[] = [];
+  for (const row of rows) {
+    const [what, country, region] = typeof row === "string" ? row.split("|").map((p) => p.trim()) : [String((row as SearchTarget)?.what ?? "").trim(), String((row as SearchTarget)?.country ?? "").trim(), String((row as SearchTarget)?.region ?? "").trim()];
+    if (!what || !/^[a-z]{2}$/i.test(country ?? "")) continue;
+    const t = { what: what.slice(0, 80), country: country.toUpperCase(), region: (region ?? "").toUpperCase().slice(0, 12) };
+    if (!out.some((o) => o.what.toLowerCase() === t.what.toLowerCase() && o.country === t.country && o.region === t.region)) out.push(t);
+  }
+  return out.slice(0, 20);
+}
+
+export const searchTargetsText = (targets: SearchTarget[]) => targets.map((t) => [t.what, t.country, t.region].filter(Boolean).join(" | ")).join("\n");
+
 export const DEFAULT_SETTINGS: AppSettings = {
   senderName: "",
   senderTitle: "",
@@ -53,12 +101,22 @@ export const DEFAULT_SETTINGS: AppSettings = {
   offer: "",
   bookingLink: "",
   voiceSamples: "",
+  signature: "",
+  optOutLine: "",
   dailySendCap: 20,
   sendSpacingSeconds: 120,
   sendWindowStart: 8,
   sendWindowEnd: 18,
-  allowedCountries: ["US"],
+  allowedCountries: [],
   followUpDays: 5,
+  followUpCount: 2,
+  recontactDays: 90,
+  sendMode: "manual",
+  holdHours: 4,
+  autoAnswer: false,
+  autoSearch: false,
+  searchTargets: [],
+  searchesPerDay: 1,
   autoDraft: true,
   autoResearch: true,
   researchPerDay: 15,
@@ -78,8 +136,8 @@ export async function getSettings(): Promise<AppSettings> {
     const def = DEFAULT_SETTINGS[key];
     const v = r.value;
     // A stored value of the wrong type (a hand-edited row) falls back to the default.
-    const ok = key === "monthlyAiBudgetUsd" ? v === null || typeof v === "number" : v !== null && typeof v === typeof def && Array.isArray(v) === Array.isArray(def);
-    if (ok) out[key] = v;
+    const ok = key === "monthlyAiBudgetUsd" ? v === null || typeof v === "number" : key === "sendMode" ? SEND_MODES.includes(v as SendMode) : v !== null && typeof v === typeof def && Array.isArray(v) === Array.isArray(def);
+    if (ok) out[key] = key === "searchTargets" ? parseSearchTargets(v) : v;
   }
   return out as unknown as AppSettings;
 }
@@ -112,6 +170,24 @@ export async function saveSettings(patch: Partial<Record<keyof AppSettings, unkn
       case "followUpDays":
         clean[key] = clampInt(v, 0, 30, DEFAULT_SETTINGS.followUpDays);
         break;
+      case "followUpCount":
+        clean[key] = clampInt(v, 0, 2, DEFAULT_SETTINGS.followUpCount);
+        break;
+      case "recontactDays":
+        clean[key] = clampInt(v, 0, 365, DEFAULT_SETTINGS.recontactDays);
+        break;
+      case "holdHours":
+        clean[key] = clampInt(v, 1, 72, DEFAULT_SETTINGS.holdHours);
+        break;
+      case "searchesPerDay":
+        clean[key] = clampInt(v, 1, 5, DEFAULT_SETTINGS.searchesPerDay);
+        break;
+      case "sendMode":
+        clean[key] = SEND_MODES.includes(v as SendMode) ? v : DEFAULT_SETTINGS.sendMode;
+        break;
+      case "searchTargets":
+        clean[key] = parseSearchTargets(v);
+        break;
       case "researchPerDay":
         clean[key] = clampInt(v, 0, 200, DEFAULT_SETTINGS.researchPerDay);
         break;
@@ -125,13 +201,15 @@ export async function saveSettings(patch: Partial<Record<keyof AppSettings, unkn
       }
       case "autoDraft":
       case "autoResearch":
+      case "autoAnswer":
+      case "autoSearch":
         clean[key] = v === true || v === "on" || v === "true";
         break;
       case "allowedCountries":
         clean[key] = (Array.isArray(v) ? v : String(v ?? "").split(/[\s,;]+/)).map((c) => String(c).trim().toUpperCase()).filter((c) => /^[A-Z]{2}$/.test(c));
         break;
       default:
-        clean[key] = String(v ?? "").trim().slice(0, key === "voiceSamples" ? 8000 : key === "offer" ? 600 : 300);
+        clean[key] = String(v ?? "").trim().slice(0, key === "voiceSamples" ? 8000 : key === "offer" || key === "signature" ? 600 : 300);
     }
   }
   for (const [key, value] of Object.entries(clean)) {

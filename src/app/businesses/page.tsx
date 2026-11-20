@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { BUSINESS_DATE_FIELDS, BUSINESS_SORTS, listBusinesses, quickViewCounts, type BusinessFilters } from "@/lib/queries";
+import { BUSINESS_DATE_FIELDS, BUSINESS_SORTS, RESULT_FILTERS, businessFilterOptions, listBusinesses, quickViewCounts, type BusinessFilters } from "@/lib/queries";
 import { Badge, Card, Flash, Icon, PageHeader, ScoreRing, StatusPill, fmtRelative } from "@/components/ui";
 import { stageTone } from "@/components/activity-timeline";
 import { Pagination, SortHeader, TableEmpty } from "@/components/table";
@@ -9,15 +9,17 @@ import { DateRangePicker } from "@/components/date-range";
 import { ConfirmButton } from "@/components/confirm-button";
 import { listPlaybooks } from "@/lib/industries";
 import { CONTACTED_STAGES, PIPELINE_STAGES, stageLabel, type PipelineStage } from "@/lib/pipeline/stages";
-import { deriveWorkflow, isResearchStale, researchAgeDays } from "@/lib/workflow";
+import { isResearchStale, researchAgeDays } from "@/lib/workflow";
 import { investigateManyAction, removeBusinessAction } from "@/app/actions";
 import { getConfig } from "@/lib/config";
+import { formatPhone } from "@/lib/phone";
+import { dueTag } from "@/lib/due";
 
 const STATUS_OPTIONS: [string, string][] = [
-  ["new", "Not investigated"],
+  ["new", "Not researched"],
   ["queued", "Queued"],
-  ["investigating", "Investigating"],
-  ["profiled", "Investigated"],
+  ["investigating", "Researching"],
+  ["profiled", "Researched"],
   ["failed", "Failed"],
   ["no_website", "No website"],
 ];
@@ -25,8 +27,8 @@ const VERDICT_OPTIONS: [string, string][] = [
   ["qualified", "Qualified"],
   ["needs_review", "Needs review"],
   ["not_a_fit", "Not a fit"],
-  ["insufficient_evidence", "Insufficient evidence"],
-  ["no_contact", "No public email"],
+  ["insufficient_evidence", "Too little info"],
+  ["no_contact", "No email"],
 ];
 
 type QuickKey = BusinessFilters["quick"] | "";
@@ -41,7 +43,7 @@ const VIEWS: { key: QuickKey; label: string; always?: boolean }[] = [
   { key: "qualified", label: "Qualified", always: true },
   { key: "needs_review", label: "Needs review", always: true },
   { key: "drafts", label: "Has email" },
-  { key: "no_contact", label: "No public email" },
+  { key: "no_contact", label: "No email" },
   { key: "failed", label: "Failed" },
   { key: "stale", label: "Stale research" },
   { key: "not_a_fit", label: "Not a fit" },
@@ -64,6 +66,15 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
     verdict: sp.verdict || undefined,
     minPriority: sp.minPriority ? Number(sp.minPriority) : undefined,
     website: (sp.website as "yes" | "no") || undefined,
+    category: sp.category || undefined,
+    city: sp.city || undefined,
+    searchId: sp.search || undefined,
+    result: RESULT_FILTERS.some((r) => r.key === sp.result) ? sp.result : undefined,
+    contact: (["email", "phone", "website", "no_email", "no_website"] as const).find((c) => c === sp.contact),
+    minRating: Number(sp.minRating) > 0 ? Number(sp.minRating) : undefined,
+    minReviews: Number(sp.minReviews) > 0 ? Number(sp.minReviews) : undefined,
+    minScore: Number(sp.minScore) > 0 ? Number(sp.minScore) : undefined,
+    due: (["overdue", "today", "planned", "none"] as const).find((c) => c === sp.due),
     quick: (sp.quick as BusinessFilters["quick"]) || undefined,
     sort: t.sort as BusinessFilters["sort"],
     dir: t.dir,
@@ -81,16 +92,30 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
     const s = p.toString();
     return `${base}${s ? `?${s}` : ""}`;
   };
-  const advancedActive = Boolean(f.industry || f.stage || f.status || f.verdict || f.minPriority || f.website);
+  const options = await businessFilterOptions();
+  const CONTACT: Record<string, string> = { email: "Has an email", phone: "Has a phone", website: "Has a website", no_email: "No email yet", no_website: "No website" };
+  const DUE: Record<string, string> = { overdue: "Overdue", today: "Due today", planned: "Any planned", none: "Nothing planned" };
   const counts = await quickViewCounts(f);
-  /** Active labeled filters as pills, each with the params to drop when it is removed. */
+  /** Active filters as pills, each with the params to drop when it is removed. */
   const activePills: { key: string; label: string; clear: Record<string, string | undefined> }[] = [];
-  if (f.industry) activePills.push({ key: "industry", label: `Industry: ${listPlaybooks().find((p) => p.key === f.industry)?.label ?? f.industry}`, clear: { industry: undefined } });
+  if (f.category) activePills.push({ key: "category", label: f.category, clear: { category: undefined } });
+  if (f.city) activePills.push({ key: "city", label: f.city, clear: { city: undefined } });
+  if (f.searchId) activePills.push({ key: "search", label: `Found by: ${options.searches.find((x) => x.id === f.searchId)?.name ?? "a search"}`, clear: { search: undefined } });
+  if (f.result) activePills.push({ key: "result", label: RESULT_FILTERS.find((r) => r.key === f.result)!.label, clear: { result: undefined } });
   if (f.stage) activePills.push({ key: "stage", label: `Stage: ${stageLabel(f.stage)}`, clear: { stage: undefined } });
+  if (f.contact) activePills.push({ key: "contact", label: CONTACT[f.contact], clear: { contact: undefined } });
+  if (f.minReviews) activePills.push({ key: "minReviews", label: `${f.minReviews}+ reviews`, clear: { minReviews: undefined } });
+  if (f.minRating) activePills.push({ key: "minRating", label: `Rated ${f.minRating}+`, clear: { minRating: undefined } });
+  if (f.minScore) activePills.push({ key: "minScore", label: `Score ${f.minScore}+`, clear: { minScore: undefined } });
+  if (f.due) activePills.push({ key: "due", label: `Next action: ${DUE[f.due].toLowerCase()}`, clear: { due: undefined } });
+  // Older links may still carry these; they keep working and can be removed like the others.
+  if (f.industry) activePills.push({ key: "industry", label: `Type: ${listPlaybooks().find((pb) => pb.key === f.industry)?.label ?? f.industry}`, clear: { industry: undefined } });
   if (f.status) activePills.push({ key: "status", label: `Research: ${STATUS_OPTIONS.find(([k]) => k === f.status)?.[1] ?? f.status}`, clear: { status: undefined } });
-  if (f.verdict) activePills.push({ key: "verdict", label: `Verdict: ${VERDICT_OPTIONS.find(([k]) => k === f.verdict)?.[1] ?? f.verdict}`, clear: { verdict: undefined } });
-  if (f.website) activePills.push({ key: "website", label: f.website === "yes" ? "Has website" : "No website", clear: { website: undefined } });
-  if (f.minPriority) activePills.push({ key: "minPriority", label: `Priority ≥ ${f.minPriority}`, clear: { minPriority: undefined } });
+  if (f.verdict) activePills.push({ key: "verdict", label: `Result: ${VERDICT_OPTIONS.find(([k]) => k === f.verdict)?.[1] ?? f.verdict}`, clear: { verdict: undefined } });
+  if (f.website) activePills.push({ key: "website", label: f.website === "yes" ? "Has a website" : "No website", clear: { website: undefined } });
+  if (f.minPriority) activePills.push({ key: "minPriority", label: `Priority ${f.minPriority}+`, clear: { minPriority: undefined } });
+  const advancedActive = activePills.length > 0;
+  const FILTER_KEYS = ["category", "city", "search", "result", "stage", "contact", "minReviews", "minRating", "minScore", "due", "industry", "status", "verdict", "website", "minPriority"];
   const investigable = rows.filter((r) => r.business.kind !== "chain" && ["new", "failed", "no_website"].includes(r.business.status));
 
   return (
@@ -126,7 +151,7 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
         <div className="flex flex-wrap items-center gap-x-3 gap-y-2 p-4">
           <div className="relative flex-1 min-w-[14rem]">
             <Icon name="search" className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-ink-faint" />
-            <input className="input pl-9" name="q" placeholder="Search name, city, domain, email or phone" defaultValue={t.q} aria-label="Search" />
+            <input className="input pl-9" name="q" placeholder="Search name, kind, city, website, email or phone" defaultValue={t.q} aria-label="Search" />
           </div>
           <button className="btn shrink-0">Search</button>
           <span className="hidden lg:block w-px self-stretch bg-line" aria-hidden />
@@ -164,14 +189,48 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
             )}
           </summary>
           <div className="px-4 pb-4 pt-3 border-t border-line">
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+            {/* Every choice comes from the businesses you have: the kinds, cities and searches that actually occur. */}
+            <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
               <label className="block">
-                <span className="label">Industry</span>
-                <select className="select" name="industry" defaultValue={sp.industry ?? ""}>
-                  <option value="">Any</option>
-                  {listPlaybooks().map((p) => (
-                    <option key={p.key} value={p.key}>
-                      {p.label}
+                <span className="label">Kind of business</span>
+                <select className="select" name="category" defaultValue={sp.category ?? ""}>
+                  <option value="">Any kind</option>
+                  {options.categories.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.value.replace(/_/g, " ")} ({c.n})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="label">City</span>
+                <select className="select" name="city" defaultValue={sp.city ?? ""}>
+                  <option value="">Any city</option>
+                  {options.cities.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.value} ({c.n})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="label">Found by search</span>
+                <select className="select" name="search" defaultValue={sp.search ?? ""}>
+                  <option value="">Any search</option>
+                  {options.searches.map((x) => (
+                    <option key={x.id} value={x.id}>
+                      {x.name} ({x.n})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="label">Result</span>
+                <select className="select" name="result" defaultValue={f.result ?? ""}>
+                  <option value="">Any result</option>
+                  {RESULT_FILTERS.map((r) => (
+                    <option key={r.key} value={r.key}>
+                      {r.label}
                     </option>
                   ))}
                 </select>
@@ -179,19 +238,19 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
               <label className="block">
                 <span className="label">Stage</span>
                 <select className="select" name="stage" defaultValue={sp.stage ?? ""}>
-                  <option value="">Any</option>
-                  {PIPELINE_STAGES.map((s) => (
-                    <option key={s.key} value={s.key}>
-                      {s.label}
+                  <option value="">Any stage</option>
+                  {PIPELINE_STAGES.map((st) => (
+                    <option key={st.key} value={st.key}>
+                      {st.label}
                     </option>
                   ))}
                 </select>
               </label>
               <label className="block">
-                <span className="label">Research</span>
-                <select className="select" name="status" defaultValue={sp.status ?? ""}>
+                <span className="label">Contact</span>
+                <select className="select" name="contact" defaultValue={f.contact ?? ""}>
                   <option value="">Any</option>
-                  {STATUS_OPTIONS.map(([k, v]) => (
+                  {Object.entries(CONTACT).map(([k, v]) => (
                     <option key={k} value={k}>
                       {v}
                     </option>
@@ -199,32 +258,53 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
                 </select>
               </label>
               <label className="block">
-                <span className="label">Verdict</span>
-                <select className="select" name="verdict" defaultValue={sp.verdict ?? ""}>
-                  <option value="">Any</option>
-                  {VERDICT_OPTIONS.map(([k, v]) => (
-                    <option key={k} value={k}>
-                      {v}
+                <span className="label">Reviews</span>
+                <select className="select" name="minReviews" defaultValue={f.minReviews ? String(f.minReviews) : ""}>
+                  <option value="">Any number</option>
+                  {[5, 20, 50, 100].map((n) => (
+                    <option key={n} value={n}>
+                      {n} or more
                     </option>
                   ))}
                 </select>
               </label>
               <label className="block">
-                <span className="label">Website</span>
-                <select className="select" name="website" defaultValue={sp.website ?? ""}>
-                  <option value="">Any</option>
-                  <option value="yes">Has website</option>
-                  <option value="no">No website</option>
+                <span className="label">Rating</span>
+                <select className="select" name="minRating" defaultValue={f.minRating ? String(f.minRating) : ""}>
+                  <option value="">Any rating</option>
+                  {[3.5, 4, 4.5].map((n) => (
+                    <option key={n} value={n}>
+                      {n} ★ or more
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="block">
-                <span className="label">Min priority</span>
-                <input className="input" name="minPriority" type="number" min={0} max={100} placeholder="0–100" defaultValue={sp.minPriority} />
+                <span className="label">Score</span>
+                <select className="select" name="minScore" defaultValue={f.minScore ? String(f.minScore) : ""}>
+                  <option value="">Any score</option>
+                  {[50, 70, 80, 90].map((n) => (
+                    <option key={n} value={n}>
+                      {n} or more
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="label">Next action</span>
+                <select className="select" name="due" defaultValue={f.due ?? ""}>
+                  <option value="">Any</option>
+                  {Object.entries(DUE).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
               </label>
             </div>
             <div className="flex items-center gap-2 mt-3">
               <button className="btn btn-primary">Apply</button>
-              <Link href={qs({ industry: undefined, stage: undefined, status: undefined, verdict: undefined, website: undefined, minPriority: undefined })} className="btn btn-ghost">
+              <Link href={qs(Object.fromEntries(FILTER_KEYS.map((k) => [k, undefined])))} className="btn btn-ghost">
                 Clear filters
               </Link>
             </div>
@@ -265,15 +345,29 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
                 </ConfirmButton>
               </form>
             )}
-            <div className="overflow-x-auto">
-              <table className="table">
+            {/* The table always fits its card: fixed column shares, long values are cut with "…" (the full value is in the tooltip), and the least needed columns step aside on a narrower window. Nothing scrolls sideways. */}
+            <div className="overflow-hidden">
+              <table className="table md:table-fixed">
+                <colgroup className="hidden md:table-column-group">
+                  <col className="md:w-[19%]" />
+                  <col className="md:w-[14%]" />
+                  <col className="md:w-[18%]" />
+                  <col className="hidden lg:table-column lg:w-[7.5rem]" />
+                  <col className="md:w-[15%]" />
+                  <col className="md:w-[4.5rem]" />
+                  <col className="md:w-[15%]" />
+                  <col className="hidden xl:table-column xl:w-[7%]" />
+                  <col className="md:w-11" />
+                </colgroup>
                 <thead>
                   <tr>
                     <SortHeader label="Business" field="name" sp={sp} params={t} basePath={base} defaultDir="asc" />
+                    <th>Website</th>
+                    <th>Contact</th>
+                    <th className="hidden lg:table-cell">Reviews</th>
                     <th>Result</th>
-                    <th>What we know</th>
-                    <SortHeader label="Priority" field="priority" sp={sp} params={t} basePath={base} />
-                    <th>Stage and next step</th>
+                    <SortHeader label="Score" field="priority" sp={sp} params={t} basePath={base} />
+                    <th>Stage</th>
                     <SortHeader label="Found" field="discovered" sp={sp} params={t} basePath={base} className="hidden xl:table-cell" />
                     <th>
                       <span className="sr-only">Remove</span>
@@ -283,51 +377,84 @@ export default async function BusinessesPage({ searchParams }: { searchParams: P
                 <tbody>
                   {rows.map((r) => {
                     const b = r.business;
-                    const wf = deriveWorkflow({ business: b, stage: r.stage ?? "discovered", opportunityCount: r.oppCount ?? 0, draftCount: r.draftCount ?? 0 });
                     const stale = isResearchStale(b.investigatedAt);
+                    const due = r.nextAction ? dueTag(r.nextActionAt) : null;
+                    const dash = <span className="text-ink-faint">—</span>;
                     return (
                       <tr key={b.id}>
-                        <td className="max-w-[280px]">
-                          <div className="flex items-center gap-2">
-                            <Link href={`/businesses/${b.id}`} className="row-link truncate">
+                        <td className="overflow-hidden">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Link href={`/businesses/${b.id}`} className="row-link truncate" title={b.name}>
                               {b.name}
                             </Link>
-                            {b.kind === "chain" && <Badge tone="neutral" title="Chain or franchise: deprioritized, never hidden">chain</Badge>}
+                            {b.kind === "chain" && <Badge tone="neutral" title="Chain or franchise">chain</Badge>}
                           </div>
-                          <div className="text-xs text-ink-faint truncate">
-                            {[b.city, b.region].filter(Boolean).join(", ")}
-                            {b.websiteDomain ? ` · ${b.websiteDomain}` : b.website ? "" : " · no website"}
-                          </div>
+                          <div className="text-xs text-ink-faint truncate">{[b.city, b.region].filter(Boolean).join(", ")}</div>
                         </td>
-                        <td className="whitespace-nowrap">
+                        <td className="text-sm overflow-hidden">
+                          {b.website ? (
+                            <a href={b.website} target="_blank" rel="noreferrer" className="truncate block" title={b.website}>
+                              {b.websiteDomain ?? b.website}
+                            </a>
+                          ) : (
+                            dash
+                          )}
+                        </td>
+                        <td className="text-sm overflow-hidden">
+                          {b.email && (
+                            <div className="truncate" title={b.email}>
+                              {b.email}
+                            </div>
+                          )}
+                          {b.phone && (
+                            <a href={`tel:${b.phone}`} className={`block truncate tabular-nums hover:no-underline ${b.email ? "text-xs text-ink-muted" : "text-ink"}`}>
+                              {formatPhone(b.phone, b.country)}
+                            </a>
+                          )}
+                          {!b.email && !b.phone && dash}
+                        </td>
+                        <td className="hidden lg:table-cell text-sm tabular-nums whitespace-nowrap">
+                          {b.rating != null ? (
+                            <>
+                              <span className="font-semibold">{b.rating.toFixed(1)}</span>
+                              <span className="text-warn"> ★</span>
+                              {b.reviewCount != null && <span className="text-ink-faint" title={`${b.reviewCount.toLocaleString()} reviews`}> ({b.reviewCount.toLocaleString()})</span>}
+                            </>
+                          ) : (
+                            dash
+                          )}
+                        </td>
+                        <td className="overflow-hidden">
                           <StatusPill status={b.verdict ?? b.status} />
-                          {stale && <div className="text-xs text-warn mt-0.5" title={b.investigatedAt ?? undefined}>researched {researchAgeDays(b.investigatedAt)} d ago</div>}
-                        </td>
-                        <td className="max-w-[380px]">
-                          <div className="text-xs text-ink-muted line-clamp-2">{b.summary ?? b.statusMessage ?? wf.next.description}</div>
+                          {stale && <div className="text-xs text-warn mt-0.5" title={b.investigatedAt ?? undefined}>{researchAgeDays(b.investigatedAt)} d old</div>}
                         </td>
                         <td>
                           {b.priority != null ? (
-                            <ScoreRing value={b.priority} size={36} />
+                            <span title="Priority after research">
+                              <ScoreRing value={b.priority} size={34} />
+                            </span>
                           ) : b.leadScore != null ? (
-                            <span title={`Not researched yet. Lead score ${b.leadScore}: ${(b.leadReasons ?? []).join(", ")}`} className="inline-flex items-center gap-1 text-xs text-ink-faint">
-                              <ScoreRing value={b.leadScore} size={30} tone="neutral" /> lead
+                            <span title={`Listing score before research: ${(b.leadReasons ?? []).join(", ")}`}>
+                              <ScoreRing value={b.leadScore} size={34} />
                             </span>
                           ) : (
-                            <span className="text-xs text-ink-faint">—</span>
+                            dash
                           )}
                         </td>
-                        <td className="max-w-[240px]">
+                        <td className="overflow-hidden">
                           <Badge tone={stageTone(r.stage ?? "discovered")}>{stageLabel(r.stage ?? "discovered")}</Badge>
-                          <div className="text-xs text-ink-faint truncate mt-0.5">
-                            → {r.nextAction ?? wf.next.title}
-                            {r.nextAction && r.nextActionAt ? ` · ${fmtRelative(r.nextActionAt)}` : ""}
-                          </div>
+                          {r.nextAction && (
+                            <div className="mt-1" title={`Next action: ${r.nextAction}`}>
+                              <Badge tone={due?.tone ?? "neutral"}>
+                                <Icon name="clock" className="w-3 h-3" /> {due?.label ?? "Planned"}
+                              </Badge>
+                            </div>
+                          )}
                         </td>
                         <td className="hidden xl:table-cell text-xs text-ink-faint whitespace-nowrap" title={b.createdAt}>
                           {fmtRelative(b.createdAt)}
                         </td>
-                        <td className="w-10 text-right">
+                        <td className="text-right !px-1">
                           {/* Once a business has been emailed its record is kept: no remove button (the action would refuse anyway). */}
                           {!CONTACTED_STAGES.includes((r.stage ?? "discovered") as PipelineStage) && (
                             <form action={removeBusinessAction}>

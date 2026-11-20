@@ -2,7 +2,7 @@
  * The public front page, shown at "/" to anyone who is not signed in.
  *
  * Everything on it is true of the product as it is built: how many pages it
- * reads, how long its emails are, that nothing is sent without approval. There
+ * reads, how long its emails are, that nothing is sent without the operator's say (their approval, or automatic sending they switched on). There
  * are no made-up companies, customer quotes, results or prices.
  *
  * Layout: every section has the same width and spacing and the same kind of
@@ -23,7 +23,7 @@ const STEPS: { icon: IconName; title: string; body: string }[] = [
   { icon: "search", title: "Find", body: "Name a kind of business and a city. You get the companies there that have a website and a public email address. Known chains are left out." },
   { icon: "note", title: "Research", body: "Each company's own website is read: what they do, who they serve, how a customer gets a quote or a booking. Every fact keeps the sentence it came from." },
   { icon: "mail", title: "Write", body: "One short email per company, with one idea that fits how they work. You read it, change what you like, and approve it." },
-  { icon: "kanban", title: "Follow", body: "You press send. Replies are picked up from your inbox, a follow-up is drafted when nobody answers, and every conversation moves across one board." },
+  { icon: "kanban", title: "Follow", body: "You press send, or let checked emails go out on their own after a waiting time you set. Replies are picked up from your inbox, a follow-up is written when nobody answers, and every conversation moves across one board." },
 ];
 
 const LETTER: { part: string; text: string }[] = [
@@ -35,11 +35,11 @@ const LETTER: { part: string; text: string }[] = [
 
 const GUARDS: { icon: IconName; title: string; body: string }[] = [
   { icon: "check", title: "Only what was read", body: "A statement about a company is allowed only when it can be traced to a sentence on that company's website. A second, independent check reads every email before you see it." },
-  { icon: "eye", title: "You approve every email", body: "Nothing goes out on its own. Each email waits for you, and you can edit it, ask for another version, or leave the company out." },
+  { icon: "eye", title: "You decide what goes out", body: "Each email waits for you: read it, edit it, ask for another version, or leave the company out. Sending on its own is off until you switch it on, and even then only emails that passed every check go." },
   { icon: "mail", title: "From your own mailbox", body: "Emails leave from your address, a few at a time with a pause between them, inside the hours you choose." },
-  { icon: "x", title: "No means no", body: "Every email says how to opt out. Anyone who asks, and any address that bounces, is never written to again." },
+  { icon: "x", title: "No means no", body: "Anyone who asks not to be written to, in any words, and any address that bounces, is never written to again." },
   { icon: "building", title: "The right name", body: "Each email greets the company by the name its own website uses, never by a person's name guessed from a page." },
-  { icon: "clock", title: "Nothing is forgotten", body: "When a company does not answer, one short follow-up is drafted for your approval after the number of days you set." },
+  { icon: "clock", title: "Nothing is forgotten", body: "When a company does not answer, a short follow-up and then one last note are written after the number of days you set. The moment they answer, the sequence stops." },
 ];
 
 /** The tones of the page, always in this order, so the first, second, third … of anything listed side by side each has its own. Six, because the longest list has six items; no two next to each other look alike. */
@@ -68,7 +68,7 @@ const AFTER = ["A list of companies in the city and trade you choose, each one a
 
 /** The questions people ask before signing up, answered plainly. */
 const FAQ: { q: string; a: string }[] = [
-  { q: "Does it send emails on its own?", a: "No. It writes; you read, change what you like, approve and press send. Nothing ever leaves without you." },
+  { q: "Does it send emails on its own?", a: "Not unless you tell it to. By default it writes and you read, change what you like, approve and press send. You can switch on automatic sending later: it starts only after you have sent 20 emails yourself, sends only emails that passed every check, and pauses itself if emails bounce or people opt out." },
   { q: "Which address do the emails come from?", a: "Your own. You connect your mailbox, and emails go out from it a few at a time, so they arrive as ordinary mail from a real person. Replies come back to the same inbox." },
   { q: "How is this different from a mass-mailing tool?", a: "A mass mailer sends one template to thousands. This writes one email to one company, about that company, and lets you send a handful a day that you would be glad to put your name under." },
   { q: "What if the research gets something wrong?", a: "Every statement in an email is checked against the sentence on the company's website it came from, and you see that evidence next to the email before you approve it. What cannot be shown is left out." },

@@ -142,9 +142,15 @@ describe("email text helpers", () => {
     expect(greetingFor("Allstar Electrical, Plumbing and Air Conditioning Services")).toBe("Hi Allstar Electrical, Plumbing and Air Conditioning Services team,");
     expect(greetingFor("An Extraordinarily Long Registered Company Name That Nobody Would Ever Say Aloud")).toBe("Hello,");
   });
-  it("appends the sender's identity, postal address and an opt-out line in code", () => {
+  it("appends the sender's identity and postal address in code, exactly as the operator sees it", () => {
     const s = { senderName: "Ivan Dimov", senderTitle: "Founder", senderCompany: "Dimov Software", senderWebsite: "dimov.example", postalAddress: "1 Main St, Austin, TX 78701" };
-    expect(signatureBlock(s)).toBe('Ivan Dimov\nFounder, Dimov Software\ndimov.example\n1 Main St, Austin, TX 78701\n\nIf this isn\'t relevant, just reply "no thanks" and I won\'t write again.');
+    expect(signatureBlock(s)).toBe("Ivan Dimov\nFounder, Dimov Software\ndimov.example\n1 Main St, Austin, TX 78701");
     expect(composeEmailBody("Hello,\n\nBody.\n", s).startsWith("Hello,\n\nBody.\n\nIvan Dimov\n")).toBe(true);
+    // The operator can write the signature themselves; nothing is added after it unless they set an opt-out sentence.
+    const own = { ...s, signature: "Ivan\nDimov Software · Skopje\r\n", optOutLine: "Not for you? Reply \"stop\" and that is the end of it." };
+    expect(signatureBlock(own)).toBe('Ivan\nDimov Software · Skopje\n\nNot for you? Reply "stop" and that is the end of it.');
+    expect(signatureBlock({ ...own, optOutLine: "   " })).toBe("Ivan\nDimov Software · Skopje");
+    expect(signatureBlock({ senderName: "", senderTitle: "", senderCompany: "", senderWebsite: "", postalAddress: "" })).toBe("");
+    expect(signatureBlock(own, 9)).toBe("Ivan\nDimov Software · Skopje"); // an answer to a reply carries no opt-out sentence
   });
 });
