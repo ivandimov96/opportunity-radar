@@ -12,6 +12,7 @@ import { FACT_BY_KEY, type FactKey } from "@/lib/profile/fields";
 import type { DetectedFact } from "@/lib/research/detect";
 import { MODEL_CHARS_BY_KIND, MODEL_READ_ORDER, type PageKind } from "@/lib/research/html";
 import { callStructured } from "./client";
+import type { SellerProfile } from "@/lib/seller";
 import { investigateSystem } from "./prompts";
 import { InvestigationSchema, type Investigation, type ObservationKind, type OpportunityOutput } from "./schemas";
 
@@ -51,6 +52,8 @@ export interface InvestigationContext {
   listing?: string | null;
   /** Fixed rule patterns that fired on the detected facts: candidates for the model to weigh, not conclusions. */
   patterns?: { category: string; title: string; keys: string[] }[];
+  /** Who the research is for. Without one, the built-in software consultancy. */
+  seller?: SellerProfile;
 }
 
 export function buildInvestigationInput(business: { name: string; city?: string | null; region?: string | null; category?: string | null }, pages: PageForModel[], detected: DetectedFact[], ctx: InvestigationContext = {}): string {
@@ -114,7 +117,7 @@ export async function investigateWithModel(business: { id: string; name: string;
   const result = await callStructured({
     stage: "investigate",
     effort: cfg.AI_INVESTIGATE_EFFORT,
-    system: investigateSystem(getPlaybook(business.industry)),
+    system: investigateSystem(getPlaybook(business.industry), ctx.seller),
     user: buildInvestigationInput(business, pages, detected, ctx),
     schema: InvestigationSchema,
     businessId: business.id,

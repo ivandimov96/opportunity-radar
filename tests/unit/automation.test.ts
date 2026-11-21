@@ -118,6 +118,6 @@ describe("answers and sequence steps", () => {
   it("names every step and gives each its own length", () => {
     expect([0, 1, 2, 3, 9].map(stepLabel)).toEqual(["First email", "Follow-up", "Last note", "Check-back", "Answer"]);
     expect([0, 1, 2, 3, 9].map(stepNoun)).toEqual(["email", "follow-up", "last note", "check-back", "answer"]);
-    expect([lengthFor(0).softMax, lengthFor(1).softMax, lengthFor(2).softMax, lengthFor(3).softMax, lengthFor(9).softMax]).toEqual([65, 60, 40, 60, 110]);
+    expect([lengthFor(0).softMax, lengthFor(1).softMax, lengthFor(2).softMax, lengthFor(3).softMax, lengthFor(9).softMax]).toEqual([75, 60, 40, 60, 110]);
   });
 });

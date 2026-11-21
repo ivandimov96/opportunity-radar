@@ -7,6 +7,7 @@
  */
 import { and, eq, inArray } from "drizzle-orm";
 import { MAX_KINDS, saysEnough, tidyKind } from "./profile-rules";
+import { FIRST_STEP_KEYS, type FirstStep } from "./seller";
 import { getDb } from "@/db/client";
 import { FIRST_WORKSPACE_ID, settings as settingsTable } from "@/db/schema";
 import { getConfig } from "@/lib/config";
@@ -103,6 +104,8 @@ export interface AppSettings {
   offerResult: string;
   /** A service, a product or software: it changes how an email speaks of it. Empty = not said. */
   offerKind: OfferKind;
+  /** What a first email asks for (src/lib/seller.ts); empty = the default for this seller. */
+  firstStep: FirstStep | "";
   /**
    * Who the operator sells to. The search takes its kind of business and its place from here, and the
    * automatic search works through every kind in every place (see `searchTargetsOf`).
@@ -217,6 +220,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   offer: "",
   offerResult: "",
   offerKind: "",
+  firstStep: "",
   targetKinds: [],
   targetPlaces: [],
   targetSizes: [],
@@ -334,6 +338,9 @@ export async function saveSettings(patch: Partial<Record<keyof AppSettings, unkn
         break;
       case "targetSizes":
         clean[key] = (Array.isArray(v) ? v : String(v ?? "").split(/[\s,;]+/)).map((x) => String(x).trim()).filter((x): x is TargetSize => (TARGET_SIZES as readonly string[]).includes(x));
+        break;
+      case "firstStep":
+        clean[key] = (FIRST_STEP_KEYS as readonly string[]).includes(String(v)) ? v : "";
         break;
       case "offerKind":
         clean[key] = (OFFER_KINDS as readonly string[]).includes(String(v)) ? v : "";

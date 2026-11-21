@@ -31,7 +31,7 @@ export interface QualifyInput {
 }
 
 export function qualify(i: QualifyInput): { verdict: Exclude<Verdict, "no_contact">; reasons: string[] } {
-  if (i.modelRan && (i.modelVerdict === "no_opportunity" || !i.primary)) return { verdict: "not_a_fit", reasons: [i.modelReason?.trim() || "The research found no convincing software opportunity."] };
+  if (i.modelRan && (i.modelVerdict === "no_opportunity" || !i.primary)) return { verdict: "not_a_fit", reasons: [i.modelReason?.trim() || "The research found no convincing reason to write to this business."] };
   if (i.thin && (!i.primary || i.primary.source === "rules")) return { verdict: "insufficient_evidence", reasons: [i.thinReason ?? "Too little about the business could be verified on its website."] };
   if (!i.primary) return { verdict: "needs_review", reasons: [`No rule pattern matched and the AI analysis did not run (${i.aiSkipped ?? "not configured"}).`] };
 

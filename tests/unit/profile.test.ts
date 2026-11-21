@@ -44,3 +44,76 @@ describe("the profile: what is sold, to whom, and what the search takes from it"
     expect(profileGaps(filled).search).not.toContain("what your customer gets out of it");
   });
 });
+
+describe("the seller: what the research and the writer are told about the operator", () => {
+  it("is the built-in software consultancy while there is no profile, with the mock-up as the ask", async () => {
+    const { sellerOf } = await import("@/lib/seller");
+    const seller = sellerOf(DEFAULT_SETTINGS);
+    expect(seller).toMatchObject({ isDefault: true, buildsSoftware: true, firstStep: "example", result: "", proof: "" });
+    expect(seller.offer).toMatch(/custom software/);
+  });
+
+  it("is made of the profile, word for word, and of nothing else", async () => {
+    const { sellerOf, sellerForResearch } = await import("@/lib/seller");
+    const cleaner = sellerOf({ ...DEFAULT_SETTINGS, senderName: "Nell Harbour", offer: "Daily office cleaning for clinics, done after closing time.", offerResult: "A spotless practice every morning without managing cleaners.", targetKinds: ["dentists", "vets"], excludeKinds: ["hospitals"], targetSizes: ["small", "medium"], fitSigns: "Several treatment rooms.", proofPoints: "Clean 14 practices in Leeds." });
+    expect(cleaner).toMatchObject({ isDefault: false, buildsSoftware: false, firstStep: "details" });
+    const text = sellerForResearch(cleaner);
+    for (const part of ["Daily office cleaning for clinics", "A spotless practice every morning", "dentists, vets", "hospitals", "small teams (2 to 10 people); medium companies (11 to 50 people)", "Several treatment rooms.", "Clean 14 practices in Leeds."]) expect(text).toContain(part);
+    // What the profile leaves empty is not said.
+    expect(sellerForResearch(sellerOf({ ...DEFAULT_SETTINGS, offer: "Bookkeeping for trades." }))).toBe("- What the seller offers: Bookkeeping for trades.");
+    // A seller of software keeps the catalogue of software ideas; the chosen ask wins over the default.
+    expect(sellerOf({ ...DEFAULT_SETTINGS, offer: "I build booking tools and websites.", firstStep: "quote" })).toMatchObject({ buildsSoftware: true, firstStep: "quote" });
+  });
+
+  it("writes the research prompt for the seller: the catalogue only for software, the seller's limits always", async () => {
+    const { sellerOf } = await import("@/lib/seller");
+    const { investigateSystem } = await import("@/lib/ai/prompts");
+    const { getPlaybook } = await import("@/lib/industries");
+    const cleaner = investigateSystem(getPlaybook("generic"), sellerOf({ ...DEFAULT_SETTINGS, offer: "Daily office cleaning for clinics, done after closing time.", excludeKinds: ["hospitals"], fitSigns: "Several treatment rooms." }));
+    expect(cleaner).toContain("- What the seller offers: Daily office cleaning for clinics");
+    expect(cleaner).toContain('Use category "other" for every opportunity');
+    expect(cleaner).not.toContain("job_tracking (Job and production tracking)");
+    expect(cleaner).toContain("each of the signs the seller named");
+    expect(cleaner).toMatch(/no_opportunity[\s\S]*a business that sells the same thing as the seller/);
+    expect(cleaner).not.toMatch(/software consultancy|one developer/);
+    const builder = investigateSystem(getPlaybook("generic"));
+    expect(builder).toContain("job_tracking (Job and production tracking)");
+    expect(builder).toContain("custom software, integrations, automation and AI tools");
+  });
+
+  it("tells the writer what the sender offers, what their customers get, and what to ask for", async () => {
+    const { buildOutreachInput } = await import("@/lib/ai/outreach");
+    const base = { business: { id: "b1", name: "Idea Air" }, greeting: "Hi Idea Air team,", opportunity: { title: "T", problemHypothesis: "P", proposedSolution: "S", whyRelevant: null, components: [], validationQuestions: [] }, pack: { verified: [], notSeen: [], haystack: "" } as never, others: [] };
+    const sender = { name: "Nell", company: "", offer: "Daily office cleaning for clinics.", result: "A spotless practice every morning.", proof: "Clean 14 practices in Leeds.", firstStep: "quote" as const, bookingLink: "", voiceSamples: "" };
+    const first = buildOutreachInput({ ...base, sender, step: 0 });
+    expect(first).toContain("What the sender offers, in the sender's own words: Daily office cleaning for clinics.");
+    expect(first).toContain("What the sender's customers get out of it: A spotless practice every morning.");
+    expect(first).toContain("What to ask for (the one question that ends this email): whether you may send them a rough idea of what it would cost");
+    // A first email stays short: the result the sender can back up is kept for the follow-up.
+    expect(first).not.toContain("Clean 14 practices");
+    const followUp = buildOutreachInput({ ...base, sender, step: 1, firstEmail: { subject: "S", body: "Hi Idea Air team,\n\nBody." } });
+    expect(followUp).toContain("A result the sender can back up (use at most one, in the sender's terms, adding nothing): Clean 14 practices in Leeds.");
+    expect(followUp).toContain("What the first email asked for: whether you may send them a rough idea");
+    // Without a profile the ask is the mock-up, as before.
+    expect(buildOutreachInput({ ...base, sender: { name: "Ivan", company: "", offer: "", bookingLink: "", voiceSamples: "" }, step: 0 })).toContain("a short example (a mock-up, a sample or a draft");
+  });
+
+  it("offers a call or a free review as the ask for an adviser, and then a proposed call is not a fault", async () => {
+    const { FIRST_STEPS, sellerOf } = await import("@/lib/seller");
+    const { checkEmailText } = await import("@/lib/outreach/validate");
+    expect(Object.keys(FIRST_STEPS)).toEqual(["example", "details", "quote", "trial", "review", "call"]);
+    expect(sellerOf({ ...DEFAULT_SETTINGS, offer: "I advise family firms on pricing.", firstStep: "call" }).firstStep).toBe("call");
+    const email = { subject: "Pricing for your trade accounts", body: "Hi Idea Air team,\n\nYour site lists separate prices for trade accounts and the public. I'm Nell; I advise family firms on how they set prices, and I'd look at where yours leave money behind. I can't see from outside how you set them today.\n\nWould you be open to a short call?", claims: [] };
+    const ctx = { pack: { verified: [], notSeen: [], haystack: "" } as never, step: 0, others: [] };
+    expect(checkEmailText(email, ctx).map((i) => i.code)).toContain("call_offer");
+    expect(checkEmailText(email, { ...ctx, callIsTheAsk: true }).map((i) => i.code)).not.toContain("call_offer");
+  });
+
+  it("lets an email use a figure the sender gave about themselves, and no other", async () => {
+    const { checkEmailText } = await import("@/lib/outreach/validate");
+    const email = { subject: "Cleaner mornings?", body: "Hi Idea Air team,\n\nYour new treatment rooms caught my eye. I'm Nell, and we clean 14 practices in Leeds after closing time, so mornings start spotless without anyone managing cleaners.\n\nMay I send you a rough price for your practice?", claims: [] };
+    const ctx = { pack: { verified: [], notSeen: [], haystack: "" } as never, step: 1, others: [] };
+    expect(checkEmailText(email, ctx).map((i) => i.code)).toContain("number_not_in_evidence");
+    expect(checkEmailText(email, { ...ctx, senderSays: "Clean 14 practices in Leeds." }).map((i) => i.code)).not.toContain("number_not_in_evidence");
+  });
+});

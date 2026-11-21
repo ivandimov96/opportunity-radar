@@ -23,6 +23,10 @@ export interface CheckContext {
   step: number;
   /** Other emails in the same batch: subjects must differ and the text should not repeat. */
   others: { subject: string; body: string; label: string }[];
+  /** What the sender said about themselves in their profile (offer, result, proof): a figure from there is theirs to use. */
+  senderSays?: string | null;
+  /** The seller chose a short call as what a first email asks for: proposing one is then the point, not a fault. */
+  callIsTheAsk?: boolean;
 }
 
 const BANNED_PHRASES = [
@@ -87,7 +91,7 @@ function knownTools(): string[] {
  * back.
  */
 export const EMAIL_LENGTH = {
-  first: { hardMin: 25, softMin: 35, softMax: 65, hardMax: 85 },
+  first: { hardMin: 25, softMin: 40, softMax: 75, hardMax: 95 },
   followUp: { hardMin: 20, softMin: 25, softMax: 60, hardMax: 80 },
   /** The last note of a sequence: two or three sentences. */
   lastNote: { hardMin: 10, softMin: 15, softMax: 40, hardMax: 60 },
@@ -224,7 +228,7 @@ export function checkEmailText(email: EmailText, ctx: CheckContext): DraftIssue[
     if (questions === 0) block("no_question", "The email does not end with a question. One easy question gives them something to answer.");
     else if (questions > 1) warn("several_questions", `The email asks ${questions} questions. One easy question gets more answers.`);
     const call = CALL_OFFER_RE.exec(body);
-    if (call) warn("call_offer", `Proposes a call ("${call[0]}"). In a first email, a question that takes one word to answer is easier to say yes to.`);
+    if (call && !ctx.callIsTheAsk) warn("call_offer", `Proposes a call ("${call[0]}"). In a first email, a question that takes one word to answer is easier to say yes to.`);
     const openingWords = wordCount(openingLine(body));
     if (openingWords > OPENING_MAX_WORDS) warn("long_opening", `The opening sentence is long (${openingWords} words). One short, specific line is enough.`);
   }
@@ -244,7 +248,8 @@ export function checkEmailText(email: EmailText, ctx: CheckContext): DraftIssue[
     const after = body.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 14);
     if (/^\s*-?\s*(minutes?|mins?\b|min\b)/i.test(after)) continue;
     if (ctx.pack.haystack.includes(token.toLowerCase()) || ctx.pack.haystack.includes(token.replace(/,/g, ""))) continue;
-    block("number_not_in_evidence", `Contains a number that is not in the research (${token}).`);
+    if (ctx.senderSays && ctx.senderSays.toLowerCase().includes(token.toLowerCase())) continue;
+    block("number_not_in_evidence", `Contains a number that is not in the research or in your own details (${token}).`);
   }
 
   // Tools: naming a product they supposedly use needs evidence.

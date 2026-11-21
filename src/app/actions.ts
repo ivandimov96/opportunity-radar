@@ -647,7 +647,7 @@ export async function markReplyHandledAction(fd: FormData) {
 /** The fields each card of the Settings pages owns. */
 const SETTINGS_FIELDS: Record<string, (keyof AppSettings)[]> = {
   sender: ["senderName", "senderTitle", "senderCompany", "senderWebsite", "postalAddress"],
-  offer: ["offer", "offerResult"],
+  offer: ["offer", "offerResult", "firstStep"],
   audience: ["targetKinds", "targetPlaces", "targetSizes", "targetNeedsWebsite", "targetNeedsPhone", "fitSigns", "excludeKinds"],
   tone: ["bookingLink", "proofPoints", "voiceSamples"],
   signature: ["signature"],

@@ -78,7 +78,7 @@ describe("outreach engine", () => {
     await enqueueOutreach(id);
     expect(await drainQueue(["generate_outreach"])).toBe(1);
     const [d] = await draftOf(id);
-    expect(d).toMatchObject({ status: "ready", step: 0, toEmail: "office@northside.example", subject: "Booking your in-home estimates", model: "writer-model", promptVersion: "outreach-11" });
+    expect(d).toMatchObject({ status: "ready", step: 0, toEmail: "office@northside.example", subject: "Booking your in-home estimates", model: "writer-model", promptVersion: "outreach-13" });
     expect(d.costUsd).toBeCloseTo(0.025);
     expect(d.validation).toMatchObject({ passed: true, checkedBy: "check-model" });
     expect(d.validation?.issues).toEqual([{ severity: "warn", code: "tone", message: "Tone: slightly formal" }]);
@@ -99,9 +99,11 @@ describe("outreach engine", () => {
     // The idea reaches the writer in plain words; its parts are background, not a list to recite.
     expect(w.user).toContain("In plain words: Every replacement starts with a home visit; people could pick the time themselves.");
     expect(w.user).toMatch(/Background for you only, not for the email[\s\S]*Slot picker/);
-    expect(w.system).toMatch(/40 to 60 words/);
-    // Four short parts: one sentence on what was noticed, one idea as a gain, one small ask (a mock-up, no call).
-    expect(w.system).toMatch(/ONE sentence \(18 words at most\)[\s\S]*Only the gain[\s\S]*End with exactly ONE question[\s\S]*Do not propose a call or a meeting[\s\S]*One idea only/);
+    expect(w.system).toMatch(/45 to 70 words/);
+    // Four short parts: what was seen as a plain fact (no praise), the offer said exactly, what it means for them, one small ask.
+    expect(w.system).toMatch(/ONE sentence \(20 words at most\)[\s\S]*do not praise it[\s\S]*the offer itself, said exactly[\s\S]*Do not wrap the offer in a question[\s\S]*End with exactly ONE question[\s\S]*Do not propose a call or a meeting unless that is the ask given[\s\S]*One idea only/);
+    // The writer is told to be the kind of seller the profile describes: a consultant is not made into a supplier.
+    expect(w.system).toMatch(/an adviser or consultant says what they help companies like this one with/);
     expect(w.user).toContain("Booking link: (not used in a first email: include no links)");
     expect(w.user).not.toContain("A question worth asking them");
     expect(w.system).toMatch(/The subject decides whether the email is opened/);
@@ -122,7 +124,7 @@ describe("outreach engine", () => {
     expect(da.body).not.toContain("12 technicians");
     expect(da.costUsd).toBeCloseTo(0.045); // two writer calls, one check: the first version failed a fixed check, so no check call was spent on it
     expect(callsA.map((c) => c.stage)).toEqual(["outreach", "outreach", "check"]);
-    expect(callsA[1].user).toMatch(/Your previous version was rejected[\s\S]*number that is not in the research \(12\)/);
+    expect(callsA[1].user).toMatch(/Your previous version was rejected[\s\S]*number that is not in the research or in your own details \(12\)/);
 
     const b = await seed("Bravo Air", "b@bravo.example");
     model({ outreach: [written("Subject two"), written("Subject two")], check: [checked(["they answer every call within a minute"]), checked(["they answer every call within a minute"])] });

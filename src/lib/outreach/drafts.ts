@@ -25,6 +25,9 @@ export type Draft = typeof outreachDrafts.$inferSelect;
 /** Not yet handed to the mailbox: these can still be edited, replaced or excluded. */
 export const REVIEW_STATUSES = ["needs_review", "ready", "approved", "excluded"];
 
+/** What the operator said about themselves in the profile: a figure from there may appear in an email. */
+const senderSaysOf = (s: AppSettings) => [s.offer, s.offerResult, s.proofPoints].filter(Boolean).join(" ");
+
 type SignatureSettings = Pick<AppSettings, "senderName" | "senderTitle" | "senderCompany" | "senderWebsite" | "postalAddress"> & Partial<Pick<AppSettings, "signature" | "optOutLine">>;
 
 /** The signature lines without the opt-out sentence: the operator's own text when they wrote one, otherwise built from their details. */
@@ -126,7 +129,7 @@ export async function saveDraftEdit(draftId: string, subject: string, body: stri
   if (draft.step === STEP.answer) textIssues = checkAnswerText(cleanBody, { bookingLink: settings.bookingLink });
   else {
     const { pack, others } = await draftEvidence(draft);
-    textIssues = checkEmailText({ subject: cleanSubject, body: cleanBody, claims }, { pack, bookingLink: settings.bookingLink, step: draft.step, others });
+    textIssues = checkEmailText({ subject: cleanSubject, body: cleanBody, claims }, { pack, bookingLink: settings.bookingLink, step: draft.step, others, senderSays: senderSaysOf(settings) });
   }
   const issues = [...textIssues, ...recipientIssues(await sendBlockers(draft, biz, settings))];
   // The claim check ran on the old text: its statements no longer describe this email.
@@ -151,7 +154,7 @@ export async function approveDraft(draftId: string, by: "operator" | "autopilot"
   let textIssues = (draft.validation?.issues ?? []).filter((i) => i.code !== "recipient");
   if (!draft.validation && draft.step !== STEP.answer) {
     const { pack, others } = await draftEvidence(draft);
-    textIssues = checkEmailText({ subject: draft.subject ?? "", body: draft.body, claims: draft.claims }, { pack, bookingLink: (await getSettings()).bookingLink, step: draft.step, others });
+    textIssues = checkEmailText({ subject: draft.subject ?? "", body: draft.body, claims: draft.claims }, { pack, bookingLink: (await getSettings()).bookingLink, step: draft.step, others, senderSays: senderSaysOf(await getSettings()) });
   }
   const overridden = hasBlock(textIssues);
   const validation: DraftValidation = { ...(draft.validation ?? { checkedAt: nowIso() }), passed: !overridden, issues: textIssues, overridden: overridden || undefined, checkedAt: draft.validation?.checkedAt ?? nowIso() };

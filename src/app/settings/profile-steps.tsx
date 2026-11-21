@@ -8,6 +8,7 @@
 import type { AppSettings } from "@/lib/settings";
 import { missingSenderDetails, saysEnough } from "@/lib/settings";
 import { fieldLimits, PROFILE_RULES } from "@/lib/profile-rules";
+import { FIRST_STEPS, FIRST_STEP_KEYS, sellerOf } from "@/lib/seller";
 import { signatureBlock, signatureLines } from "@/lib/outreach/drafts";
 import { AudienceEditor } from "./audience-editor";
 import { Field as FormField } from "./parts";
@@ -69,6 +70,20 @@ export function ProfileStepFields({ step, s, countries }: { step: ProfileStep; s
       <div className="space-y-5 px-6 py-5">
         <FormField wide rows={3} label="What do you offer?" name="offer" {...fieldLimits("offer")} value={s.offer} needed={!saysEnough(s.offer)} required placeholder="I build custom software tools and automations that take repetitive work off people's hands." />
         <FormField wide rows={2} label="What does your customer get out of it?" name="offerResult" {...fieldLimits("offerResult")} value={s.offerResult} needed={!saysEnough(s.offerResult)} required placeholder="Fewer missed calls, and bookings that no longer need a phone call." />
+        {/* What every first email ends with: one small thing the seller can keep, answerable with a word. */}
+        <div>
+          <label htmlFor="firstStep" className="block text-sm font-medium text-ink mb-1.5">
+            What should your first email offer?
+          </label>
+          <select id="firstStep" name="firstStep" className="select" defaultValue={sellerOf(s).firstStep}>
+            {FIRST_STEP_KEYS.map((k) => (
+              <option key={k} value={k}>
+                {FIRST_STEPS[k].label}
+              </option>
+            ))}
+          </select>
+          <p className="text-xs text-ink-muted mt-1.5 leading-relaxed">Every first email ends with one easy question: may I send you this? Pick what you can deliver when they say yes.</p>
+        </div>
       </div>
     )}
 

@@ -35,15 +35,15 @@ export const ComponentSchema = z.object({
 });
 
 export const OpportunitySchema = z.object({
-  role: z.enum(["primary", "secondary"]).describe("primary = the one consolidated solution to propose; secondary = a genuinely independent idea."),
+  role: z.enum(["primary", "secondary"]).describe("primary = the one consolidated proposal; secondary = a genuinely independent idea."),
   category: z.enum(OPPORTUNITY_CATEGORY_KEYS as [string, ...string[]]),
-  scope: z.enum(SOLUTION_SCOPE_KEYS as [string, ...string[]]).describe("existing = improves something the pages show they already offer; new_for_customers = something their customers could use that the pages do not show; internal = a tool for the people who work in the business."),
+  scope: z.enum(SOLUTION_SCOPE_KEYS as [string, ...string[]]).describe("existing = improves something the pages show they already offer; new_for_customers = something their customers could use that the pages do not show; internal = about how the business is run behind the scenes."),
   title: z.string().describe("The outcome in everyday words an owner would use, e.g. 'Estimates that follow themselves up'. No product names, no jargon."),
   problem_hypothesis: z.string().describe("The business challenge we hypothesize, phrased as a hypothesis, not a fact."),
-  proposed_solution: z.string().describe("What we could build: first the small first version (useful on its own, a few weeks of work for one developer), then one sentence on what it could grow into."),
+  proposed_solution: z.string().describe("What the seller would provide: first the small first step that is useful on its own, then one sentence on what it could grow into."),
   why_relevant: z.string().describe("Why this fits this specific business, referring to what was observed about it."),
   components: z.array(ComponentSchema).describe("The parts of the solution, two to five. Empty only when the idea is a single thing."),
-  why_not_existing_tool: z.string().describe("Why an off-the-shelf tool or a process change is not clearly the better answer, or say that it might be."),
+  why_not_existing_tool: z.string().describe("Why what they already have, or a simpler answer, is not clearly enough; or say that it might be."),
   expected_value: z.string().describe("Plausible value mechanism, without invented numbers."),
   supporting_fact_keys: z.array(z.string()).describe("Profile fact keys (verified or not_found) and observation refs that support this hypothesis as a whole."),
   assumptions: z.array(z.string()),

@@ -967,3 +967,50 @@ account is opened (role `owner`).
 - **Titles are set in Manrope**, text in Inter (`--font-serif` is the title face).
 - The Connections text no longer calls Brave Search free: its free plan ended in
   February 2026 (a monthly credit, a card required). It stays off.
+
+## D63. The profile drives research, emails and reply reading (2026-11-21)
+
+Until now the research and every email assumed one seller: a small software consultancy
+that offers a mock-up. A customer who sells anything else got emails about software.
+
+- **The seller** (`src/lib/seller.ts`, `sellerOf(settings)`): what is offered, what the
+  customer gets, who it is sold to and who not, sizes, signs of a good fit, results that
+  can be backed up, and what a first email asks for. Only what the profile says; a
+  workspace without a profile is the built-in consultancy, as before.
+- **Research** (`investigateSystem(playbook, seller)`, prompt version `research-7`): the
+  seller is part of the prompt. A seller who builds software keeps the catalogue of
+  software ideas and the fixed rule patterns; any other seller gets the same rules worded
+  for any offer, category `other`, and no patterns. Every idea must stay inside what the
+  seller offers. "No opportunity" now also covers: a kind the seller does not want, a size
+  outside theirs, a competitor, or a business that already has what is offered. The signs
+  of a good fit are looked for on the pages (found = an observation with its quote).
+- **Emails** (`outreach-12`): the writer is told the sender's offer and what their
+  customers get, and ends a first email with the ask the seller chose (`firstStep`: an
+  example made for them, a few details, a rough price, a free trial), not always a
+  mock-up. A result the seller can back up may be the new angle of the follow-up, never
+  of the first email. A figure from the seller's own profile passes the number check.
+- **Replies**: the reader is told what the seller offers, so a drafted answer stays
+  inside it.
+- **Not done**: screening before research by the kinds to leave out (a name match is too
+  blunt: "Animal Hospital" is a vet); the model decides it during research. The
+  capability-fit part of the score still reads the software catalogue.
+- **Run live once** (2026-11-21, approved, `scripts/live-profile-test.ts` on a copy of the
+  database): a test seller (evening cleaning for dental practices, ask = a rough price)
+  against three Leeds dentists. All three qualified with ideas about cleaning, category
+  `other`, and emails that ended on the price question; no software idea appeared. Cost
+  $0.61 for the model, 22 page credits, 3 search credits. Not exercised live: a seller
+  who builds software under the new prompt, a "not a fit" for an excluded kind, the
+  follow-up with a backed-up result, and the reply reader.
+- **A plainer, more exact first email** (`outreach-13`, same day, after the founder read the
+  live emails and found them not human enough and open to two readings): the opening
+  states what was seen as a plain fact and no longer praises it; the offer is said exactly
+  (what the sender would do, provide or build, never its benefit in its place and never
+  wrapped in a question); the writer is the kind of seller the profile describes (a
+  service, a product, a build to order, or an adviser who offers a look or a conversation);
+  45 to 70 words. Two more asks for advisers: a free short review and a short call. The
+  claim check also reports an opening that praises and an offer that is not stated plainly.
+  Run live once on the same three businesses (approved, $0.15): the openings became plain
+  facts and the offer was stated outright. Open points: the sentence "I can't see how you
+  manage ... now" repeats across a batch, the identical closing question trips the
+  batch-repeat warning, and the seller's own profile wording can read advert-like.
+

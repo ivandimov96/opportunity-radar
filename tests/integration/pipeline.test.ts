@@ -198,13 +198,13 @@ describe("integrated pipeline", () => {
     expect(all[0].components?.map((c) => c.name)).toEqual(["Online requests", "Estimate follow-up"]);
     expect(all[0].supportingFactKeys).toEqual(["estimate_policy", "booking_method", "shop_management_tool", "contact_form", "o1"]);
     expect(all[0].whyRelevant).toContain("free estimates");
-    expect(all[0].promptVersion).toBe("research-6");
+    expect(all[0].promptVersion).toBe("research-7");
     expect(all.map((o) => o.scope)).toEqual(["internal", "new_for_customers"]); // the kind of idea is stored with it
     expect(all[1].confidenceScore).toBeGreaterThanOrEqual(50); // an alternative stands on verified facts of its own
     expect(biz.bestConfidence).toBe(all[0].confidenceScore);
     expect((await db.select().from(prospects).where(eq(prospects.businessId, bizId)).get())!.stage).toBe("qualified");
     const inv = (await db.select().from(investigations).where(eq(investigations.businessId, bizId)).get())!;
-    expect(inv).toMatchObject({ verdict: "qualified", promptVersion: "research-6", factsRejected: 2, creditsUsed: 4 });
+    expect(inv).toMatchObject({ verdict: "qualified", promptVersion: "research-7", factsRejected: 2, creditsUsed: 4 });
     // Qualified with a usable address: the email is queued without anyone asking (and not written twice).
     const queued = await db.select().from(jobs).where(eq(jobs.type, "generate_outreach")).all();
     expect(queued.map((j) => [j.status, j.payload.businessId, j.payload.step])).toEqual([["queued", bizId, 0]]);

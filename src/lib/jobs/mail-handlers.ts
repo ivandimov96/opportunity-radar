@@ -13,6 +13,7 @@ import { getDb } from "@/db/client";
 import { businesses, emailEvents, inboundEmails, outreachDrafts } from "@/db/schema";
 import { AiRefusalError, AiSpendLimitError, AiUnavailableError, callStructured } from "@/lib/ai/client";
 import { REPLY_SYSTEM } from "@/lib/ai/prompts";
+import { sellerOf } from "@/lib/seller";
 import { ReplySchema, type ReplyCategory } from "@/lib/ai/schemas";
 import { getConfig } from "@/lib/config";
 import { addSuppression } from "@/lib/email/suppression";
@@ -239,7 +240,7 @@ export async function handleProcessReply(job: JobRow, progress: ProgressFn) {
       stage: "reply",
       effort: "low",
       system: REPLY_SYSTEM,
-      user: `The email we sent${draft ? `:\nSubject: ${draft.subject ?? ""}\n${draft.body}` : " is not available."}\n\nSender's name: ${settings.senderName || "the owner"}${settings.bookingLink ? `\nSender's booking link (may be offered for scheduling): ${settings.bookingLink}` : ""}${replyGuidance(settings)}\n\n<reply>\nFrom: ${row.fromName ?? ""} <${row.fromEmail ?? ""}>\nSubject: ${row.subject ?? ""}\n\n${text.slice(0, 6000)}\n</reply>\n\nClassify the reply.`,
+      user: `The email we sent${draft ? `:\nSubject: ${draft.subject ?? ""}\n${draft.body}` : " is not available."}\n\nSender's name: ${settings.senderName || "the owner"}\nWhat the sender offers: ${sellerOf(settings).offer}${settings.bookingLink ? `\nSender's booking link (may be offered for scheduling): ${settings.bookingLink}` : ""}${replyGuidance(settings)}\n\n<reply>\nFrom: ${row.fromName ?? ""} <${row.fromEmail ?? ""}>\nSubject: ${row.subject ?? ""}\n\n${text.slice(0, 6000)}\n</reply>\n\nClassify the reply.`,
       schema: ReplySchema,
       businessId: row.businessId,
       maxTokens: 6000,

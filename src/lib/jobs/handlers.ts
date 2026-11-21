@@ -19,6 +19,7 @@ import { hasBlock } from "@/lib/outreach/validate";
 import { isWrittenStep, STEP, stepLabel, stepNoun, type WrittenStep } from "@/lib/outreach/steps";
 import { openCampaign } from "@/lib/outreach/campaigns";
 import { getSettings } from "@/lib/settings";
+import { sellerOf } from "@/lib/seller";
 import { newId, nowIso } from "@/lib/ids";
 import { createHash } from "node:crypto";
 import { crawlStaged, type CrawlResult, type StagedCrawlResult } from "@/lib/research/crawl";
@@ -319,6 +320,8 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
     const asFacts = (list: DetectedFact[]) => list.map((d) => ({ key: d.key, status: d.status === "unknown" ? ("not_found" as const) : d.status, value: d.value, evidenceQuote: d.evidenceQuote, sourceUrl: d.sourceUrl }));
     const patterns = ruleOpportunities(asFacts(detected), playbook);
     let outcome: Awaited<ReturnType<typeof investigateWithModel>> | null = null;
+    // Who the research is for: what this workspace sells and to whom, from its profile.
+    const seller = sellerOf(await getSettings());
     const warnings: string[] = [];
     let model: string | null = null;
     let costUsd = 0;
@@ -328,7 +331,9 @@ export async function handleInvestigateBusiness(job: JobRow, progress: ProgressF
       try {
         outcome = await investigateWithModel({ id: biz.id, name: biz.name, industry: biz.industry, city: biz.city, region: biz.region, category: biz.category }, fetched.map((p) => ({ url: p.url, kind: p.kind, title: p.content!.title, text: p.content!.text })), detected, {
           listing: biz.reviewCount != null ? `${biz.rating ?? "unrated"} rating from ${biz.reviewCount} reviews on Google Maps` : null,
-          patterns: patterns.map((p) => ({ category: p.category, title: p.title, keys: p.supporting_fact_keys })),
+          // The fixed patterns are software ideas: they are candidates only for a seller who builds software.
+          patterns: seller.buildsSoftware ? patterns.map((p) => ({ category: p.category, title: p.title, keys: p.supporting_fact_keys })) : [],
+          seller,
         });
         warnings.push(...outcome.warnings);
         model = outcome.model;
@@ -544,6 +549,7 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
   const alternatives = await db.select().from(opportunities).where(and(eq(opportunities.businessId, businessId), eq(opportunities.role, "secondary"), eq(opportunities.source, "ai"))).orderBy(desc(opportunities.attractivenessScore)).all();
   const alternative = alternatives.find((a) => a.id !== opp.id && a.scope && a.scope !== opp.scope) ?? alternatives.find((a) => a.id !== opp.id && a.category !== opp.category) ?? null;
   const settings = await getSettings();
+  const seller = sellerOf(settings);
   const campaign = await openCampaign();
   const [factRows, obsRows] = await Promise.all([db.select().from(facts).where(eq(facts.businessId, businessId)).all(), db.select().from(observations).where(eq(observations.businessId, businessId)).all()]);
   const pack = buildEvidencePack(factRows, obsRows, opp);
@@ -557,7 +563,7 @@ export async function handleGenerateOutreach(job: JobRow, progress: ProgressFn, 
     out = await writeOutreachEmail({
       business: { id: biz.id, name: companyName, city: biz.city, region: biz.region, category: biz.category },
       greeting: greetingFor(companyName),
-      sender: { name: settings.senderName, company: settings.senderCompany, offer: settings.offer, bookingLink: settings.bookingLink, voiceSamples: settings.voiceSamples },
+      sender: { name: settings.senderName, company: settings.senderCompany, offer: seller.offer, result: seller.result, proof: seller.proof, firstStep: seller.firstStep, bookingLink: settings.bookingLink, voiceSamples: settings.voiceSamples },
       // The plain-words pitch is only trusted from the model: the fixed rule patterns phrase theirs around what was not found.
       opportunity: { title: opp.title, problemHypothesis: opp.problemHypothesis, proposedSolution: opp.proposedSolution, whyRelevant: opp.whyRelevant, pitch: opp.source === "ai" ? opp.salesAngle : null, expectedValue: opp.expectedValue, scope: opp.scope, components: (opp.components ?? []).map((c) => ({ name: c.name, description: c.description })), validationQuestions: opp.validationQuestions },
       also: alternative ? { inPlainWords: `${alternative.title}. ${alternative.salesAngle ?? ""}`.trim(), scope: alternative.scope } : null,

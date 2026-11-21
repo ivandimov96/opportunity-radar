@@ -14,13 +14,24 @@ import { capitalizeSubject, checkEmailText, hasBlock, introLine, openingLine, st
 import { callStructured } from "./client";
 import { CHECK_BACK_SYSTEM, CHECK_SYSTEM, FOLLOWUP_SYSTEM, LAST_NOTE_SYSTEM, OUTREACH_SYSTEM, SUBJECTS_SYSTEM } from "./prompts";
 import { stepNoun, type WrittenStep } from "@/lib/outreach/steps";
+import { FIRST_STEPS, type FirstStep } from "@/lib/seller";
 import { EmailCheckSchema, OutreachSchema, SubjectsSchema } from "./schemas";
 
 export interface OutreachContext {
   business: { id: string; name: string; city?: string | null; region?: string | null; category?: string | null };
   /** The first line of the email, decided in code: always the company ("Hi Northside Air team,"). */
   greeting: string;
-  sender: { name: string; company: string; offer: string; bookingLink: string; voiceSamples: string };
+  sender: {
+    name: string;
+    company: string;
+    offer: string;
+    bookingLink: string;
+    voiceSamples: string;
+    /** What the sender's customers get out of it, a result they can back up, and what a first email asks for: all from the profile. */
+    result?: string;
+    proof?: string;
+    firstStep?: FirstStep;
+  };
   opportunity: {
     title: string;
     problemHypothesis: string;
@@ -53,8 +64,8 @@ export interface OutreachContext {
 /** How the writer should carry each kind of idea: the less a website can show, the more the email asks. */
 const SCOPE_NOTE: Record<string, string> = {
   existing: "It improves something their website shows they already offer. You may refer to that thing as it is described in the evidence.",
-  new_for_customers: "It is something new for their customers that their website does not show. They may already have it out of sight: offer it as a thought, never say or imply they are missing it.",
-  internal: "It is a tool for the people who work there. You cannot see from outside how they run this today, so say that lightly and offer the idea as a guess; base it only on what the evidence says about the work they do.",
+  new_for_customers: "It is something new for their customers that their website does not show. They may already have it out of sight: never say or imply they are missing it; say in a few words that you could not see it from outside, and state what you offer plainly.",
+  internal: "It is about how they work behind the scenes. You cannot see from outside how they handle this today: say that in a few words, state what you offer plainly, and base everything else only on what the evidence says about the work they do.",
 };
 
 /**
@@ -71,6 +82,8 @@ export function greetingFor(businessName: string): string {
 
 export function buildOutreachInput(ctx: OutreachContext, problems: string[] = []): string {
   const o = ctx.opportunity;
+  // The seller without a profile offered a mock-up; that stays the ask when none is chosen.
+  const step = FIRST_STEPS[ctx.sender.firstStep ?? "example"];
   const others = ctx.others
     .slice(0, 12)
     .map((x) => `- Subject: ${x.subject} | Opens: ${openingLine(x.body).slice(0, 140)}${introLine(x.body) ? ` | Introduces the sender with: ${introLine(x.body)!.slice(0, 140)}` : ""}`)
@@ -78,7 +91,8 @@ export function buildOutreachInput(ctx: OutreachContext, problems: string[] = []
   return `Recipient: ${ctx.business.name}${ctx.business.category ? ` (${ctx.business.category})` : ""}, ${[ctx.business.city, ctx.business.region].filter(Boolean).join(", ") || "location unknown"}
 Greeting to use as the first line: ${ctx.greeting}
 
-Sender: ${ctx.sender.name || "the owner"}${ctx.sender.company ? ` of ${ctx.sender.company}` : ""}. What the sender does: ${ctx.sender.offer || "custom software, integrations and automation"}.
+Sender: ${ctx.sender.name || "the owner"}${ctx.sender.company ? ` of ${ctx.sender.company}` : ""}. What the sender offers, in the sender's own words: ${ctx.sender.offer || "custom software, integrations and automation"}.${ctx.sender.result?.trim() ? `\nWhat the sender's customers get out of it: ${ctx.sender.result.trim()}` : ""}
+${ctx.step === 0 ? `What to ask for (the one question that ends this email): ${step.ask}.` : ctx.step === 2 ? "" : `What the first email asked for: ${step.ask}. ${step.renew}`}${ctx.step === 1 && ctx.sender.proof?.trim() ? `\nA result the sender can back up (use at most one, in the sender's terms, adding nothing): ${ctx.sender.proof.trim().slice(0, 800)}` : ""}
 Booking link: ${ctx.step === 1 || ctx.step === 3 ? ctx.sender.bookingLink || "(none: include no links)" : ctx.step === 2 ? "(not used in a last note: include no links)" : "(not used in a first email: include no links)"}
 ${ctx.sender.voiceSamples.trim() ? `\nVoice samples written by the sender (match rhythm and word choice only):\n<voice>\n${ctx.sender.voiceSamples.trim().slice(0, 4000)}\n</voice>\n` : ""}
 <website_content>
@@ -193,7 +207,7 @@ export async function writeOutreachEmail(ctx: OutreachContext): Promise<Outreach
       body: stripSignoff(res.data.body, ctx.sender.name),
       claims: res.data.claims.map((c) => ({ text: c.text, factKeys: [...new Set(c.fact_keys)] })),
     };
-    const issues = checkEmailText(email, { pack: ctx.pack, bookingLink: ctx.sender.bookingLink, step: ctx.step, others: ctx.others });
+    const issues = checkEmailText(email, { pack: ctx.pack, bookingLink: ctx.sender.bookingLink, step: ctx.step, others: ctx.others, callIsTheAsk: ctx.sender.firstStep === "call", senderSays: [ctx.sender.offer, ctx.sender.result, ctx.sender.proof].filter(Boolean).join(" ") });
     let statements: DraftValidation["statements"];
     let checkedBy: string | null = null;
     // The claim check costs a call: skip it when the fixed checks already force a rewrite.
