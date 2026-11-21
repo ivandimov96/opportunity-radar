@@ -63,14 +63,17 @@ export async function draftEvidence(draft: Pick<Draft, "id" | "businessId" | "ca
 }
 
 /** Other reviewable emails of the same batch and step (for "do not repeat" checks). Only emails to businesses of the acting workspace count. */
-export async function batchPeers(campaignId: string | null, businessId: string, step: number) {
-  if (!campaignId) return [];
+/**
+ * The emails a new one must not resemble: the workspace's latest emails of the same step to other companies,
+ * whichever batch they are in and whether or not they were sent. An email is written once, for one company.
+ */
+export async function batchPeers(_campaignId: string | null, businessId: string, step: number) {
   const db = await getDb();
   const rows = await db
     .select({ subject: outreachDrafts.subject, body: outreachDrafts.body, label: businesses.name })
     .from(outreachDrafts)
     .innerJoin(businesses, eq(businesses.id, outreachDrafts.businessId))
-    .where(and(eq(businesses.workspaceId, await workspaceId()), eq(outreachDrafts.campaignId, campaignId), eq(outreachDrafts.step, step), ne(outreachDrafts.businessId, businessId), inArray(outreachDrafts.status, ["needs_review", "ready", "approved"])))
+    .where(and(eq(businesses.workspaceId, await workspaceId()), eq(outreachDrafts.step, step), ne(outreachDrafts.businessId, businessId), inArray(outreachDrafts.status, ["needs_review", "ready", "approved", "queued", "sending", "sent"])))
     .orderBy(desc(outreachDrafts.createdAt))
     .limit(12)
     .all();

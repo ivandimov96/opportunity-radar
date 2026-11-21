@@ -269,12 +269,17 @@ export function checkEmailText(email: EmailText, ctx: CheckContext): DraftIssue[
   // Sameness within the batch, one remark per other email: the same opening, a body that is mostly the same,
   // or a single sentence repeated word for word (typically the self-introduction).
   const long = (s: string) => norm(s).split(" ").length >= 7;
-  const mine = new Set(sentences(body).filter(long).map(norm));
+  // The closing question of a first email is the ask the seller chose: it is the same thing in every email, so
+  // the same words there are not a repeated sentence (the writer is still asked to vary them).
+  const own = sentences(body);
+  const closing = ctx.step === 0 && own.length && /\?$/.test(own[own.length - 1]) ? norm(own[own.length - 1]) : null;
+  const mine = new Set(own.filter(long).map(norm).filter((s) => s !== closing));
   const opening = norm(openingLine(body)).split(" ").slice(0, 6).join(" ");
   for (const o of ctx.others) {
     const shared = sentences(o.body).filter(long).find((s) => mine.has(norm(s)));
-    if (opening && norm(openingLine(o.body)).split(" ").slice(0, 6).join(" ") === opening) warn("same_opening", `Opens the same way as the email for ${o.label}.`);
-    else if (similarity(body, o.body) > 0.5) warn("similar", `Reads very similar to the email for ${o.label}.`);
+    // A body that is mostly the same is a template with the name changed: refused, whatever else matches.
+    if (similarity(body, o.body) > 0.5) block("similar", `Reads almost the same as the email for ${o.label}: write it differently, for this company alone.`);
+    else if (opening && norm(openingLine(o.body)).split(" ").slice(0, 6).join(" ") === opening) warn("same_opening", `Opens the same way as the email for ${o.label}.`);
     else if (shared) warn("same_sentence", `Repeats a sentence from the email for ${o.label}: "${shared.slice(0, 90)}".`);
   }
   return issues;

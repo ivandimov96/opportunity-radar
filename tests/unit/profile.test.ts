@@ -109,6 +109,20 @@ describe("the seller: what the research and the writer are told about the operat
     expect(checkEmailText(email, { ...ctx, callIsTheAsk: true }).map((i) => i.code)).not.toContain("call_offer");
   });
 
+  it("shows the writer the sender's recent emails in full, so the new one resembles none of them", async () => {
+    const { buildOutreachInput, FULL_PEERS } = await import("@/lib/ai/outreach");
+    const { OUTREACH_SYSTEM } = await import("@/lib/ai/prompts");
+    const others = Array.from({ length: 8 }, (_, i) => ({ subject: `Subject ${i}`, body: `Hi Company ${i} team,\n\nOpening fact ${i}.\n\nMiddle sentence number ${i} of the email.\n\nClosing question ${i}?`, label: `Company ${i}` }));
+    const input = buildOutreachInput({ business: { id: "b1", name: "Idea Air" }, greeting: "Hi Idea Air team,", sender: { name: "Nell", company: "", offer: "Daily office cleaning.", bookingLink: "", voiceSamples: "" }, opportunity: { title: "T", problemHypothesis: "P", proposedSolution: "S", whyRelevant: null, components: [], validationQuestions: [] }, pack: { verified: [], notSeen: [], haystack: "" } as never, step: 0, others });
+    expect(input.match(/<other_email /g)).toHaveLength(FULL_PEERS);
+    expect(input).toContain("Middle sentence number 0 of the email.");
+    expect(input).not.toContain("Middle sentence number 7 of the email."); // older ones are shown by subject and opening only
+    expect(input).toContain("Subject: Subject 7");
+    expect(OUTREACH_SYSTEM).toMatch(/should not recognise a template/);
+    expect(OUTREACH_SYSTEM).toMatch(/could not be pasted unchanged into an email to another company/);
+    expect(OUTREACH_SYSTEM).toMatch(/never the wording/);
+  });
+
   it("lets an email use a figure the sender gave about themselves, and no other", async () => {
     const { checkEmailText } = await import("@/lib/outreach/validate");
     const email = { subject: "Cleaner mornings?", body: "Hi Idea Air team,\n\nYour new treatment rooms caught my eye. I'm Nell, and we clean 14 practices in Leeds after closing time, so mornings start spotless without anyone managing cleaners.\n\nMay I send you a rough price for your practice?", claims: [] };

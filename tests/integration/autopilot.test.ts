@@ -6,6 +6,7 @@
  * is mocked at the client boundary and no search provider is ever called.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DISTINCT_BODIES } from "../fixtures/emails";
 import { and, eq } from "drizzle-orm";
 
 const callStructured = vi.fn();
@@ -32,6 +33,9 @@ import { cancelQueued, sendPreflight } from "@/lib/outreach/send";
 import { ensureProspect, setStage } from "@/lib/pipeline/prospects";
 import { DEFAULT_SETTINGS, getSettings, replyRulesOf, resetSettings, saveSettings } from "@/lib/settings";
 
+/** Each seeded company gets an email of its own: one text for all of them would be refused as a template. */
+let bodies = 0;
+const nextBody = () => (bodies++ === 0 ? BODY : `${DISTINCT_BODIES[(bodies - 2) % DISTINCT_BODIES.length]}${bodies - 2 >= DISTINCT_BODIES.length ? ` Note ${bodies}.` : ""}`);
 const BODY = "Hi team,\n\nI noticed that every replacement starts with a free in-home estimate. Would a short mock-up of a booking page be useful?";
 const usage = { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, costUsd: 0.001 };
 const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString();
@@ -46,7 +50,7 @@ describe("autopilot", () => {
     await db.insert(businesses).values({ id, name, nameNormalized: name.toLowerCase(), industry: "home_services", firstProvider: "csv", country: "US", status: "profiled", verdict: "qualified", email, emailStatus: "valid", emailSource: "site" }).run();
     await ensureProspect(id, status === "sent" || status === "bounced" ? "contacted" : "ready_to_contact");
     const draftId = newId();
-    await db.insert(outreachDrafts).values({ id: draftId, businessId: id, campaignId, step: 0, style: "personal", toEmail: email, subject: `Idea for ${name}`, body: BODY, claims: [], warnings: [], status, validation: { passed: true, issues: [], checkedAt: new Date().toISOString() }, ...(status === "sent" || status === "bounced" ? { messageId: `<${draftId}@dimov.example>`, sentAt: daysAgo(20) } : {}), ...extra }).run();
+    await db.insert(outreachDrafts).values({ id: draftId, businessId: id, campaignId, step: 0, style: "personal", toEmail: email, subject: `Idea for ${name}`, body: nextBody(), claims: [], warnings: [], status, validation: { passed: true, issues: [], checkedAt: new Date().toISOString() }, ...(status === "sent" || status === "bounced" ? { messageId: `<${draftId}@dimov.example>`, sentAt: daysAgo(20) } : {}), ...extra }).run();
     return { id, draftId };
   };
   /** The operator's own track record: emails approved and sent by hand, long enough ago that the mailbox is warm. */

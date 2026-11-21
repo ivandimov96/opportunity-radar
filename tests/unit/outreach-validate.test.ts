@@ -118,7 +118,7 @@ describe("fixed email checks", () => {
   it("keeps emails in a batch from repeating each other", () => {
     const others = [{ subject: "booking your in-home estimates", body, label: "Other Co" }];
     const dup = checkEmailText(email, { ...ctx, others });
-    expect(dup.map((i) => `${i.severity}:${i.code}`)).toEqual(["block:subject_duplicate", "warn:same_opening"]);
+    expect(dup.map((i) => `${i.severity}:${i.code}`)).toEqual(["block:subject_duplicate", "block:similar"]); // the same text for another company is a template
     expect(hasBlock(dup)).toBe(true);
     expect(similarity(body, body)).toBe(1);
     expect(similarity(body, "Something completely different about plumbing and drains in another city")).toBe(0);
@@ -152,5 +152,20 @@ describe("email text helpers", () => {
     expect(signatureBlock({ ...own, optOutLine: "   " })).toBe("Ivan\nDimov Software · Skopje");
     expect(signatureBlock({ senderName: "", senderTitle: "", senderCompany: "", senderWebsite: "", postalAddress: "" })).toBe("");
     expect(signatureBlock(own, 9)).toBe("Ivan\nDimov Software · Skopje"); // an answer to a reply carries no opt-out sentence
+  });
+
+  it("refuses an email that reads almost like another one, and does not count the shared closing question as a repeat", () => {
+    const pack = { verified: [], notSeen: [], haystack: "" } as never;
+    const ask = "Could I send you a rough idea of what it would cost?";
+    const first = `Hi Alpha Dental team,\n\nYour appointments run until late every evening of the week.\n\nI'm Nell from Harbour Clean. We'd clean your practice after the last appointment each evening, with the same two cleaners every time.\n\n${ask}`;
+    const codes = (body: string, others: { subject: string; body: string; label: string }[]) => checkEmailText({ subject: "Cleaning after your late finish", body, claims: [] }, { pack, step: 0, others }).map((i) => `${i.severity}:${i.code}`);
+    // The same email with the name changed is a template: blocked.
+    const copy = first.replace("Alpha Dental", "Beta Dental");
+    expect(codes(copy, [{ subject: "Another subject", body: first, label: "Alpha Dental" }])).toContain("block:similar");
+    // An email of its own that ends on the same ask is fine: the ask is the seller's choice, not a repeated sentence.
+    const own = `Hi Beta Dental team,\n\nSaturday mornings are among the busiest hours on your timetable.\n\nNell here, of Harbour Clean: two cleaners, always the same pair, would go through your surgeries once the Saturday list is over, so Monday begins clean.\n\n${ask}`;
+    const result = codes(own, [{ subject: "Another subject", body: first, label: "Alpha Dental" }]);
+    expect(result).not.toContain("block:similar");
+    expect(result).not.toContain("warn:same_sentence");
   });
 });

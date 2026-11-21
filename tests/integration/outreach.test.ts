@@ -4,6 +4,7 @@
  * operations. The model is mocked at the client boundary; nothing is sent.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DISTINCT_BODIES } from "../fixtures/emails";
 import { eq } from "drizzle-orm";
 
 const callStructured = vi.fn();
@@ -29,6 +30,14 @@ I was reading about your Comfort Club and noticed that every system replacement 
 I'm Ivan, and I build small software tools for service businesses. It made me wonder whether people could pick a visit time themselves, alongside the tools you already run.
 
 Shall I send over a short mock-up of how that could look?`;
+/** A second email that is its own: an email that reads almost like another one is refused (see the sameness test). */
+const OTHER_BODY = `Hi Second Air team,
+
+Every system replacement at yours begins with a free estimate at the customer's home.
+
+Ivan here. I'd build a page where your customers choose the time of that visit on their own, next to what you run today, so the office spends less of the day on the phone.
+
+Would a short mock-up of it be useful?`;
 const CLAIMS = [{ text: "every system replacement starts with a free in-home estimate", fact_keys: ["o1"] }];
 const usage = (cost: number) => ({ input: 10, output: 10, cacheRead: 0, cacheWrite: 0, costUsd: cost });
 const written = (subject: string, body = BODY) => ({ data: { subject, body, claims: CLAIMS }, model: "writer-model", usage: usage(0.02) });
@@ -78,7 +87,7 @@ describe("outreach engine", () => {
     await enqueueOutreach(id);
     expect(await drainQueue(["generate_outreach"])).toBe(1);
     const [d] = await draftOf(id);
-    expect(d).toMatchObject({ status: "ready", step: 0, toEmail: "office@northside.example", subject: "Booking your in-home estimates", model: "writer-model", promptVersion: "outreach-13" });
+    expect(d).toMatchObject({ status: "ready", step: 0, toEmail: "office@northside.example", subject: "Booking your in-home estimates", model: "writer-model", promptVersion: "outreach-14" });
     expect(d.costUsd).toBeCloseTo(0.025);
     expect(d.validation).toMatchObject({ passed: true, checkedBy: "check-model" });
     expect(d.validation?.issues).toEqual([{ severity: "warn", code: "tone", message: "Tone: slightly formal" }]);
@@ -127,7 +136,7 @@ describe("outreach engine", () => {
     expect(callsA[1].user).toMatch(/Your previous version was rejected[\s\S]*number that is not in the research or in your own details \(12\)/);
 
     const b = await seed("Bravo Air", "b@bravo.example");
-    model({ outreach: [written("Subject two"), written("Subject two")], check: [checked(["they answer every call within a minute"]), checked(["they answer every call within a minute"])] });
+    model({ outreach: [written("Subject two", OTHER_BODY.replace("Second Air", "Bravo Air")), written("Subject two", OTHER_BODY.replace("Second Air", "Bravo Air"))], check: [checked(["they answer every call within a minute"]), checked(["they answer every call within a minute"])] });
     await enqueueOutreach(b);
     await drainQueue(["generate_outreach"]);
     const [dbr] = await draftOf(b);
@@ -148,8 +157,9 @@ describe("outreach engine", () => {
     const abroad = await seed("Berlin Co", "info@berlin.example", { country: "DE" });
     await addSuppression("owner@optedout.example", "unsubscribed");
     expect(await isSuppressed("OWNER@optedout.example")).toBe(true);
-    for (const id of [noEmail, suppressed, abroad]) {
-      model({ outreach: [written(`Subject for ${id}`)], check: [checked()] });
+    // Each company gets an email of its own: one text for all three would be refused as a template.
+    for (const [n, id] of [noEmail, suppressed, abroad].entries()) {
+      model({ outreach: [written(`Subject for ${id}`, DISTINCT_BODIES[n])], check: [checked()] });
       await enqueueOutreach(id);
       await drainQueue(["generate_outreach"]);
     }
@@ -172,7 +182,7 @@ describe("outreach engine", () => {
   it("lets the operator edit, approve (also against a failed check), exclude and restore", async () => {
     const id = await seed("Northside Air", "office@northside.example");
     const other = await seed("Second Air", "hi@second.example");
-    model({ outreach: [written("First subject"), written("Second subject", BODY.replace("I was reading about", "Reading about").replace("Northside Air", "Second Air"))], check: [checked(), checked()] });
+    model({ outreach: [written("First subject"), written("Second subject", OTHER_BODY)], check: [checked(), checked()] });
     await enqueueOutreach(id);
     await enqueueOutreach(other);
     await drainQueue(["generate_outreach"]);

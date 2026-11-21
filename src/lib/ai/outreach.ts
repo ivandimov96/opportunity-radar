@@ -80,6 +80,9 @@ export function greetingFor(businessName: string): string {
   return name && name.length <= 60 ? `Hi ${name} team,` : "Hello,";
 }
 
+/** How many of the sender's other emails the writer is shown in full. */
+export const FULL_PEERS = 5;
+
 export function buildOutreachInput(ctx: OutreachContext, problems: string[] = []): string {
   const o = ctx.opportunity;
   // The seller without a profile offered a mock-up; that stays the ask when none is chosen.
@@ -87,6 +90,11 @@ export function buildOutreachInput(ctx: OutreachContext, problems: string[] = []
   const others = ctx.others
     .slice(0, 12)
     .map((x) => `- Subject: ${x.subject} | Opens: ${openingLine(x.body).slice(0, 140)}${introLine(x.body) ? ` | Introduces the sender with: ${introLine(x.body)!.slice(0, 140)}` : ""}`)
+    .join("\n");
+  // A few of them in full: sameness hides in the middle of an email, not only in its first line.
+  const recent = ctx.others
+    .slice(0, FULL_PEERS)
+    .map((x, i) => `<other_email n="${i + 1}">\n${x.body.trim().slice(0, 900)}\n</other_email>`)
     .join("\n");
   return `Recipient: ${ctx.business.name}${ctx.business.category ? ` (${ctx.business.category})` : ""}, ${[ctx.business.city, ctx.business.region].filter(Boolean).join(", ") || "location unknown"}
 Greeting to use as the first line: ${ctx.greeting}
@@ -116,7 +124,7 @@ Parts: ${o.components.map((c) => `${c.name} (${c.description})`).join("; ") || "
 ${ctx.step > 0 && ctx.firstEmail ? `\nTHE FIRST EMAIL (${ctx.step === 3 ? "the one they answered" : "unanswered"}; do not repeat it):\nSubject: ${ctx.firstEmail.subject}\n${ctx.firstEmail.body}\n` : ""}${ctx.step === 2 && ctx.followUpEmail ? `\nTHE FOLLOW-UP (also unanswered; do not repeat it):\n${ctx.followUpEmail.body}\n` : ""}${ctx.step === 3 && ctx.theirReply ? `\nTHEIR ANSWER on ${ctx.theirReply.receivedAt.slice(0, 10)} (today is ${new Date().toISOString().slice(0, 10)}), in the words of whoever read it for you:\n<reply_summary>\n${ctx.theirReply.summary.slice(0, 400)}\n</reply_summary>\n` : ""}
 Other emails in this batch (do not reuse their structure or phrasing):
 ${others || "(none yet)"}
-${ctx.feedback?.trim() ? `\nThe sender asked for this change: ${ctx.feedback.trim().slice(0, 500)}\n` : ""}${problems.length ? `\nYour previous version was rejected. Fix every one of these and change nothing that was fine:\n${problems.map((p) => `- ${p}`).join("\n")}\n` : ""}
+${recent ? `\nThe sender's most recent emails to other companies, in full. Yours must not read like any of them: no shared sentence, a different way in, the offer fitted to this company, the closing question in other words.\n${recent}\n` : ""}${ctx.feedback?.trim() ? `\nThe sender asked for this change: ${ctx.feedback.trim().slice(0, 500)}\n` : ""}${problems.length ? `\nYour previous version was rejected. Fix every one of these and change nothing that was fine:\n${problems.map((p) => `- ${p}`).join("\n")}\n` : ""}
 Write the ${stepNoun(ctx.step)}.`;
 }
 

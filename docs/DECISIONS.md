@@ -1013,4 +1013,16 @@ that offers a mock-up. A customer who sells anything else got emails about softw
   facts and the offer was stated outright. Open points: the sentence "I can't see how you
   manage ... now" repeats across a batch, the identical closing question trips the
   batch-repeat warning, and the seller's own profile wording can read advert-like.
+- **Every email is written once, for one company** (`outreach-14`, same day, at the
+  founder's request): the writer is shown the workspace's latest emails of the same step
+  (`batchPeers`, now across batches and including sent ones), five of them in full, and
+  must share no sentence with them; the offer sentence is fitted to the company (its
+  closing time, its kind of work, its own words for its things). The seller's profile
+  gives the substance, never the wording, so selling adjectives from it are not copied.
+  The stock disclaimer ("I can't see how you ... now") is gone: stating what the seller
+  would do assumes nothing about the recipient. In the fixed checks an email that reads
+  almost like another one (word-trigram similarity above 0.5) is now refused, not just
+  remarked on, and the shared closing question of a first email no longer counts as a
+  repeated sentence. Tests that gave every company one text use
+  `tests/fixtures/emails.ts`. This wording has not run on the real model.
 
