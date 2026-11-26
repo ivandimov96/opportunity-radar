@@ -10,8 +10,8 @@ export function kickWorker() {
   if (!getConfig().serverless) return;
   try {
     after(async () => {
-      const { drainQueue } = await import("./worker");
-      await drainQueue(undefined, 20);
+      const [{ drainQueue }, { SERVERLESS_DRAIN }] = await Promise.all([import("./worker"), import("./tick")]);
+      await drainQueue(undefined, 20, SERVERLESS_DRAIN);
     });
   } catch (err) {
     console.warn("[jobs] could not schedule background drain", err);

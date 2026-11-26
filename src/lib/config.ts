@@ -127,11 +127,14 @@ export interface MailConfig {
   imap: { host: string; port: number } | null;
 }
 
-function resolveMail(env: z.infer<typeof EnvSchema>, serverless: boolean): MailConfig {
+/** Why nothing is sent from a deployment that keeps no data: what was sent could not be remembered. */
+export const EPHEMERAL_MAIL_OFF = "Sending is switched off on a deployment without a database of its own.";
+
+function resolveMail(env: z.infer<typeof EnvSchema>, ephemeral: boolean): MailConfig {
   const off = (reason: string, provider: string | null = null): MailConfig => ({ enabled: false, provider, reason, address: null, user: null, password: null, smtp: null, imap: null });
   const provider = env.MAIL_PROVIDER ?? null;
   if (!provider) return off("No mailbox is connected (set MAIL_PROVIDER, MAIL_USER and MAIL_PASSWORD in .env).");
-  if (serverless) return off("Sending is switched off on a serverless deployment.", provider);
+  if (ephemeral) return off(EPHEMERAL_MAIL_OFF, provider);
   if (provider === "fake") return { enabled: true, provider, reason: null, address: env.MAIL_FROM ?? env.MAIL_USER ?? "me@fake.local", user: env.MAIL_USER ?? "me@fake.local", password: null, smtp: null, imap: null };
   const preset = MAIL_PRESETS[provider];
   if (!preset && provider !== "custom") return off(`Unknown MAIL_PROVIDER "${provider}" (use ${Object.keys(MAIL_PRESETS).join(", ")} or custom).`, provider);
@@ -151,6 +154,8 @@ export type AppConfig = z.infer<typeof EnvSchema> & {
   mail: MailConfig;
   /** Running on Vercel serverless: storage is ephemeral and no long-lived worker exists. */
   serverless: boolean;
+  /** Serverless without a hosted database: nothing is kept between requests, so nothing is sent and no mailbox is connected. */
+  ephemeral: boolean;
   /** Development, production or test (src/lib/app-env.ts). */
   appEnv: AppEnv;
   /** What is not yet as it should be for this environment; shown on the System page. */
@@ -182,12 +187,13 @@ export function getConfig(): AppConfig {
   cached = {
     ...env,
     serverless,
+    ephemeral: serverless && !env.TURSO_DATABASE_URL,
     appEnv: check.env,
     envWarnings: check.warnings,
     ai: { enabled: provider !== null, provider },
     googleMaps: { enabled: Boolean(env.SERPER_API_KEY?.trim()) },
     firecrawl: { enabled: Boolean(env.FIRECRAWL_API_KEY) },
-    mail: resolveMail(env, serverless),
+    mail: resolveMail(env, serverless && !env.TURSO_DATABASE_URL),
     webSearch: { provider: env.WEB_SEARCH_PROVIDER === "brave" || (env.WEB_SEARCH_PROVIDER === "auto" && env.BRAVE_SEARCH_API_KEY?.trim()) ? "brave" : env.WEB_SEARCH_PROVIDER === "duckduckgo" ? "duckduckgo" : null },
   };
   return cached;

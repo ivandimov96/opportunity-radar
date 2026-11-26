@@ -1,0 +1,25 @@
+# The production deployment has no worker of its own (serverless): this calls it every few minutes so that
+# queued work runs, inboxes are read and what is due gets planned. It needs two things in the repository's
+# settings: the secret CRON_SECRET (the same value as on the host) and the variable APP_URL (the site's
+# address, https, no slash at the end). Until both exist it does nothing.
+name: Run queued jobs
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+concurrency:
+  group: run-jobs
+  cancel-in-progress: false
+permissions: {}
+jobs:
+  tick:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: One turn of the background work
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          APP_URL: ${{ vars.APP_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$APP_URL" ]; then echo "Not set up yet: CRON_SECRET and APP_URL are missing."; exit 0; fi
+          curl --fail-with-body --silent --show-error --max-time 330 -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/jobs/drain"

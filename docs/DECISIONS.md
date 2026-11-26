@@ -1209,7 +1209,32 @@ the computer from opening the customers' database once its address was at hand.
 - `pnpm env:check [production]` checks a file without starting anything and never prints a value.
 - The app says "Dev" beside its name outside production.
 
-**Not done here.** The values on the host were not changed. Production on a serverless host
-still cannot send email or run the worker (sending is switched off there), so
-until production gets a host with a running worker, or sending from serverless is allowed,
-real outreach still leaves from the founder's computer.
+**Not done here.** The values on the host were not changed by this decision.
+
+## D74. The Vercel deployment is production: it sends, and its background work runs by turns (2026-11-26)
+
+**Context.** The deployment was a showcase: no keys, sending switched off on any serverless
+host, and the queue worked through once a day. The founder chose it as the real production
+(free) over a paid machine with a worker of its own.
+
+**Decision.**
+- Sending and connecting a mailbox are refused only on a deployment that keeps no data
+  (`config.ephemeral`: serverless without a hosted database). With the hosted database the
+  mail code runs as on any machine.
+- No worker lives there, so the work is done by turns (`src/lib/jobs/tick.ts`): jobs cut off
+  by the host go back in the queue after six minutes, the scheduler runs once, and the queue
+  is worked through. `/api/jobs/drain` does one turn. It is closed without `CRON_SECRET`
+  (in production it answers 503 until the secret is set). A scheduled GitHub workflow
+  (`.github/workflows/run-jobs.yml`) calls it every five minutes; the host's daily cron stays
+  as a second caller. A request that queues work still drains the queue itself after answering.
+- A function lives 300 seconds: a drain there starts no new job after 200, runs three jobs
+  side by side, and only one of them takes emails and inbox reads. Because several functions
+  may drain at once, "one email, one inbox read at a time" is checked against the jobs table
+  (`typesRunning`), counting a running job only while it could still be alive.
+
+**Consequences and limits.** GitHub runs scheduled workflows late under load (minutes, at
+times more) and switches them off after 60 days without activity in the repository: inbox
+reading, follow-up planning and automatic sending are then late by as much. A job that needs
+more than its function has left is cut off and tried again on a later turn. The Firecrawl
+request limiter is per process, so several functions together may exceed the plan's rate and
+be told to wait. None of this has run on the live deployment yet.

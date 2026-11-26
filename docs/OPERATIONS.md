@@ -46,6 +46,12 @@ secret, not a key, not a mailbox.
 - Each sign-in app (Google, Microsoft) needs the redirect addresses of both
   environments registered: `http://localhost:3000/...` and `<APP_URL>/...`
   (the paths are in `.env.production.example`).
+- Production has no worker of its own. Its background work runs by turns: every
+  five minutes the GitHub workflow "Run queued jobs" calls `<APP_URL>/api/jobs/drain`
+  with `CRON_SECRET` (repository secret `CRON_SECRET`, repository variable
+  `APP_URL`; the same secret is set on the host). If replies or follow-ups seem
+  late, look at that workflow's runs first (GitHub, Actions). A turn can also be
+  started by hand there ("Run workflow").
 - Scripts read the development file (`--env-file=.env.development.local`). Never
   point one at production settings without the founder's word.
 

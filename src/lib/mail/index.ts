@@ -1,7 +1,7 @@
 import { and, asc, eq, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { FIRST_WORKSPACE_ID, mailboxes, settings } from "@/db/schema";
-import { MAIL_PRESETS, getConfig } from "@/lib/config";
+import { EPHEMERAL_MAIL_OFF, MAIL_PRESETS, getConfig } from "@/lib/config";
 import { newId, nowIso } from "@/lib/ids";
 import { resolvePublicAddress } from "@/lib/research/url-guard";
 import { open, seal } from "@/lib/secret-box";
@@ -27,7 +27,7 @@ export * from "./types";
 export const MAILBOX_WORKSPACE_ID = FIRST_WORKSPACE_ID;
 export const NO_WORKSPACE_MAILBOX = "No mailbox is connected yet. Connect yours under Settings, Mailbox.";
 export const MAILBOX_UNREADABLE = "The saved mailbox password can no longer be read. Remove this mailbox and connect it again.";
-const SERVERLESS_OFF = "Sending is switched off on a serverless deployment.";
+const SERVERLESS_OFF = EPHEMERAL_MAIL_OFF;
 /** A mailbox connected with "Sign in with Microsoft" (no password; a token is stored instead). */
 const MICROSOFT = "microsoft";
 const MICROSOFT_LABEL = "Outlook / Microsoft 365 · signed in with Microsoft";
@@ -67,7 +67,7 @@ async function resolveAll(ws?: string): Promise<Resolved[]> {
   if (cfg.mail.provider !== "fake") rows = rows.filter((r) => r.provider !== "fake");
   const out: Resolved[] = rows.map((row) => {
     const base = { id: row.id, provider: row.provider, address: row.address, source: "settings" as const, isDefault: row.isDefault, config: null, fake: false, label: MAIL_PRESETS[row.provider]?.label ?? `${row.smtpHost} / ${row.imapHost}` };
-    if (cfg.serverless) return { ...base, enabled: false, reason: SERVERLESS_OFF };
+    if (cfg.ephemeral) return { ...base, enabled: false, reason: SERVERLESS_OFF };
     if (row.provider === "fake") return { ...base, enabled: true, reason: null, label: FAKE_LABEL, fake: true };
     const password = open(row.passwordEnc);
     if (password === null) return { ...base, enabled: false, reason: MAILBOX_UNREADABLE };
@@ -138,7 +138,7 @@ const publicOf = ({ enabled, address, reason, source, label }: Resolved): Mailbo
 export async function mailboxFor(ws?: string): Promise<Mailbox> {
   const r = await pick(ws);
   if (r) return publicOf(r);
-  // The first workspace is told why the server's own mailbox is not usable (misconfigured, serverless).
+  // The first workspace is told why the server's own mailbox is not usable (misconfigured, a deployment that keeps no data).
   const m = getConfig().mail;
   return (ws ?? (await workspaceId())) === MAILBOX_WORKSPACE_ID && m.provider && m.reason ? { ...NONE, reason: m.reason } : NONE;
 }
@@ -194,7 +194,7 @@ const port = (v: number | string | undefined, fallback: number) => {
  */
 export async function connectMailbox(input: ConnectInput): Promise<{ ok: true; address: string } | { ok: false; error: string }> {
   const cfg = getConfig();
-  if (cfg.serverless) return { ok: false, error: SERVERLESS_OFF };
+  if (cfg.ephemeral) return { ok: false, error: SERVERLESS_OFF };
   const provider = input.provider.trim().toLowerCase();
   const address = input.address.trim().toLowerCase();
   // App passwords are shown in groups of four with spaces; the servers want them without.
@@ -242,7 +242,7 @@ export async function connectMailbox(input: ConnectInput): Promise<{ ok: true; a
  * connections (sending and reading) were opened with it once.
  */
 export async function connectMicrosoftMailbox(signedIn: { address: string; refreshToken: string; accessToken: string; expiresIn: number }): Promise<{ ok: true; address: string } | { ok: false; error: string }> {
-  if (getConfig().serverless) return { ok: false, error: SERVERLESS_OFF };
+  if (getConfig().ephemeral) return { ok: false, error: SERVERLESS_OFF };
   const address = signedIn.address.toLowerCase();
   const have = await resolveAll();
   if (have.filter((r) => r.address !== address).length >= MAX_MAILBOXES) return { ok: false, error: `A workspace can hold ${MAX_MAILBOXES} mailboxes. Remove one first.` };

@@ -5,7 +5,7 @@
  */
 import { getConfig } from "@/lib/config";
 import { ProviderError } from "@/lib/discovery/types";
-import { claimNextJob, completeJob, failJob, recoverStaleJobs, updateJobProgress, type JobRow, type JobType } from "./queue";
+import { claimNextJob, completeJob, failJob, recoverStaleJobs, typesRunning, updateJobProgress, type JobRow, type JobType } from "./queue";
 import os from "node:os";
 import { handleDiscoverSearch, handleGenerateOutreach, handleInvestigateBusiness, markJobTimedOut, NonRetryableError, RetryableError, type ProgressFn } from "./handlers";
 import { handleProcessReply, handleSendEmail, handleSyncMailbox } from "./mail-handlers";
@@ -92,15 +92,35 @@ export function describeError(err: unknown): string {
   return parts.filter((p, i) => p && parts.indexOf(p) === i).join(" ← ");
 }
 
-/** Process queued jobs until none are claimable. Used by tests and the CLI. */
-export async function drainQueue(types: JobType[] = Object.keys(HANDLERS) as JobType[], max = 100) {
+export interface DrainOptions {
+  /** Stop taking new jobs after this long: a serverless function has a fixed time to live. */
+  budgetMs?: number;
+  /** Jobs run side by side (a hosted database only: the local file has one connection and tests run one at a time). */
+  lanes?: number;
+  /** Other processes may be draining the same queue: keep "one send, one inbox read at a time" across all of them. */
+  shared?: boolean;
+}
+
+/**
+ * Process queued jobs until none are claimable. Used by tests, the scripts and, where no worker lives
+ * (serverless), by the request that queued the work and by the regular tick (`tick.ts`).
+ */
+export async function drainQueue(types: JobType[] = Object.keys(HANDLERS) as JobType[], max = 100, opts: DrainOptions = {}) {
+  const until = opts.budgetMs ? Date.now() + opts.budgetMs : Number.POSITIVE_INFINITY;
+  const limited = types.filter((t) => TYPE_LIMITS[t] !== undefined);
   let n = 0;
-  while (n < max) {
-    const job = await claimNextJob("drain", types);
-    if (!job) break;
-    await runJob(job);
-    n++;
-  }
+  const lane = async (mine: JobType[]) => {
+    while (n < max && Date.now() < until) {
+      const busy = opts.shared ? await typesRunning(mine.filter((t) => limited.includes(t)), JOB_TIMEOUT_MS) : [];
+      const free = mine.filter((t) => !busy.includes(t));
+      const job = free.length ? await claimNextJob("drain", free) : null;
+      if (!job) break;
+      n++;
+      await runJob(job);
+    }
+  };
+  // Only the first lane takes the jobs that must not run side by side.
+  await Promise.all([lane(types), ...Array.from({ length: Math.max(1, opts.lanes ?? 1) - 1 }, () => lane(types.filter((t) => !limited.includes(t))))]);
   return n;
 }
 

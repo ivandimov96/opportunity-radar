@@ -47,6 +47,18 @@ export async function claimNextJob(workerId: string, types: JobType[]): Promise<
   return row ?? null;
 }
 
+/**
+ * Of the given types, those with a job running right now, wherever it runs. A job counts only while it could
+ * still be alive (`aliveMs` per type), so one cut off by the host does not block its type for long.
+ */
+export async function typesRunning(types: JobType[], aliveMs: Record<string, number>): Promise<JobType[]> {
+  if (!types.length) return [];
+  const db = await getDb();
+  const rows = await db.select({ type: jobs.type, startedAt: jobs.startedAt }).from(jobs).where(and(eq(jobs.status, "running"), inArray(jobs.type, types))).all();
+  const now = Date.now();
+  return [...new Set(rows.filter((r) => r.startedAt && now - new Date(r.startedAt).getTime() < (aliveMs[r.type] ?? 10 * 60_000)).map((r) => r.type as JobType))];
+}
+
 export async function updateJobProgress(id: string, progress: { message?: string; done?: number; total?: number }) {
   const db = await getDb();
   await db.update(jobs).set({ progress }).where(eq(jobs.id, id)).run();
