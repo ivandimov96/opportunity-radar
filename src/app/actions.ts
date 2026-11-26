@@ -1,4 +1,7 @@
 "use server";
+import { professionOf } from "@/lib/professions";
+import { countryName, findPlace, listCountries } from "@/lib/geo/world";
+import { addressGiven, addressProblems, formatAddress, tidyAddress, usesPostalCode } from "@/lib/address";
 import { and, eq, inArray } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -363,15 +366,15 @@ export async function cancelJobAction(fd: FormData) {
   const db = await getDb();
   const ws = await workspaceId();
   const job = await db.select().from(jobs).where(and(eq(jobs.id, id), eq(jobs.workspaceId, ws))).get();
-  const res = await db.update(jobs).set({ status: "failed", error: "Cancelled by the operator", finishedAt: nowIso(), lockedBy: null }).where(and(eq(jobs.id, id), eq(jobs.workspaceId, ws), eq(jobs.status, "queued"))).run();
+  const res = await db.update(jobs).set({ status: "failed", error: "Canceled by the operator", finishedAt: nowIso(), lockedBy: null }).where(and(eq(jobs.id, id), eq(jobs.workspaceId, ws), eq(jobs.status, "queued"))).run();
   if (job && res.rowsAffected) {
     // What the job was for must not look "in progress" forever.
     if (job.type === "discover_search") {
-      await db.update(searches).set({ status: "failed", error: "Cancelled by the operator", updatedAt: nowIso() }).where(and(eq(searches.id, String(job.payload.searchId)), eq(searches.workspaceId, ws), eq(searches.status, "queued"))).run();
+      await db.update(searches).set({ status: "failed", error: "Canceled by the operator", updatedAt: nowIso() }).where(and(eq(searches.id, String(job.payload.searchId)), eq(searches.workspaceId, ws), eq(searches.status, "queued"))).run();
     } else if (job.type === "investigate_business") {
       const businessId = String(job.payload.businessId);
       const biz = await db.select({ investigatedAt: businesses.investigatedAt }).from(businesses).where(eq(businesses.id, businessId)).get();
-      await db.update(businesses).set({ status: biz?.investigatedAt ? "profiled" : "new", statusMessage: "Investigation cancelled by the operator", updatedAt: nowIso() }).where(and(eq(businesses.id, businessId), eq(businesses.workspaceId, ws), eq(businesses.status, "queued"))).run();
+      await db.update(businesses).set({ status: biz?.investigatedAt ? "profiled" : "new", statusMessage: "Investigation canceled by the operator", updatedAt: nowIso() }).where(and(eq(businesses.id, businessId), eq(businesses.workspaceId, ws), eq(businesses.status, "queued"))).run();
     }
   }
   revalidatePath("/system");
@@ -646,7 +649,8 @@ export async function markReplyHandledAction(fd: FormData) {
 // ------------------------------------------------------------------- settings
 /** The fields each card of the Settings pages owns. */
 const SETTINGS_FIELDS: Record<string, (keyof AppSettings)[]> = {
-  sender: ["senderName", "senderTitle", "senderCompany", "senderWebsite", "postalAddress"],
+  // The postal address is saved from its parts (see saveSettingsAction); the one line is put together from them.
+  sender: ["senderName", "senderTitle", "senderCompany", "senderWebsite", "addressStreet", "addressPostalCode", "addressCity", "addressCountry", "addressRegion"],
   offer: ["offer", "offerResult", "firstStep"],
   audience: ["targetKinds", "targetPlaces", "targetSizes", "targetNeedsWebsite", "targetNeedsPhone", "fitSigns", "excludeKinds"],
   tone: ["bookingLink", "proofPoints", "voiceSamples"],
@@ -697,6 +701,27 @@ export async function saveSettingsAction(fd: FormData) {
   // The profile fields keep to their rules (src/lib/profile-rules.ts): a value that breaks one is not saved.
   const refused = applyProfileRules(patch);
   const before = await getSettings();
+  if (sections.includes("sender")) {
+    // The postal address is given in parts and each part is checked; the line that ends every email is made from them.
+    const parts = tidyAddress({ street: String(patch.addressStreet ?? ""), postalCode: String(patch.addressPostalCode ?? ""), city: String(patch.addressCity ?? ""), country: String(patch.addressCountry ?? "") });
+    const keys = ["addressStreet", "addressPostalCode", "addressCity", "addressCountry", "addressRegion"] as const;
+    if (!addressGiven(parts) && before.postalAddress && !before.addressStreet) {
+      // An address saved before it was asked for in parts stays as it is until the parts are filled in.
+      for (const k of keys) delete patch[k];
+    } else {
+      const known = listCountries();
+      const problems = addressProblems(parts, (code) => known.some((c) => c.code === code));
+      if (problems.length) {
+        refused.push(...problems);
+        for (const k of keys) delete patch[k];
+      } else {
+        // The region is kept only for a town the place list knows in that country.
+        const town = findPlace(parts.country, null, parts.city);
+        Object.assign(patch, { addressStreet: parts.street, addressPostalCode: usesPostalCode(parts.country) || parts.postalCode ? parts.postalCode : "", addressCity: town?.name ?? parts.city, addressCountry: parts.country, addressRegion: (town?.region ?? "").toUpperCase() });
+        patch.postalAddress = formatAddress({ ...parts, city: town?.name ?? parts.city }, countryName(parts.country));
+      }
+    }
+  }
   if (sections.includes("signature")) {
     // The form opens filled in with what is used today. Saving that unchanged must not freeze it:
     // text equal to the automatic signature is stored as "not set".
@@ -705,7 +730,17 @@ export async function saveSettingsAction(fd: FormData) {
     // "Use my details": back to the signature built from the details, whatever is in the box.
     if (fd.get("useDetails")) patch.signature = "";
   }
-  const after = await saveSettings(patch);
+  let after = await saveSettings(patch);
+  // A head start chosen with the offer ("what kind of business are you?") also names who such a seller usually
+  // writes to and what a good fit looks like. Only what is still empty is filled: nothing of the person's own is replaced.
+  const head = sections.includes("offer") ? professionOf(str(fd, "profession")) : null;
+  if (head) {
+    const start: Partial<Record<keyof AppSettings, unknown>> = {};
+    if (!after.targetKinds.length) start.targetKinds = head.kinds;
+    if (!after.fitSigns) start.fitSigns = head.fitSigns;
+    if (!after.offerKind) start.offerKind = head.offerKind;
+    if (Object.keys(start).length) after = await saveSettings(start);
+  }
   // Choosing to send on its own is the operator's decision and is written down as one.
   if (sections.includes("autopilot") && after.sendMode !== before.sendMode) console.log(`[autopilot] sending mode changed from ${before.sendMode} to ${after.sendMode} by the operator`);
   if (sections.includes("automation") && after.autoSearch && !searchTargetsOf(after).length) {

@@ -20,7 +20,15 @@ export interface TargetPlace {
   country: string;
   /** Region code inside the country (a US state, a UK nation); empty = the whole country. */
   region: string;
+  /**
+   * A town to work outward from, for someone who sells around where they are: searches start there and
+   * move to the towns within `radiusKm`, nearest first. Absent = the whole region or country, largest city first.
+   */
+  city?: string;
+  radiusKm?: number;
 }
+/** How far around a town a seller may ask to look, and what is taken when they do not say. */
+export const PLACE_RADIUS_KM = { min: 5, max: 200, usual: 25 };
 export const OFFER_KINDS = ["service", "product", "software"] as const;
 export type OfferKind = (typeof OFFER_KINDS)[number] | "";
 /** How big a business the operator sells to. */
@@ -45,10 +53,20 @@ export function parseTargetPlaces(input: unknown): TargetPlace[] {
   const rows: unknown[] = Array.isArray(input) ? input : String(input ?? "").split(/\r?\n/);
   const out: TargetPlace[] = [];
   for (const row of rows) {
-    const [country, region] = typeof row === "string" ? row.split("|").map((p) => p.trim()) : [String((row as TargetPlace)?.country ?? "").trim(), String((row as TargetPlace)?.region ?? "").trim()];
+    // "GB", "GB | ENG", or around a town: "GB | ENG | Leeds | 25" (the region may be empty there).
+    const [country, region, cityRaw, radiusRaw] =
+      typeof row === "string"
+        ? row.split("|").map((p) => p.trim())
+        : [String((row as TargetPlace)?.country ?? "").trim(), String((row as TargetPlace)?.region ?? "").trim(), String((row as TargetPlace)?.city ?? "").trim(), String((row as TargetPlace)?.radiusKm ?? "")];
     if (!/^[a-z]{2}$/i.test(country ?? "")) continue;
-    const p = { country: country.toUpperCase(), region: (region ?? "").toUpperCase().slice(0, 12) };
-    if (!out.some((o) => o.country === p.country && o.region === p.region)) out.push(p);
+    const city = (cityRaw ?? "").replace(/\s+/g, " ").slice(0, 80);
+    const p: TargetPlace = { country: country.toUpperCase(), region: (region ?? "").toUpperCase().slice(0, 12) };
+    if (city && /\p{L}{2,}/u.test(city)) {
+      p.city = city;
+      const km = Math.round(Number(radiusRaw));
+      p.radiusKm = Number.isFinite(km) && km > 0 ? Math.min(PLACE_RADIUS_KM.max, Math.max(PLACE_RADIUS_KM.min, km)) : PLACE_RADIUS_KM.usual;
+    }
+    if (!out.some((o) => o.country === p.country && o.region === p.region && (o.city ?? "").toLowerCase() === (p.city ?? "").toLowerCase())) out.push(p);
     if (out.length >= 30) break;
   }
   return out;
@@ -96,8 +114,14 @@ export interface AppSettings {
   senderTitle: string;
   senderCompany: string;
   senderWebsite: string;
-  /** Postal address: required in commercial email (CAN-SPAM) and shown in the footer. */
+  /** Postal address on one line: required in commercial email and shown under the name. Put together from the parts below when they are given. */
   postalAddress: string;
+  /** The postal address in parts (src/lib/address.ts): asked for and checked one by one. `addressCountry` is an ISO code, `addressRegion` the region of a town picked from the list. */
+  addressStreet: string;
+  addressPostalCode: string;
+  addressCity: string;
+  addressCountry: string;
+  addressRegion: string;
   /** One or two sentences on what the consultancy does, for the email writer. */
   offer: string;
   /** What the customer gets out of it, in their words ("fewer missed calls"). With `offer`, this is what a good fit is judged against. */
@@ -194,6 +218,9 @@ export interface SearchTarget {
   country: string;
   /** Region code inside the country (a US state, a UK nation); empty = the whole country. */
   region: string;
+  /** A town to work outward from, and how far (see `TargetPlace`). */
+  city?: string;
+  radiusKm?: number;
 }
 
 /** "sign makers | GB" or "roofers | US | TX", one per line. Lines that name no business type or no country are dropped. */
@@ -217,6 +244,11 @@ export const DEFAULT_SETTINGS: AppSettings = {
   senderCompany: "",
   senderWebsite: "",
   postalAddress: "",
+  addressStreet: "",
+  addressPostalCode: "",
+  addressCity: "",
+  addressCountry: "",
+  addressRegion: "",
   offer: "",
   offerResult: "",
   offerKind: "",
@@ -396,7 +428,7 @@ export function searchTargetsOf(s: Pick<AppSettings, "targetKinds" | "targetPlac
   if (!s.targetKinds.length || !s.targetPlaces.length) return s.searchTargets;
   const out: SearchTarget[] = [];
   // Kind by kind inside a place, so the first place is covered for everything before the next one starts.
-  for (const p of s.targetPlaces) for (const what of s.targetKinds) out.push({ what, country: p.country, region: p.region });
+  for (const p of s.targetPlaces) for (const what of s.targetKinds) out.push({ what, country: p.country, region: p.region, ...(p.city ? { city: p.city, radiusKm: p.radiusKm ?? PLACE_RADIUS_KM.usual } : {}) });
   return out;
 }
 

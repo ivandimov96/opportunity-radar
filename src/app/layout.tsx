@@ -9,7 +9,7 @@ import { KeepScroll } from "@/components/keep-scroll";
 import { getConfig } from "@/lib/config";
 import { navStatus } from "@/lib/queries";
 import { redirect } from "next/navigation";
-import { currentUser } from "@/lib/auth";
+import { currentUser, mustConfirmEmail } from "@/lib/auth";
 import { getState } from "@/lib/settings";
 
 /** Whether the signed-in account still has its first-run setup ahead of it. */
@@ -40,8 +40,10 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // this layout for one of the app's own partial fetches, or from the dashboard page) made the browser ask for the
   // setup without end. Signing in sends a new account to the setup itself (src/app/auth-actions.ts).
   const inSetup = path === "/setup";
-  if (wholePage && user?.role === "owner" && !inSetup && !path.startsWith("/auth/") && !["/privacy", "/terms", "/acceptable-use"].includes(path) && (await onboardingPending().catch(() => false))) redirect("/setup");
-  if (user?.role !== "owner" || inSetup || ["/privacy", "/terms", "/acceptable-use"].includes(path))
+  // Pages shown without the app around them, whoever is signed in.
+  const ALONE = ["/privacy", "/terms", "/acceptable-use", "/verify-email", "/login", "/signup", "/forgot-password", "/reset-password"];
+  if (wholePage && user?.role === "owner" && !inSetup && !path.startsWith("/auth/") && !ALONE.includes(path) && !mustConfirmEmail(user) && (await onboardingPending().catch(() => false))) redirect("/setup");
+  if (user?.role !== "owner" || inSetup || ALONE.includes(path))
     return (
       <html lang="en" className={`${inter.variable} ${display.variable}`}>
         <body>
@@ -62,7 +64,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         </Suspense>
         {/* Filtering, searching and saving leave you where you were on the page. */}
         <KeepScroll />
-        <AppShell user={{ name: user.name, email: user.email }} counts={nav?.counts} setup={nav?.setup} serverless={cfg.serverless && !cfg.TURSO_DATABASE_URL}>
+        <AppShell user={{ name: user.name, email: user.email }} counts={nav?.counts} setup={nav?.setup} serverless={cfg.serverless && !cfg.TURSO_DATABASE_URL} development={cfg.appEnv === "development"}>
           {children}
         </AppShell>
       </body>

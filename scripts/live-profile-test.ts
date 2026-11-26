@@ -4,7 +4,7 @@
  * approval, and against a copy of the database:
  *
  *   DATABASE_PATH=/path/to/copy.db MAIL_PROVIDER=fake EMBEDDED_WORKER=false \
- *     pnpm exec tsx --env-file=.env scripts/live-profile-test.ts "Business one" "Business two"
+ *     pnpm exec tsx --env-file=.env.development.local scripts/live-profile-test.ts "Business one" "Business two"
  *
  * Nothing is sent: only research and writing jobs are run.
  */

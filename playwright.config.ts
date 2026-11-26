@@ -12,6 +12,7 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 120_000,
     // Offline: no model provider, no crawling, no search credits, and an in-memory mailbox (nothing is ever sent).
-    env: { AUTH_SECRET: "browser-test-secret-not-used-anywhere-else", DATABASE_PATH: "./data/e2e.db", EMBEDDED_WORKER: "true", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", FIRECRAWL_API_KEY: "", SERPER_API_KEY: "", MAIL_PROVIDER: "fake", MAIL_USER: "ivan@dimov.example", MAIL_PASSWORD: "" },
+    // APP_ENV says this built app is a test, and the hosted database is blanked, so a production settings file on this computer is never used.
+    env: { APP_ENV: "test", TURSO_DATABASE_URL: "", TURSO_AUTH_TOKEN: "", GOOGLE_CLIENT_ID: "", GOOGLE_CLIENT_SECRET: "", MICROSOFT_CLIENT_ID: "", MICROSOFT_CLIENT_SECRET: "", ACCOUNT_EMAILS: "", ACCOUNT_SMTP_HOST: "", AUTH_SECRET: "browser-test-secret-not-used-anywhere-else", DATABASE_PATH: "./data/e2e.db", EMBEDDED_WORKER: "true", ANTHROPIC_API_KEY: "", OPENAI_API_KEY: "", FIRECRAWL_API_KEY: "", SERPER_API_KEY: "", MAIL_PROVIDER: "fake", MAIL_USER: "ivan@dimov.example", MAIL_PASSWORD: "" },
   },
 });

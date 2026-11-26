@@ -35,11 +35,11 @@ Requirements: Node 22+, pnpm 11+. No Docker; a local SQLite file.
 
 ```bash
 pnpm install
-cp .env.example .env     # add your keys (see below)
+cp .env.example .env.development.local   # add your keys (see below)
 pnpm dev                 # http://localhost:3000, background worker included
 ```
 
-Keys in `.env` (each has a free tier or is pay-as-you-go):
+Keys in `.env.development.local` (production has its own: `.env.production.example`; each has a free tier or is pay-as-you-go):
 
 | Key | For | Without it |
 |---|---|---|

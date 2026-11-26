@@ -14,3 +14,6 @@ tsconfig.tsbuildinfo
 next-env.d.ts
 .vercel
 .env*
+# The templates are the only settings files kept in the repository.
+!.env.example
+!.env.production.example

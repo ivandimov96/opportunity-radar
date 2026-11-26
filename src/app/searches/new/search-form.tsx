@@ -18,8 +18,16 @@ import type { RawSearchValues } from "@/lib/search-input";
 import { suggestIndustries } from "@/lib/discovery/taxonomy";
 import { ALL_BUSINESS_TYPE_COUNT, BUSINESS_KIND_GROUPS, filterBusinessTypes, matchBusinessKinds, type BusinessKind } from "@/lib/business-kinds";
 import { estimateSearchCost, fmtUsd, type SearchCostBasis } from "@/lib/search-cost";
+import { distanceText, distanceUnit, kmToShown, shownToKm, usesMiles } from "@/lib/distance";
 import { CitySelect, fmtPop, type Suggestion } from "./city-select";
 
+export interface PlanRoom {
+  label: string;
+  searchesLeft: number;
+  searchLimit: number;
+  researchLeft: number;
+  researchLimit: number;
+}
 export interface PlaybookOption {
   key: string;
   label: string;
@@ -107,14 +115,14 @@ function Part({ icon, tone, title, children, id }: { icon: React.ComponentProps<
   );
 }
 
-export function SearchForm(props: { profile: { /** The kinds of business the operator sells to. */ kinds: string[]; /** What the profile still lacks for searching, in plain words. */ missing: string[] }; playbooks: PlaybookOption[]; source: SourceState; countries: Country[]; initialRegions: Region[]; cost: SearchCostBasis; aiEnabled: boolean; firecrawlEnabled: boolean; defaults: RawSearchValues; allowedCountries: string[]; past: PastSearch[] }) {
+export function SearchForm(props: { profile: { /** The kinds of business the operator sells to. */ kinds: string[]; /** What the profile still lacks for searching, in plain words. */ missing: string[]; /** The town the operator sells around, as the place list knows it: where the first search starts. */ home?: Suggestion | null }; playbooks: PlaybookOption[]; source: SourceState; countries: Country[]; initialRegions: Region[]; cost: SearchCostBasis; /** A customer's plan and what is left of it this month; null for the product's own workspace, which sees costs instead. */ plan?: PlanRoom | null; aiEnabled: boolean; firecrawlEnabled: boolean; defaults: RawSearchValues; allowedCountries: string[]; past: PastSearch[] }) {
   const [state, action, pending] = useActionState<CreateSearchState, FormData>(createSearch, null);
   // Remount the fields whenever the server returns a new state so every input re-initializes from the submitted values.
   const key = state ? JSON.stringify(state.values) : "initial";
   return <SearchFields key={key} {...props} state={state} action={action} pending={pending} />;
 }
 
-function SearchFields({ profile, playbooks, source, countries, initialRegions, cost, aiEnabled, firecrawlEnabled, defaults, allowedCountries, past, state, action, pending }: { profile: { /** The kinds of business the operator sells to. */ kinds: string[]; /** What the profile still lacks for searching, in plain words. */ missing: string[] }; playbooks: PlaybookOption[]; source: SourceState; countries: Country[]; initialRegions: Region[]; cost: SearchCostBasis; aiEnabled: boolean; firecrawlEnabled: boolean; defaults: RawSearchValues; allowedCountries: string[]; past: PastSearch[]; state: CreateSearchState; action: (fd: FormData) => void; pending: boolean }) {
+function SearchFields({ profile, playbooks, source, countries, initialRegions, cost, plan = null, aiEnabled, firecrawlEnabled, defaults, allowedCountries, past, state, action, pending }: { profile: { /** The kinds of business the operator sells to. */ kinds: string[]; /** What the profile still lacks for searching, in plain words. */ missing: string[]; /** The town the operator sells around, as the place list knows it: where the first search starts. */ home?: Suggestion | null }; playbooks: PlaybookOption[]; source: SourceState; countries: Country[]; initialRegions: Region[]; cost: SearchCostBasis; /** A customer's plan and what is left of it this month; null for the product's own workspace, which sees costs instead. */ plan?: PlanRoom | null; aiEnabled: boolean; firecrawlEnabled: boolean; defaults: RawSearchValues; allowedCountries: string[]; past: PastSearch[]; state: CreateSearchState; action: (fd: FormData) => void; pending: boolean }) {
   const v = state?.values ?? defaults;
   const errors = state?.errors ?? {};
   const [industry, setIndustry] = useState(v.industry);
@@ -127,7 +135,8 @@ function SearchFields({ profile, playbooks, source, countries, initialRegions, c
   const [regions, setRegions] = useState<Region[]>(initialRegions);
   const [region, setRegion] = useState(v.region.toUpperCase());
   const [city, setCity] = useState(v.city);
-  const [center, setCenter] = useState<Suggestion | null>(null);
+  // The operator's own town arrives already located, so the first search does not ask for it to be picked again.
+  const [center, setCenter] = useState<Suggestion | null>(profile.home && profile.home.name === v.city && profile.home.country === (v.country || "").toUpperCase() ? profile.home : null);
   /** Bumped when a city is set from outside the field (a shortcut), so the field shows it. */
   const [cityNonce, setCityNonce] = useState(0);
   const [largest, setLargest] = useState<Suggestion[]>([]);
@@ -534,7 +543,7 @@ function SearchFields({ profile, playbooks, source, countries, initialRegions, c
                 {center ? (
                   <span>
                     <strong className="text-ink">{[center.name, center.region ? regionName(center.region) : null, countryName].filter(Boolean).join(", ")}</strong> · about {fmtPop(center.population)} people.{" "}
-                    {areaMode === "radius" ? `The search covers ${radiusKm || "?"} km around the centre.` : `The search covers the whole city: about ${center.radiusKm ?? 15} km around the centre.`}
+                    {areaMode === "radius" ? `The search covers ${radiusKm ? distanceText(Number(radiusKm), country) : "?"} around the center.` : `The search covers the whole city: about ${distanceText(center.radiusKm ?? 15, country)} around the center.`}
                   </span>
                 ) : (
                   <span>“{city.trim()}” is not picked from the list yet. Pick it so the search knows exactly where it is; a name the list does not know may find nothing.</span>
@@ -550,18 +559,20 @@ function SearchFields({ profile, playbooks, source, countries, initialRegions, c
                     <input type="radio" name="areaMode" value="area" checked={areaMode === "area"} onChange={() => setAreaMode("area")} className="accent-[var(--accent)]" /> The whole city
                   </label>
                   <label className={`flex items-center gap-2 text-sm px-3 py-2 cursor-pointer border-l border-line ${areaMode === "radius" ? "bg-accent-soft/60 text-ink" : "hover:bg-surface-2"}`}>
-                    <input type="radio" name="areaMode" value="radius" checked={areaMode === "radius"} onChange={() => { setAreaMode("radius"); if (center?.radiusKm) setRadiusKm(String(Math.max(2, Math.round(center.radiusKm / 2)))); }} className="accent-[var(--accent)]" /> Around the centre
+                    <input type="radio" name="areaMode" value="radius" checked={areaMode === "radius"} onChange={() => { setAreaMode("radius"); if (center?.radiusKm) setRadiusKm(String(Math.max(2, Math.round(center.radiusKm / 2)))); }} className="accent-[var(--accent)]" /> Around the center
                   </label>
                 </div>
               </div>
               {areaMode === "radius" ? (
                 <div>
                   <label className="label" htmlFor="radiusKm">
-                    Distance from the centre
+                    Distance from the center
                   </label>
                   <div className="flex items-center gap-2">
-                    <input id="radiusKm" className={`input w-24 ${errors.radiusKm ? "border-bad" : ""}`} type="number" name="radiusKm" min={1} max={100} value={radiusKm} onChange={(e) => setRadiusKm(e.target.value)} />
-                    <span className="text-sm text-ink-muted">km</span>
+                    {/* Typed in the country's own unit (miles or km); the search is always given kilometres. */}
+                    <input id="radiusKm" className={`input w-24 ${errors.radiusKm ? "border-bad" : ""}`} type="number" min={1} max={kmToShown(100, country)} value={radiusKm ? (usesMiles(country) ? String(kmToShown(Number(radiusKm), country)) : radiusKm) : ""} onChange={(e) => setRadiusKm(e.target.value ? String(usesMiles(country) ? shownToKm(Number(e.target.value), country) : e.target.value) : "")} />
+                    <input type="hidden" name="radiusKm" value={radiusKm} />
+                    <span className="text-sm text-ink-muted">{distanceUnit(country)}</span>
                     {errors.radiusKm && <span className="text-xs text-bad">{errors.radiusKm}</span>}
                   </div>
                 </div>
@@ -693,11 +704,30 @@ function SearchFields({ profile, playbooks, source, countries, initialRegions, c
               {/* The four choices in one glance: what is set shows its value, what is missing says so. */}
               <dl className="mt-3 space-y-2.5 text-sm" aria-label="Your choices">
                 <SummaryRow icon="search" label="What" value={what || null} missing="Choose a kind of business" bad={Boolean(errors.customCategory || errors.industry)} />
-                <SummaryRow icon="globe" label="Where" value={city.trim() ? (cities > 1 ? `${city.trim()} and ${extras.length} more ${extras.length === 1 ? "city" : "cities"}` : `${place}${areaMode === "radius" ? `, ${radiusKm || "?"} km around the centre` : ""}`) : null} missing="Choose a city" bad={Boolean(errors.city)} />
+                <SummaryRow icon="globe" label="Where" value={city.trim() ? (cities > 1 ? `${city.trim()} and ${extras.length} more ${extras.length === 1 ? "city" : "cities"}` : `${place}${areaMode === "radius" ? `, ${radiusKm ? distanceText(Number(radiusKm), country) : "?"} around the center` : ""}`) : null} missing="Choose a city" bad={Boolean(errors.city)} />
                 <SummaryRow icon="list" label="How many" value={`Up to ${maxResults || "?"}${cities > 1 ? " in each city" : ""}`} />
                 <SummaryRow icon="bolt" label="Then" value={after === "list" ? "Show me the list" : after === "save" ? "Save them" : `Save and research${researchLimit && Number(researchLimit) < Number(maxResults) ? ` the best ${researchLimit}` : " all"}`} />
               </dl>
 
+              {plan ? (
+                // A customer's account: what this search takes from their plan this month. What the search costs the product to run is not theirs to see.
+                <>
+                  <h3 className="text-sm font-semibold mt-5 pt-4 border-t border-line">From your {plan.label} plan</h3>
+                  <dl className="text-sm mt-1 divide-y divide-line" aria-label="From your plan">
+                    <CostRow label={cities > 1 ? `Searches, ${cities}` : "Search"} value={`${cities} of ${plan.searchesLeft} left`} note={`${plan.searchLimit} a month`} bad={cities > plan.searchesLeft} />
+                    {research ? (
+                      <CostRow label="Researched businesses" value={`up to ${Math.min(est.researched, plan.researchLeft)} of ${plan.researchLeft} left`} note={`${plan.researchLimit} a month`} bad={plan.researchLeft < 1} />
+                    ) : (
+                      <CostRow label="Research" value="not started" note={`${plan.researchLeft} of ${plan.researchLimit} left this month`} />
+                    )}
+                  </dl>
+                  {cities > plan.searchesLeft && <p className="text-xs text-bad mt-2">{plan.searchesLeft < 1 ? "Your searches for this month are used. The count starts again next month." : "More cities than you have searches left this month."}</p>}
+                  {research && plan.researchLeft >= 1 && est.researched > plan.researchLeft && <p className="text-xs text-ink-muted mt-2">The best {plan.researchLeft} are researched now; the others are saved and wait.</p>}
+                  {research && plan.researchLeft < 1 && <p className="text-xs text-bad mt-2">Your researched businesses for this month are used: what is found is saved and waits.</p>}
+                  <p className="text-xs text-ink-muted mt-3">Writing, reviewing and sending emails is not counted.</p>
+                </>
+              ) : (
+                <>
               <h3 className="text-sm font-semibold mt-5 pt-4 border-t border-line">Expected cost</h3>
               {!what && <p className="text-sm text-ink-muted mt-1.5" aria-label="Expected cost">Shown once you choose a kind of business.</p>}
               <dl className={`text-sm mt-1 divide-y divide-line ${what ? "" : "hidden"}`} aria-label={what ? "Expected cost" : undefined}>
@@ -735,6 +765,9 @@ function SearchFields({ profile, playbooks, source, countries, initialRegions, c
                   Per business: about {fmtUsd(cost.researchUsd)} to research{cost.autoDraft ? `, ${fmtUsd(cost.emailUsd)} to write the email` : ""}
                   {cost.measuredFrom ? ` (your last ${cost.measuredFrom})` : ""}.
                 </p>
+              )}
+
+                </>
               )}
 
               <div className="mt-5 space-y-2">

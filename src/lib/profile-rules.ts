@@ -61,7 +61,7 @@ export const PROFILE_RULES = {
   senderWebsite: { label: "Website", say: "an address like yourcompany.com", max: 100, pattern: String.raw`(https?:\/\/)?([A-Za-z0-9\-]+\.)+[A-Za-z]{2,}(\/\S*)?` },
   postalAddress: {
     label: "Postal address",
-    say: "a full address: street and number, city, postcode, country",
+    say: "a full address: street and number, city, postal code, country",
     min: 12,
     max: 200,
     pattern: String.raw`.*[\d,].*`,

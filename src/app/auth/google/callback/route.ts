@@ -1,6 +1,6 @@
 /** Google sends the browser back here. The state must match the one we set; then the account is found or created and signed in. */
 import { NextResponse, type NextRequest } from "next/server";
-import { startSession } from "@/lib/auth";
+import { landingAfterSignIn, startSession } from "@/lib/auth";
 import { GOOGLE_STATE_COOKIE, googleConfigured, googleProfile, userForGoogle } from "@/lib/auth/google";
 
 export async function GET(req: NextRequest) {
@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
   try {
     const user = await userForGoogle(await googleProfile(origin, code, nonce));
     await startSession(user);
-    const res = NextResponse.redirect(new URL(user.role === "owner" ? "/" : "/welcome", origin));
+    const res = NextResponse.redirect(new URL(await landingAfterSignIn(user), origin));
     res.cookies.delete(GOOGLE_STATE_COOKIE);
     return res;
   } catch (err) {

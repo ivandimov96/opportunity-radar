@@ -17,8 +17,8 @@ vi.mock("@/lib/ai/client", async (importOriginal) => {
 
 import { useTempDb, resetEnv } from "../helpers";
 import { runInWorkspace } from "@/lib/workspace";
-import { businesses, facts, inboundEmails, investigations, jobs, observations, opportunities, outreachDrafts, pages, prospects, searches } from "@/db/schema";
-import { newId } from "@/lib/ids";
+import { businesses, facts, inboundEmails, investigations, jobs, observations, opportunities, outreachDrafts, pages, prospects, searches, workspaces } from "@/db/schema";
+import { newId, nowIso } from "@/lib/ids";
 import { drainQueue } from "@/lib/jobs/worker";
 import { runScheduler } from "@/lib/jobs/scheduler";
 import { deliverToFakeInbox, fakeMail, resetFakeMail } from "@/lib/mail/fake";
@@ -128,9 +128,16 @@ describe("autopilot", () => {
     const first = await seed("Alpha Air", "office@alpha.example", "ready", { updatedAt: hoursAgo(1) });
     const followUp = await seed("Bravo Air", "hello@bravo.example", "ready", { updatedAt: hoursAgo(1), step: 1 });
     const status = async () => [(await draft(first.draftId)).status, (await draft(followUp.draftId)).status];
-    const friday = new Date(2026, 10, 20, 11, 0);
-    const saturday = new Date(2026, 10, 21, 11, 0);
-    const monday = new Date(2026, 10, 23, 11, 0);
+    // The coming Friday, Saturday and Monday at 11:00: always after the emails above were written, whatever today is.
+    // (Fixed dates here once fell into the past, and the emails then looked as if they came from the future.)
+    const coming = (weekday: number, after = new Date()) => {
+      const d = new Date(after.getFullYear(), after.getMonth(), after.getDate() + 1, 11, 0);
+      while (d.getDay() !== weekday) d.setDate(d.getDate() + 1);
+      return d;
+    };
+    const friday = coming(5);
+    const saturday = coming(6, friday);
+    const monday = coming(1, saturday);
 
     // Neither kind allowed: both wait for the operator, exactly as in manual mode.
     await saveSettings({ autoSendFirst: false, autoSendFollowUps: false });
@@ -418,6 +425,24 @@ describe("autopilot", () => {
     // Two a day were allowed.
     expect((await runScheduler()).search).toBeNull();
     expect(await db.select().from(searches).all()).toHaveLength(2);
+  });
+
+  it("searches for every workspace by its own profile: a customer who sells around a town is searched there, the first workspace's settings decide nothing for them", async () => {
+    resetEnv({ ...env, SERPER_API_KEY: "test-key" });
+    await db.insert(workspaces).values({ id: "ws-meadow", name: "Meadow Cleaning", plan: "trial", createdAt: nowIso() }).run();
+    // The first workspace has automatic search switched off; the customer switched theirs on.
+    await runInWorkspace("ws-meadow", () => saveSettings({ autoSearch: true, targetKinds: "gyms", targetPlaces: "GB | ENG | Leeds | 24", targetNeedsPhone: true }));
+    const run = await runScheduler();
+    expect(run.search).toBe("gyms · Leeds, ENG");
+    const row = (await db.select().from(searches).get())!;
+    expect(row).toMatchObject({ workspaceId: "ws-meadow", country: "GB", city: "Leeds", status: "queued" });
+    expect(row.filters).toMatchObject({ customCategory: "gyms", auto: true, requirePhone: true });
+    expect((await db.select().from(jobs).where(eq(jobs.type, "discover_search")).get())!.workspaceId).toBe("ws-meadow");
+    // The next one moves outward from their town, never to the largest city of the country.
+    await db.update(jobs).set({ status: "done" }).where(eq(jobs.type, "discover_search")).run();
+    const next = await runScheduler();
+    expect(next.search).toMatch(/^gyms · /);
+    expect(next.search).not.toMatch(/Leeds|London/);
   });
 
   it("does not search while enough businesses wait for research or the search credits are used up", async () => {

@@ -2,7 +2,7 @@
  * Creates an account from the command line (the first one, or an owner, cannot
  * be made through the sign-up page of a workspace that already has an owner).
  *
- *   pnpm exec tsx --env-file=.env scripts/create-user.ts <email> <password> [name] [owner|member]
+ *   pnpm exec tsx --env-file=.env.development.local scripts/create-user.ts <email> <password> [name] [owner|member]
  *
  * The password is hashed before it is stored and is never printed.
  */

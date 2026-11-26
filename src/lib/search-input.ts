@@ -4,6 +4,7 @@
  * defaults and labels) and the tests.
  */
 import { z } from "zod";
+import { distanceText } from "@/lib/distance";
 import type { SearchFilters } from "@/db/schema";
 import { getPlaybook } from "@/lib/industries";
 import { listCountries, listRegions } from "@/lib/geo/world";
@@ -39,7 +40,7 @@ export const SearchInput = z
     areaMode: z.enum(["area", "radius"]).default("area"),
     centerLat: z.coerce.number().min(-90).max(90).nullable().default(null),
     centerLon: z.coerce.number().min(-180).max(180).nullable().default(null),
-    radiusKm: z.coerce.number().min(1, "Radius must be at least 1 km").max(100, "Radius must be at most 100 km").default(DEFAULT_FILTERS.radiusKm),
+    radiusKm: z.coerce.number().min(1, "Radius must be at least 1 km").max(100, "Radius must be at most 100 km (62 miles)").default(DEFAULT_FILTERS.radiusKm),
     maxResults: z.coerce.number().int("Whole number").min(1, "At least 1").max(500, "At most 500").default(25),
     requireWebsite: z.boolean().default(false),
     requirePhone: z.boolean().default(DEFAULT_FILTERS.requirePhone),
@@ -130,7 +131,7 @@ export function parseSearchForm(fd: FormData): { ok: true; values: SearchInputVa
   }
   const v = parsed.data;
   const playbook = getPlaybook(v.industry);
-  const where = v.areaMode === "radius" && v.city ? `${v.radiusKm} km around ${v.city}` : [v.city, v.region].filter(Boolean).join(", ") || v.country;
+  const where = v.areaMode === "radius" && v.city ? `${distanceText(v.radiusKm, v.country)} around ${v.city}` : [v.city, v.region].filter(Boolean).join(", ") || v.country;
   const segs = v.segments.length && v.segments.length < playbook.segments.length ? ` (${v.segments.map((k) => playbook.segments.find((s) => s.key === k)?.label ?? k).join(", ")})` : "";
   const name = v.name || `${playbook.key === "generic" && v.customCategory ? v.customCategory : playbook.label}${segs} · ${where}`;
   const filters: SearchFilters = { segments: v.segments, areaMode: v.areaMode, radiusKm: v.radiusKm, requirePhone: v.requirePhone, excludeChains: v.excludeChains, skipKnown: v.skipKnown, minLeadScore: v.minLeadScore, autoInvestigateLimit: v.autoInvestigateLimit, centerLat: v.centerLat, centerLon: v.centerLon, customCategory: v.customCategory ?? null, autoSave: v.autoSave, minReviews: v.minReviews, minRating: v.minRating };
@@ -142,12 +143,12 @@ export function filtersOf(search: { filters?: SearchFilters | null }): SearchFil
 }
 
 /** Human-readable filter summary for lists and detail pages. */
-export function describeFilters(search: { filters?: SearchFilters | null; requireWebsite: boolean; autoInvestigate: boolean; keywords?: string | null; industry: string }): string[] {
+export function describeFilters(search: { filters?: SearchFilters | null; requireWebsite: boolean; autoInvestigate: boolean; keywords?: string | null; industry: string; country?: string | null }): string[] {
   const f = filtersOf(search);
   const playbook = getPlaybook(search.industry);
   const out: string[] = [];
   if (f.segments.length && f.segments.length < playbook.segments.length) out.push(f.segments.map((k) => playbook.segments.find((s) => s.key === k)?.label ?? k).join(" · "));
-  if (f.areaMode === "radius") out.push(`${f.radiusKm} km radius`);
+  if (f.areaMode === "radius") out.push(`${distanceText(f.radiusKm, search.country)} radius`);
   if (search.keywords) out.push(`name contains "${search.keywords}"`);
   if (search.requireWebsite) out.push("website required");
   if (f.requirePhone) out.push("phone required");

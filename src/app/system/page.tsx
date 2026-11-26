@@ -9,6 +9,7 @@ import { workerStatus } from "@/lib/jobs/worker";
 import { creditUsage, firecrawlInFlight } from "@/lib/research/firecrawl";
 import { creditsUsedThisMonth } from "@/lib/research/stored";
 import { getConfig, integrationStatus } from "@/lib/config";
+import { APP_ENV_LABEL } from "@/lib/app-env";
 import { Badge, Card, PageHeader, StatusPill, fmtRelative } from "@/components/ui";
 import { TableEmpty } from "@/components/table";
 import { AutoRefresh } from "@/components/auto-refresh";
@@ -51,7 +52,7 @@ export default async function SystemPage() {
       </div>
 
       <div className="grid xl:grid-cols-[1fr_380px] gap-5 items-start">
-        <Card title="Recent jobs" description="Newest first. Failed jobs can be retried; queued ones cancelled. A hung job is abandoned after its time limit and shows why." padded={false}>
+        <Card title="Recent jobs" description="Newest first. Failed jobs can be retried; queued ones canceled. A hung job is abandoned after its time limit and shows why." padded={false}>
           {jobsRows.length === 0 ? (
             <TableEmpty icon="bolt" title="No jobs yet" description="Jobs appear when you run a search or investigate a business." />
           ) : (
@@ -119,6 +120,26 @@ export default async function SystemPage() {
           )}
         </Card>
         <div className="space-y-4">
+          <Card title="Environment" description={cfg.appEnv === "production" ? "The live product: real customers, real email." : "Not the live product: its own database, keys and mailbox."}>
+            <div className="flex items-center gap-2 text-sm">
+              <Badge tone={cfg.appEnv === "production" ? "ok" : "warn"} dot>
+                {APP_ENV_LABEL[cfg.appEnv]}
+              </Badge>
+              <span className="text-ink-muted truncate">{cfg.TURSO_DATABASE_URL ? "hosted database" : `local file ${cfg.DATABASE_PATH}`}</span>
+            </div>
+            {cfg.envWarnings.length > 0 ? (
+              <ul className="mt-3 space-y-2 text-xs text-ink-muted leading-relaxed">
+                {cfg.envWarnings.map((w) => (
+                  <li key={w} className="flex gap-2">
+                    <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-warn shrink-0" aria-hidden />
+                    <span>{w}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-3 text-xs text-ink-muted">The settings fit this environment.</p>
+            )}
+          </Card>
           <Card title="Website research (Firecrawl)" description={integ.websiteResearch.status === "live" ? `Budget ${cfg.FIRECRAWL_MONTHLY_CREDIT_BUDGET} credits per month · ${cfg.FIRECRAWL_CONCURRENCY} in flight · ${cfg.FIRECRAWL_RPM} requests/min · stored pages reused ${cfg.RESEARCH_STALE_DAYS} days` : "Not configured: set FIRECRAWL_API_KEY. Stored pages can still be re-analyzed."}>
             <div className="grid grid-cols-2 gap-3 text-sm">
               {[

@@ -9,9 +9,9 @@ import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_COOKIE, readToken } from "@/lib/auth/token";
 
 /** Readable by anyone. The landing page is "/"; signing in and up post to their own pages. */
-const PUBLIC = new Set(["/", "/login", "/signup", "/auth/google", "/auth/google/callback", "/privacy", "/terms", "/acceptable-use"]);
+const PUBLIC = new Set(["/", "/login", "/signup", "/forgot-password", "/reset-password", "/verify-email", "/auth/google", "/auth/google/callback", "/auth/microsoft", "/auth/microsoft/callback", "/privacy", "/terms", "/acceptable-use"]);
 /** Pages for signing in: someone already signed in is sent on. */
-const SIGN_IN = new Set(["/login", "/signup", "/auth/google", "/auth/google/callback"]);
+const SIGN_IN = new Set(["/login", "/signup", "/forgot-password", "/reset-password", "/verify-email", "/auth/google", "/auth/google/callback", "/auth/microsoft", "/auth/microsoft/callback"]);
 /** The legal documents: readable by everyone, signed in or not. */
 const LEGAL = new Set(["/privacy", "/terms", "/acceptable-use"]);
 /** What a member may open. */
@@ -26,7 +26,11 @@ export async function proxy(req: NextRequest) {
   const pass = () => NextResponse.next({ request: { headers } });
   const to = (path: string) => NextResponse.redirect(new URL(path, req.url), reading ? 307 : 303);
 
-  if (token?.role === "owner") return SIGN_IN.has(pathname) ? to("/") : pass();
+  // The sign-in pages are always let through: a cookie can outlive its session (signed out elsewhere, expired, the
+  // account removed), and sending such a visitor away from "Sign in" would leave them with no way back in. The
+  // pages themselves send on someone who really is signed in.
+  if (token && SIGN_IN.has(pathname)) return pass();
+  if (token?.role === "owner") return pass();
   if (token?.role === "member") return MEMBER.has(pathname) || LEGAL.has(pathname) ? pass() : to("/welcome");
   // Not signed in: the landing page can only be read; the sign-in and sign-up pages also take their own form.
   if (pathname === "/") return reading ? pass() : to("/login");

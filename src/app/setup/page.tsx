@@ -19,10 +19,11 @@ import { logoutAction } from "@/app/auth-actions";
 import { Flash, Icon } from "@/components/ui";
 import { requireOwner } from "@/lib/auth";
 import { getConfig } from "@/lib/config";
-import { countryName, listCountries, regionName } from "@/lib/geo/world";
+import { distanceText, nearestChoiceKm } from "@/lib/distance";
+import { countryName, findPlace, listCountries, regionName } from "@/lib/geo/world";
 import { listMailboxes } from "@/lib/mail";
 import { microsoftConfigured } from "@/lib/mail/microsoft";
-import { getSettings } from "@/lib/settings";
+import { PLACE_RADIUS_KM, getSettings, type AppSettings, type TargetPlace } from "@/lib/settings";
 import { MailboxForm } from "@/app/settings/mailbox-form";
 import { PROFILE_STEP_SECTIONS, PROFILE_STEP_TEXT, ProfileStepFields, profileStepDone } from "@/app/settings/profile-steps";
 
@@ -31,6 +32,17 @@ export const metadata: Metadata = { title: "Set up your account" };
 const STEPS = ["you", "offer", "audience", "mailbox", "done"] as const;
 type Step = (typeof STEPS)[number];
 const LABEL: Record<Step, string> = { you: "About you", offer: "What you sell", audience: "Who you sell to", mailbox: "Your mailbox", done: "Ready" };
+
+/**
+ * A first place to sell in: where the person is, from the postal address they gave in the first step. Most
+ * small sellers work around where they are. Their town with the usual distance around it when the place
+ * list knows it, otherwise their country.
+ */
+function homePlace(s: Pick<AppSettings, "addressCountry" | "addressCity" | "addressRegion">): TargetPlace[] {
+  if (!s.addressCountry) return [];
+  const town = findPlace(s.addressCountry, s.addressRegion || null, s.addressCity) ?? findPlace(s.addressCountry, null, s.addressCity);
+  return town ? [{ country: s.addressCountry, region: (town.region ?? "").toUpperCase(), city: town.name, radiusKm: nearestChoiceKm(PLACE_RADIUS_KM.usual, s.addressCountry) }] : [{ country: s.addressCountry, region: "" }];
+}
 
 export default async function SetupPage({ searchParams }: { searchParams: Promise<{ step?: string; ok?: string; error?: string }> }) {
   const user = await requireOwner();
@@ -50,9 +62,11 @@ export default async function SetupPage({ searchParams }: { searchParams: Promis
   const href = (k: Step) => `/setup?step=${k}`;
   const prev = at > 0 ? STEPS[at - 1] : null;
   const first = (user.name || "").split(/\s+/)[0];
-  const countries = step === "audience" ? listCountries().map((c) => ({ code: c.code, name: c.name })).sort((x, y) => x.name.localeCompare(y.name)) : [];
+  const countries = step === "audience" || step === "you" ? listCountries().map((c) => ({ code: c.code, name: c.name })).sort((x, y) => x.name.localeCompare(y.name)) : [];
   const cfg = getConfig();
-  const places = s.targetPlaces.map((p) => (p.region ? `${regionName(p.country, p.region)} (${countryName(p.country)})` : countryName(p.country)));
+  // Where they sell is most often where they are: the country named in their own postal address is offered as the first place.
+  const forFields = step === "you" && !s.senderName ? { ...s, senderName: user.name } : step === "audience" && !s.targetPlaces.length ? { ...s, targetPlaces: homePlace(s) } : s;
+  const places = s.targetPlaces.map((p) => (p.city ? `within ${distanceText(p.radiusKm ?? PLACE_RADIUS_KM.usual, p.country)} of ${p.city} (${countryName(p.country)})` : p.region ? `${regionName(p.country, p.region)} (${countryName(p.country)})` : countryName(p.country)));
 
   return (
     <main className="min-h-screen bg-[var(--bg)] px-4 py-8 sm:py-12">
@@ -68,33 +82,45 @@ export default async function SetupPage({ searchParams }: { searchParams: Promis
           </form>
         </div>
 
-        {/* Where the setup stands: five dots, the current one named. */}
-        <ol className="flex items-center gap-2 mb-6" aria-label="Setup steps">
-          {STEPS.map((k, i) => {
-            const isDone = i < at || (k !== "done" && k !== "mailbox" && done[k as "you"]) || (k === "mailbox" && connected.length > 0);
-            const on = i === at;
-            const dot = <span className={`w-7 h-7 rounded-full grid place-items-center text-xs font-bold shrink-0 ${isDone && !on ? "bg-ok-soft text-ok" : on ? "bg-[var(--accent)] text-[var(--accent-fg)]" : "bg-surface-3 text-ink-muted"}`}>{isDone && !on ? <Icon name="check" className="w-3.5 h-3.5" /> : i + 1}</span>;
-            return (
-              <li key={k} className="flex items-center gap-2 min-w-0 flex-1 last:flex-none" aria-current={on ? "step" : undefined}>
-                {reachable(i) && !on && i < at ? (
-                  <Link href={href(k)} className="shrink-0 hover:no-underline" title={LABEL[k]} aria-label={LABEL[k]}>
-                    {dot}
-                  </Link>
-                ) : (
-                  dot
-                )}
-                {on && <span className="text-sm font-semibold whitespace-nowrap">{LABEL[k]}</span>}
-                {i < STEPS.length - 1 && <span className={`h-0.5 flex-1 rounded-full ${i < at ? "bg-[var(--ok)]" : "bg-surface-3"}`} aria-hidden="true" />}
-              </li>
-            );
-          })}
-        </ol>
+        {/* Where the setup stands: "Step 2 of 5", and one bar per step with its name under it. A finished step leads back to itself. */}
+        <nav className="mb-6" aria-label="Setup steps">
+          <p className="text-xs font-semibold text-ink-muted mb-2">
+            Step {at + 1} of {STEPS.length}
+            <span className="sm:hidden font-normal"> · {LABEL[step]}</span>
+          </p>
+          <ol className="grid grid-cols-5 gap-1.5 sm:gap-2">
+            {STEPS.map((k, i) => {
+              const on = i === at;
+              const past = i < at;
+              const body = (
+                <>
+                  <span className={`block h-1.5 rounded-full ${past || on ? "bg-[var(--accent)]" : "bg-surface-3"} ${on ? "" : past ? "opacity-60" : ""}`} aria-hidden="true" />
+                  <span className={`hidden sm:block mt-2 text-xs leading-tight ${on ? "font-semibold text-ink" : past ? "text-ink-muted" : "text-ink-faint"}`}>{LABEL[k]}</span>
+                </>
+              );
+              return (
+                <li key={k} aria-current={on ? "step" : undefined}>
+                  {past && reachable(i) ? (
+                    <Link href={href(k)} className="block hover:no-underline group" aria-label={`${LABEL[k]}, done`}>
+                      {body}
+                    </Link>
+                  ) : (
+                    <span className="block" aria-label={on ? `${LABEL[k]}, this step` : LABEL[k]}>
+                      {body}
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ol>
+        </nav>
 
         <Flash msg={sp.error} tone="bad" />
 
         {(step === "you" || step === "offer" || step === "audience") && (
           <form action={saveSettingsAction} id={step === "you" ? "sender" : step} className="surface">
-            {PROFILE_STEP_SECTIONS[step].map((name) => (
+            {/* The signature is built from these details here; writing one's own is done later, in Settings. */}
+            {PROFILE_STEP_SECTIONS[step].filter((name) => name !== "signature").map((name) => (
               <input key={name} type="hidden" name="section" value={name} />
             ))}
             <input type="hidden" name="then" value={href(STEPS[at + 1])} />
@@ -103,7 +129,8 @@ export default async function SetupPage({ searchParams }: { searchParams: Promis
               <h1 className="text-2xl font-semibold">{PROFILE_STEP_TEXT[step][0]}</h1>
               <p className="text-sm text-ink-muted mt-1.5">{PROFILE_STEP_TEXT[step][1]}</p>
             </header>
-            <ProfileStepFields step={step} s={s} countries={countries} />
+            {/* The name given at sign-up is offered as the name the emails are signed with: nobody types it twice. */}
+            <ProfileStepFields firstRun step={step} s={forFields} countries={countries} />
             <footer className="flex items-center justify-between gap-3 px-6 py-4 border-t border-line bg-surface-2/60 rounded-b-[var(--radius)]">
               {prev ? (
                 <Link href={href(prev)} className="btn btn-ghost">
@@ -163,7 +190,7 @@ export default async function SetupPage({ searchParams }: { searchParams: Promis
                 [
                   ["Writing as", [s.senderName, s.senderCompany].filter(Boolean).join(", ")],
                   ["You sell", s.offer],
-                  ["Looking for", `${s.targetKinds.join(", ")} in ${places.join(", ")}`],
+                  ["Looking for", `${s.targetKinds.join(", ")}: ${places.join("; ")}`],
                   ["Sending from", connected[0]?.address ?? "No mailbox yet. Connect one under Settings before you send."],
                 ] as const
               ).map(([k, v]) => (

@@ -3,11 +3,12 @@ import { getDb } from "@/db/client";
 import { searches } from "@/db/schema";
 import { listProviders } from "@/lib/discovery";
 import { listPlaybooks } from "@/lib/industries";
-import { listCountries, listRegions } from "@/lib/geo/world";
+import { defaultRadiusKm, findPlace, listCountries, listRegions } from "@/lib/geo/world";
 import { getConfig } from "@/lib/config";
 import { PageHeader } from "@/components/ui";
 import { DEFAULT_FILTERS } from "@/lib/search-input";
 import { workspaceId } from "@/lib/workspace";
+import { room } from "@/lib/usage";
 import { searchCostBasis } from "@/lib/search-cost-basis";
 import { getSettings, profileGaps } from "@/lib/settings";
 import { SearchForm, type PastSearch, type PlaybookOption, type SourceState } from "./search-form";
@@ -38,7 +39,8 @@ export default async function NewSearchPage({ searchParams }: { searchParams: Pr
     country,
     // The region of the last search narrows the city list to where the operator is working; the city is always chosen anew.
     region: sp.region ?? (last && !sp.country && last.country === country ? (last.region ?? "") : !last && !sp.country && home?.country === country ? home.region : ""),
-    city: sp.city ?? "",
+    // Before any search, the town the operator sells around (Settings, Your details) is where the first one starts.
+    city: sp.city ?? (!last && !sp.country && !sp.region && home?.country === country ? (findPlace(home.country, home.region || null, home.city ?? "")?.name ?? home.city ?? "") : ""),
     areaMode: DEFAULT_FILTERS.areaMode,
     centerLat: "",
     centerLon: "",
@@ -57,15 +59,19 @@ export default async function NewSearchPage({ searchParams }: { searchParams: Pr
     providers: source.usable,
   };
   const cost = await searchCostBasis();
+  // A customer sees what the search takes from their plan; only the product's own workspace sees what it costs to run.
+  const [searchRoom, researchRoom] = [await room("searches"), await room("research")];
+  const plan = searchRoom.limit === null || researchRoom.limit === null ? null : { label: searchRoom.plan.label, searchesLeft: searchRoom.left, searchLimit: searchRoom.limit, researchLeft: researchRoom.left, researchLimit: researchRoom.limit };
   // Where was already searched, and for what: the form marks those cities and says so before a repeat.
   const pastRows = await db.select({ industry: searches.industry, filters: searches.filters, country: searches.country, city: searches.city, at: searches.createdAt, stats: searches.stats }).from(searches).where(eq(searches.workspaceId, await workspaceId())).orderBy(desc(searches.createdAt)).limit(300).all();
   const past: PastSearch[] = pastRows.map((r) => ({ industry: r.industry, custom: r.filters?.customCategory ?? null, country: r.country, city: r.city, at: r.at, created: r.stats?.created ?? null }));
   const { allowedCountries } = settings;
-  const profile = { kinds: settings.targetKinds, missing: profileGaps(settings).search };
+  const homeTown = home?.city ? (findPlace(home.country, home.region || null, home.city) ?? findPlace(home.country, null, home.city)) : null;
+  const profile = { kinds: settings.targetKinds, missing: profileGaps(settings).search, home: homeTown ? { name: homeTown.name, country: homeTown.country, region: homeTown.region, population: homeTown.population, lat: homeTown.lat, lon: homeTown.lon, radiusKm: defaultRadiusKm(homeTown.population) } : null };
   return (
     <>
       <PageHeader crumbs={[{ href: "/searches", label: "Discover" }, { label: "New search" }]} title="Find businesses" />
-      <SearchForm profile={profile} playbooks={playbooks} source={source} countries={listCountries()} initialRegions={listRegions(country)} cost={cost} aiEnabled={cfg.ai.enabled} firecrawlEnabled={cfg.firecrawl.enabled} defaults={defaults} allowedCountries={allowedCountries} past={past} />
+      <SearchForm profile={profile} playbooks={playbooks} source={source} countries={listCountries()} initialRegions={listRegions(country)} cost={cost} plan={plan} aiEnabled={cfg.ai.enabled} firecrawlEnabled={cfg.firecrawl.enabled} defaults={defaults} allowedCountries={allowedCountries} past={past} />
     </>
   );
 }

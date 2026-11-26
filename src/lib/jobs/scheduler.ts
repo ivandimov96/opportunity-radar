@@ -15,7 +15,7 @@
  */
 import { and, desc, eq, gte, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import { getDb } from "@/db/client";
-import { FIRST_WORKSPACE_ID, businesses, inboundEmails, investigations, jobs, outreachDrafts, prospects } from "@/db/schema";
+import { FIRST_WORKSPACE_ID, businesses, inboundEmails, investigations, jobs, outreachDrafts, prospects, workspaces } from "@/db/schema";
 import { AUTO_SEARCH_CREDITS, autoSearchesToday, startAutoSearch } from "@/lib/discovery/auto-search";
 import { usageTotal } from "@/lib/discovery/usage";
 import { runAutopilot } from "@/lib/outreach/autopilot";
@@ -174,23 +174,34 @@ export async function runScheduler(now = new Date()): Promise<SchedulerResult> {
     }
   }
 
+  // 4b and 5 are done for every workspace, each by its own profile and settings: what one customer set up
+  // must never decide what is planned or searched for another.
+  const everyWorkspace = (await db.select({ id: workspaces.id }).from(workspaces).all()).map((w) => w.id);
+  if (!everyWorkspace.includes(FIRST_WORKSPACE_ID)) everyWorkspace.unshift(FIRST_WORKSPACE_ID);
+
   // 4b. Follow-up: every business in play gets (or keeps) its next action; costs nothing and sends nothing.
-  await runInWorkspace(FIRST_WORKSPACE_ID, () => planFollowUps(now)).catch((err) => console.warn("[scheduler] follow-up planning failed", err));
+  for (const ws of everyWorkspace) await runInWorkspace(ws, () => planFollowUps(now)).catch((err) => console.warn("[scheduler] follow-up planning failed", err));
 
   // 5. Finding businesses on its own: one search when the stock waiting for research runs low (Settings → Automation).
-  const targets = searchTargetsOf(settings);
-  if (settings.autoSearch && targets.length && cfg.googleMaps.enabled) {
-    await runInWorkspace(FIRST_WORKSPACE_ID, async () => {
-      const stock = Number((await db.select({ n: sql<number>`count(*)` }).from(businesses).where(and(eq(businesses.workspaceId, FIRST_WORKSPACE_ID), eq(businesses.status, "new"), isNotNull(businesses.website), ne(businesses.kind, "chain"), isNull(businesses.investigatedAt))).get())?.n ?? 0);
-      const waiting = Number((await db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(inArray(outreachDrafts.status, ["ready", "approved"])).get())?.n ?? 0);
-      const searching = await db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.type, "discover_search"), inArray(jobs.status, ["queued", "running"]))).limit(1).get();
-      if (searching || stock >= Math.max(AUTO_SEARCH_LOW_STOCK, settings.researchPerDay) || waiting >= settings.readyBuffer) return;
-      if ((await autoSearchesToday(now)) >= settings.searchesPerDay) return;
-      // The search credits do not renew: the last ones are left for searches the operator starts.
-      if ((await usageTotal("serper")) + AUTO_SEARCH_CREDITS > cfg.SERPER_CREDIT_BUDGET) return;
-      const started = await startAutoSearch(targets);
-      if (started) out.search = started.name;
-    });
+  if (cfg.googleMaps.enabled) {
+    for (const ws of everyWorkspace) {
+      if (out.search) break; // one search a tick, whoever it is for
+      await runInWorkspace(ws, async () => {
+        const own = await getSettings();
+        const targets = searchTargetsOf(own);
+        if (!own.autoSearch || !targets.length) return;
+        const mine = businessIdsOf(db, ws);
+        const stock = Number((await db.select({ n: sql<number>`count(*)` }).from(businesses).where(and(eq(businesses.workspaceId, ws), eq(businesses.status, "new"), isNotNull(businesses.website), ne(businesses.kind, "chain"), isNull(businesses.investigatedAt))).get())?.n ?? 0);
+        const waiting = Number((await db.select({ n: sql<number>`count(*)` }).from(outreachDrafts).where(and(inArray(outreachDrafts.businessId, mine), inArray(outreachDrafts.status, ["ready", "approved"]))).get())?.n ?? 0);
+        const searching = await db.select({ id: jobs.id }).from(jobs).where(and(eq(jobs.workspaceId, ws), eq(jobs.type, "discover_search"), inArray(jobs.status, ["queued", "running"]))).limit(1).get();
+        if (searching || stock >= Math.max(AUTO_SEARCH_LOW_STOCK, own.researchPerDay) || waiting >= own.readyBuffer) return;
+        if ((await autoSearchesToday(now)) >= own.searchesPerDay) return;
+        // The search credits do not renew: the last ones are left for searches the operator starts.
+        if ((await usageTotal("serper")) + AUTO_SEARCH_CREDITS > cfg.SERPER_CREDIT_BUDGET) return;
+        const started = await startAutoSearch(targets);
+        if (started) out.search = started.name;
+      });
+    }
   }
 
   // 6. Sending on its own, when the operator chose it: the ready emails whose waiting time is over (see outreach/autopilot.ts).

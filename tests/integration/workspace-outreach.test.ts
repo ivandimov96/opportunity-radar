@@ -326,7 +326,7 @@ describe("workspace isolation: emails, batches, sending and the pipeline", () =>
       await cancelJobAction(form(theirs.id));
     });
     expect(await row(theirFailed.id)).toMatchObject({ status: "queued", attempts: 0, error: null });
-    expect(await row(theirs.id)).toMatchObject({ status: "failed", error: "Cancelled by the operator" });
+    expect(await row(theirs.id)).toMatchObject({ status: "failed", error: "Canceled by the operator" });
     expect((await row(mine.id)).status).toBe("queued");
   });
 });

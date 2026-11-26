@@ -126,7 +126,17 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await expect(page.getByLabel("Your details").getByLabel("needs your attention")).toHaveCount(3);
   await page.locator('#sender input[name="senderName"]').fill("Ivan Dimov");
   await page.locator('#sender input[name="senderCompany"]').fill("Dimov Software");
-  await page.locator('#sender input[name="postalAddress"]').fill("1 Main St, Austin, TX 78701");
+  // The postal address is asked for in parts and each part is checked: a postal code that is not one is not sent at all.
+  const sender = page.locator("#sender");
+  await sender.getByLabel("Country").selectOption("US");
+  await sender.getByLabel("Street and number").fill("1 Main St");
+  await sender.getByLabel("Postal code").fill("ABC");
+  await sender.getByLabel("Town or city").fill("Aus");
+  await sender.getByRole("option", { name: "Austin" }).first().click();
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await expect(page.getByText("Saved.")).toHaveCount(0); // the browser holds the form back
+  await sender.getByLabel("Postal code").fill("78701");
+  await expect(sender.getByText("1 Main St, Austin 78701, United States")).toBeVisible(); // the line as it will end every email
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByText("Saved.")).toBeVisible();
   // Saving stays on the tab, and its dot is gone.
@@ -387,8 +397,16 @@ test("end-to-end journey: review, approve, send, pipeline", async ({ page }) => 
   await audience.locator("#targetKindsInput").fill("sign makers");
   await audience.locator("#targetKindsInput").press("Enter");
   await expect(page.getByRole("heading", { name: "Who do you sell to?" })).toBeVisible(); // Enter added the kind; it did not save the step
-  await audience.getByRole("button", { name: "Add a place" }).click();
+  // A place is around a town by default: the town is picked from the bundled list, and the line under it says what the searches will do (in miles, as the United Kingdom counts).
+  // A first place stands ready: there is no empty list to start from.
   await audience.getByLabel("Country, place 1").selectOption("GB");
+  await audience.getByLabel("Town, place 1").fill("Leed");
+  await audience.getByRole("option", { name: "Leeds" }).click();
+  await expect(audience.getByText("Searches start in Leeds and move outward to the towns within 15 miles, nearest first.")).toBeVisible();
+  await expect(audience.locator("input[name=targetPlaces]")).toHaveValue("GB | ENG | Leeds | 24"); // 15 miles, kept in kilometres
+  // Or a whole region or country, when distance does not matter.
+  await audience.getByRole("radio", { name: "A region or country" }).click();
+  await expect(audience.getByText("Searches work through the cities of United Kingdom, largest first.")).toBeVisible();
   await page.getByRole("button", { name: "Save changes" }).click();
   await expect(page.getByText("Saved.")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Who do you sell to?" })).toBeVisible();
@@ -463,19 +481,19 @@ test("new search form takes any kind of business in plain words and says what th
   await expect(page.getByText("Shown once you choose a kind of business.")).toBeVisible();
   // The full list by field, narrowed by its own filter; a type from it fills the box, and words not in it can still be used.
   await page.getByRole("button", { name: /^All types \(\d+\)$/ }).click();
-  await page.getByLabel("Filter all types").fill("hire");
+  await page.getByLabel("Filter all types").fill("rental");
   const all = page.getByLabel("All types", { exact: true });
-  await expect(all.getByRole("button", { name: "Skip hire" })).toBeVisible();
+  await expect(all.getByRole("button", { name: "Dumpster rental" })).toBeVisible();
   await expect(all.getByRole("button", { name: "Accountants" })).toHaveCount(0);
-  await all.getByRole("button", { name: "Marquee hire" }).click();
-  await expect(kind).toHaveValue("marquee hire");
+  await all.getByRole("button", { name: "Tent rentals" }).click();
+  await expect(kind).toHaveValue("tent rentals");
   await page.getByLabel("Filter all types").fill("alpaca trekking");
   await page.getByRole("button", { name: "use “alpaca trekking”" }).click();
   await expect(kind).toHaveValue("alpaca trekking");
   await kind.fill("");
   // Typing a word a ready-made type covers offers that type; it is never switched on its own.
   await kind.fill("dentist");
-  await page.getByRole("button", { name: "Dental practices" }).first().click();
+  await page.getByRole("button", { name: "Dental clinics" }).first().click();
   await expect(page.getByRole("button", { name: "Orthodontics" })).toBeVisible();
   // Any country: regions load for the chosen one and the city list follows.
   await page.locator('select[name="country"]').selectOption("DE");
@@ -500,7 +518,7 @@ test("where: allowed countries first, city shortcuts, the region follows the cit
   await largest.getByRole("button", { name: /Austin/ }).click();
   await expect(city).toHaveValue("Austin");
   await expect(page.getByText(/You searched for automotive repair in Austin/)).toBeVisible();
-  await expect(page.getByText(/Austin, Texas, United States · about .* people\. The search covers the whole city: about \d+ km around the centre\./)).toBeVisible();
+  await expect(page.getByText(/Austin, Texas, United States · about .* people\. The search covers the whole city: about \d+ miles around the center\./)).toBeVisible();
   await expect(page.locator('input[name="centerLat"]')).not.toHaveValue("");
   // Another kind of business in the same city is not a repeat.
   await page.getByLabel("Kind of business").fill("sign makers");
@@ -519,9 +537,9 @@ test("where: allowed countries first, city shortcuts, the region follows the cit
   await expect(page.getByRole("option", { name: /Rochester/ }).first()).toBeVisible();
   await page.getByLabel("Kind of business").click();
   await expect(page.getByText(/Rochester, Minnesota, United States · about/)).toBeVisible();
-  // "Around the centre" starts from a distance that fits the city.
-  await page.getByText("Around the centre", { exact: true }).click();
-  await expect(page.getByText(/The search covers \d+ km around the centre\./)).toBeVisible();
+  // "Around the center" starts from a distance that fits the city, said in miles in the United States.
+  await page.getByText("Around the center", { exact: true }).click();
+  await expect(page.getByText(/The search covers \d+ miles? around the center\./)).toBeVisible();
   // The same search in more cities at once: each is a search of its own, and the cost covers all of them.
   await page.getByRole("radio", { name: /Up to 20/ }).click();
   const also = page.getByLabel("Also search");
@@ -608,10 +626,10 @@ test("search form validates inline, keeps values and suggests cities by state", 
   await page.getByRole("option", { name: /Austin, Minnesota/ }).click();
   await expect(city).toHaveValue("Austin");
   await expect(page.locator('input[name="centerLat"]')).toHaveValue(/^43\.66/); // the centre comes with the chosen city
-  await page.getByLabel("Around the centre").check();
+  await page.getByLabel("Around the center").check();
   // Invalid: no city, bad radius.
   await city.fill("");
-  await page.locator('input[name="radiusKm"]').fill("500");
+  await page.locator("#radiusKm").fill("500"); // miles here; sent as kilometres
   await page.getByRole("radio", { name: /Up to 40/ }).click();
   await page.getByRole("button", { name: /Start search/ }).click();
   await expect(page.getByText(/things? to fix/).first()).toBeVisible(); // callout at the top and the note under the button
@@ -676,12 +694,37 @@ test("list pages share one table model: search, sort, date range, pagination; sy
   await expect(page.getByText(/Source health/)).toBeVisible();
 });
 
+test("the account page says who is signed in and how, and offers a new password", async ({ page }) => {
+  await page.goto("/");
+  await page.locator('a[href="/account"]').first().click(); // the name in the sidebar
+  await expect(page.getByRole("heading", { name: "Your account" })).toBeVisible();
+  await expect(page.getByText("owner@radar.example").first()).toBeVisible();
+  await expect(page.getByText("Email and password")).toBeVisible();
+  // A wrong current password changes nothing and says so.
+  await page.locator("#currentPassword").fill("not-the-password-1");
+  await page.locator("#password").fill("Brand-new-pass-1");
+  await page.getByRole("button", { name: "Change password" }).click();
+  await expect(page.getByText("The current password is not right.")).toBeVisible();
+});
+
 test.describe("accounts", () => {
   test.use({ storageState: { cookies: [], origins: [] } });
   test("a visitor sees the landing page, cannot open the workspace, and a new account gets no workspace", async ({ page }) => {
     // The shared sign-in of this file ran first: sign out to be a visitor.
+    const before = await page.context().cookies();
     await page.getByRole("button", { name: "Sign out" }).click();
     await expect(page.getByRole("heading", { name: "Find your next clients. Send the first email with confidence." })).toBeVisible();
+    // A cookie that outlived its session (signed out elsewhere, expired, the account removed) must not trap the
+    // visitor on the front page: "Sign in" and "Get started" still lead to their pages.
+    await page.context().addCookies(before);
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Find your next clients. Send the first email with confidence." })).toBeVisible();
+    await page.getByRole("link", { name: "Get started", exact: true }).first().click();
+    await expect(page.getByRole("heading", { name: "Create your account" })).toBeVisible();
+    await page.goto("/");
+    await page.getByRole("link", { name: "Sign in", exact: true }).first().click();
+    await expect(page.getByRole("heading", { name: "Sign in" })).toBeVisible();
+    await page.context().clearCookies();
     await page.goto("/businesses");
     await expect(page).toHaveURL(/\/login\?next=%2Fbusinesses/);
     // A wrong password says the same thing as an unknown email.
@@ -689,22 +732,30 @@ test.describe("accounts", () => {
     await page.locator("#password").fill("not-the-password-1");
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page.locator('p[role="alert"]')).toContainText("The email or the password is not right.");
-    // Signing up: a weak password is refused, a good one creates a member without a workspace.
+    // A way back in when the password is forgotten; nothing is sent in this environment, and the page says whom to write to.
+    await page.getByRole("link", { name: "Forgot your password?" }).click();
+    await expect(page.getByRole("heading", { name: "Forgot your password?" })).toBeVisible();
+    await expect(page.getByText("Passwords are reset by hand for now.")).toBeVisible();
+    await expect(page).toHaveURL(/forgot-password\?email=owner%40radar\.example/);
+    // Signing up: a weak password is refused, a good one opens an empty workspace of their own, starting with the setup.
     await page.goto("/signup");
     await page.getByLabel("Your name").fill("New Person");
     await page.getByLabel("Email").fill("new.person@radar.example");
     await page.locator("#password").fill("longenough");
     await page.getByRole("button", { name: "Create account" }).click();
     await expect(page.locator('p[role="alert"]')).toContainText("at least one letter and one number");
-    await page.getByLabel("Your name").fill("New Person");
+    // What was typed is still there: only the password is typed again, and the list under it ticks off as it is.
+    await expect(page.getByLabel("Your name")).toHaveValue("New Person");
+    await expect(page.getByLabel("Email")).toHaveValue("new.person@radar.example");
     await page.locator("#password").fill("Longenough-1");
     await page.getByRole("button", { name: "Create account" }).click();
-    await expect(page).toHaveURL(/\/welcome$/);
-    await expect(page.getByRole("heading", { name: "Welcome, New" })).toBeVisible();
-    for (const path of ["/", "/businesses", "/settings", "/api/export"]) {
-      await page.goto(path);
-      await expect(page).toHaveURL(/\/welcome$/); // no workspace for a member, whatever the address
-    }
+    await expect(page).toHaveURL(/\/setup/);
+    await expect(page.getByRole("heading", { name: "Who is writing?" })).toBeVisible();
+    await expect(page.getByText("Welcome, New.")).toBeVisible();
+    // Their workspace is their own: nothing the first account found is in it.
+    await page.goto("/businesses");
+    await expect(page.getByText("Barton Creek Auto Care")).toHaveCount(0);
+    await page.goto("/setup");
     await page.getByRole("button", { name: "Sign out" }).click();
     await expect(page.getByRole("link", { name: "Get started", exact: true })).toBeVisible();
   });

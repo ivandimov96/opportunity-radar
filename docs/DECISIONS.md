@@ -1026,3 +1026,190 @@ that offers a mock-up. A customer who sells anything else got emails about softw
   repeated sentence. Tests that gave every company one text use
   `tests/fixtures/emails.ts`. This wording has not run on the real model.
 
+## D64. Sign-ups open their own workspace; sign-in with Microsoft (2026-11-24)
+Changes D49 and the last line of D61, at the founder's request ("a proper sign up").
+- Someone who signs up now owns a new workspace of their own, on the trial plan, and is taken
+  straight to the first-run setup; the plan limits (D57) are what protects the product's keys.
+  `SIGNUP_MODE=waitlist` brings back the waiting page. Where a person lands after signing in is
+  decided in one place (`landingAfterSignIn`), for the form, Google and Microsoft alike.
+- "Continue with Microsoft" (`src/lib/auth/microsoft.ts`, `/auth/microsoft`): the same app
+  registration as the Microsoft mailbox, one more redirect address
+  (`<site>/auth/microsoft/callback`), asking only who the person is. The account is tied to
+  the Microsoft identity it was created with: a Microsoft account never opens an account that
+  was made another way, because a work account's address is set by its administrator.
+- The sign-in pages offer only the ways that are set up on the server.
+- The name given at sign-up is offered as the name the emails are signed with.
+- Not built: sign-in with Apple (it needs a paid Apple developer membership) and a check that
+  an email address typed at sign-up belongs to the person (the product has no mailbox of its
+  own to send a confirmation from). Microsoft sign-in has not been tried against Microsoft.
+
+## D65. A head start in the first-run setup (2026-11-24)
+Adds to D61. A new account had to write its whole profile from empty boxes; a weak profile gives
+weak searches and weak emails.
+- "What kind of business are you?" (`src/lib/professions.ts`, `profession-picker.tsx`): ten
+  kinds of seller and "Something else". Picking one writes a starting text into what is offered
+  and what the customer gets, and sets what the first email offers; a field the person already
+  typed in is never overwritten. Saved with that step, the choice also fills the kinds of
+  business to look for and the signs of a good fit, but only while those are still empty. The
+  texts are a start to be edited, and a test holds them to the profile rules (D62). They are
+  written for the UK market and have not been tried on real sellers.
+- The first step asks for the name (taken from sign-up), the company and the postal address;
+  title and website are folded away, and writing one's own signature is left to Settings.
+- The country a postal address ends with is offered as the first place to sell in.
+- The picker is shown wherever the offer is still empty, so also under Settings, Your details.
+
+## D66. Selling around a town; the audience step asks everything that narrows a search (2026-11-24)
+Adds to D60 and D61. A place was a country or a region, and searches worked through its cities
+from the largest down: a cleaner in Leeds was sent to London first.
+- A place may now be a town with a distance (`TargetPlace.city`, `radiusKm`; 5 to 200 km, 25
+  when not said; stored with the settings, no migration). `citiesFor` then starts in that town
+  and moves to the places within the distance, nearest first, taking smaller towns (20,000
+  people and up) than a region-wide walk does. A town the place list does not know falls back
+  to the region, so searching never stops silently.
+- "Who do you sell to?" asks three things in the open: the kinds of business, where they are
+  (around a town, the default for a new place, or a region or country), and which of them are
+  worth writing to (size, website, phone, kinds to leave out, signs of a good fit). Each place
+  says in one line what the searches will do.
+- The first-run setup reads the country and the town from the person's own postal address and
+  offers them as the first place; the first search opens in that town, already located.
+- Not changed: how size and the signs of a good fit are used afterwards (they are told to the
+  research, as before); a map listing does not say how big a business is.
+
+## D67. The description is written from ticks; the setup's progress is a named bar (2026-11-24)
+Changes D65 after the founder's remark that a filled-in description must be precise.
+- One fixed text per kind of seller said what the trade does, not what this seller does. Now
+  the person ticks what they do (up to five of that trade's services, three ticked to begin
+  with) and what their customers value (up to three), and the two descriptions are put
+  together from those ticks (`offerText`, `resultText` in `src/lib/professions.ts`). A box the
+  person edited by hand is left alone; a link offers to write it from the ticks again. The test
+  checks the shortest and the longest text every kind can produce against the profile rules.
+- The progress at the top of the setup is "Step 2 of 5" and one bar per step with its name
+  under it (the name beside the count on a phone), instead of numbered dots.
+- Considered and left for later: writing the description from the seller's own website with
+  the model. It would be the most precise, but it is a paid call for every sign-up.
+- The same day, at the founder's word that the product is for any country: the texts and the
+  kinds of business of every head start were reworded so that none names one country's tax,
+  law or trade terms ("tax returns", "real estate agencies", "law firms", "daycare centers").
+  This overrides "written for the UK market" in D65.
+
+## D68. Miles where a country counts in miles; one spelling; kinds of business for any country (2026-11-24)
+At the founder's word that the product is global.
+- Distances are kept in kilometres and shown and typed in the country's own unit
+  (`src/lib/distance.ts`): miles for the United States, the United Kingdom, Liberia and Myanmar,
+  kilometres elsewhere. Around a town the choices are round numbers in that unit (5, 15, 30,
+  60 miles; 10, 25, 50, 100 km). The search form, the setup, search names and the filter
+  summary follow it. The run log of a search still says kilometres.
+- What a customer reads is in American spelling ("center", "analyzed", "canceled", "postal
+  code"). The prompts given to the model were not touched, so what the model writes is unchanged.
+- The list of business kinds a search can be started from, and the dental ready-made type,
+  no longer use names only one country uses ("Law firms", "Real estate agencies", "Moving
+  companies", "Dumpster rental", "Daycare centers", "Tire shops").
+
+## D69. What was checked for selling in any country, and what was put right (2026-11-24)
+A walk as new accounts in Germany, France, the United States and North Macedonia, from sign-up
+to the search form (no search was started), and a read of what the searches use.
+- Collected and used: the kinds of business and the place (country, town, distance) make the
+  searches; website and phone "must have" filter them; size, kinds to leave out and the signs
+  of a good fit are told to the research. Countries that may be emailed default to any.
+- Put right: the automatic search and the planning of next actions ran for the first workspace
+  only, by its settings; they now run for every workspace by its own profile and settings,
+  one automatic search a tick. The automatic search keeps to "must have a phone number".
+- Put right: the search form showed every account the product's own costs and credit balance.
+  A customer's account now sees what the search takes from its plan this month ("1 of 3
+  searches left", "up to 10 of 10 researched businesses left"); only the first workspace sees
+  costs.
+- Put right: the town in a postal address is found when it is written with its postal code
+  ("80802 Munich", "Skopje 1000"). A town written only in its local name ("München") is not in
+  the place list and is still missed: the person picks it.
+- Still not per workspace in the scheduler: the follow-up sequence, automatic drafts and
+  automatic research are switched by the first workspace's settings and share one daily count.
+- Not collected, and needed before selling abroad in earnest: the language emails are written
+  in (they are written in English), and the customer's time zone for the sending hours.
+
+## D70. The postal address is asked for in parts and checked (2026-11-24)
+At the founder's word that one free box lets a person write anything. Changes D62 for this field.
+- Country (from the list), street and number, postal code and town are asked for separately
+  (`src/app/settings/address-fields.tsx`) and stored as `addressCountry`, `addressStreet`,
+  `addressPostalCode`, `addressCity`, `addressRegion`. `src/lib/address.ts` holds the rules: a
+  country of the list; a street of at least two words; a town in letters; a postal code in the
+  country's own form (about seventy countries have their pattern, the rest take a short code of
+  letters and digits, and countries without postal codes are not asked for one). The browser
+  holds the form back and `saveSettingsAction` checks the same rules again.
+- `postalAddress`, the line under the name in every email, is no longer typed: it is put
+  together from the parts in the order the country writes it. An address saved before this
+  stays as it is until its parts are filled in.
+- The first place to sell in comes straight from these parts (country, and the town when the
+  place list knows it); reading it out of free text (D66) is gone.
+- What this does not do: check that the street exists. That needs an address service, which
+  the product does not use.
+
+## D71. Signing in: a cookie without a session, a forgotten password, and what the forms keep (2026-11-24)
+- The request guard sent anyone holding a validly signed cookie away from "/login" and
+  "/signup". A cookie outlives its session (signed out on another device, expired, the account
+  removed), so such a visitor saw the front page and could not open either page from it: the
+  links seemed dead. The sign-in pages are now always let through and decide for themselves:
+  someone who really is signed in is sent on (`landingAfterSignIn`), everyone else sees the form.
+- "Forgot your password?" (`src/lib/auth/reset.ts`, `/forgot-password`, `/reset-password`,
+  table `password_resets`, migration 0023): a link to the account's own address, valid once and
+  for an hour, at most three an hour; only a hash of its secret is stored; using it ends every
+  session of the account and signs in. The page answers the same whether or not the address
+  has an account. An account that signs in with Google or Microsoft is not sent one.
+- The email goes out from the first workspace's default mailbox and only with
+  `ACCOUNT_EMAILS=on`. It is off by default: the product has no mailbox of its own, and sending
+  from the founder's is theirs to switch on. While off, the page says that passwords are reset
+  by hand and whom to write to. No reset email has been sent for real.
+- Sign-up keeps the name and the email after a refusal, and shows under the password what it
+  needs, ticked off as it is typed.
+- Still missing: confirming that a typed email address belongs to the person (it would use the
+  same switch), and changing the password from inside the account.
+
+## D72. Confirming an address, the product's own sender, and a new password from inside the account (2026-11-24)
+Completes D71.
+- Someone who signs up with an email and a password confirms the address before the app opens
+  (`src/lib/auth/verify.ts`, `/verify-email`, `users.email_verified_at`, table
+  `email_verifications`, migration 0024): a link sent to it, valid once and for a day, at most
+  five an hour. `requireOwner` and `landingAfterSignIn` keep an unconfirmed account on that
+  page. Confirmed from the start: the first account, an account made from the command line,
+  and one made with Google or Microsoft. Signing in with Google, or choosing a new password
+  through a link sent to the mailbox, also confirms. Every account that existed before counts
+  as confirmed (the migration sets it), so nobody was locked out.
+- It is asked for only while the product sends its own emails. Without them (the default)
+  nobody is asked to confirm and passwords are reset by hand, as before.
+- The product's own sender (`account-emails.ts`, `account-mail.ts`): with `ACCOUNT_SMTP_HOST`,
+  `ACCOUNT_SMTP_USER`, `ACCOUNT_SMTP_PASSWORD` and `ACCOUNT_MAIL_FROM` these emails go out
+  through that SMTP service and never through a workspace's mailbox; `ACCOUNT_EMAILS=on` alone
+  still sends them from the first workspace's default mailbox. The SMTP path was tested with a
+  stand-in transport, not against a real service.
+- `/account` (the name in the sidebar leads there): who is signed in, how they sign in, and a
+  new password after giving the current one; every other device is signed out.
+- The browser tests run with these emails off, whatever the developer's settings file says.
+
+## D73. Development and production are two environments that share nothing (2026-11-26)
+
+**Context.** One `.env` held everything, the computer was both the place where the product
+is built and where the founder worked for real, and the live deployment had its own values
+only by the accident of what was typed into the host. Nothing stopped a script or a test on
+the computer from opening the customers' database once its address was at hand.
+
+**Decision.**
+- The environment is a fact the code knows (`src/lib/app-env.ts`, `config.appEnv`):
+  development, production or test. It follows from where the process runs (`pnpm dev`, the
+  host's production deployment, a test run; a Vercel preview is development) and `APP_ENV`
+  overrules it. The browser tests say `APP_ENV=test`, since they run a built app.
+- Each has its own settings file: `.env.development.local` and, when production runs from a
+  file, `.env.production.local`; on the host the values live in the host's settings. There
+  is no plain `.env` any more (the framework reads it in both). Two templates are kept in the
+  repository: `.env.example` (development, every setting explained) and
+  `.env.production.example` (what production must and must not have).
+- Mix-ups stop the app at the first read of the configuration: a hosted database outside
+  production (`DEV_REMOTE_DATABASE=allow` is the way to say a second hosted database is for
+  development), and the test mailbox in production. What production merely lacks (its own
+  mailbox key, its address, the secret of the jobs address, a sender for its own emails) is a
+  list on the System page and in the start-up log, not a refusal.
+- `pnpm env:check [production]` checks a file without starting anything and never prints a value.
+- The app says "Dev" beside its name outside production.
+
+**Not done here.** The values on the host were not changed. Production on a serverless host
+still cannot send email or run the worker (sending is switched off there), so
+until production gets a host with a running worker, or sending from serverless is allowed,
+real outreach still leaves from the founder's computer.

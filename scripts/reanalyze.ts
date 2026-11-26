@@ -4,10 +4,10 @@
  * emails for the businesses that qualify. Stop `pnpm dev` first, or two workers
  * compete for the jobs.
  *
- *   pnpm exec tsx --env-file=.env scripts/reanalyze.ts --limit 3             # the first three by priority
- *   pnpm exec tsx --env-file=.env scripts/reanalyze.ts "Northside Air" "Harbour Plumbing"  # by name
- *   pnpm exec tsx --env-file=.env scripts/reanalyze.ts --all --emails         # everything researched, then write the emails
- *   pnpm exec tsx --env-file=.env scripts/reanalyze.ts --all --emails-only    # only write the emails that are queued
+ *   pnpm exec tsx --env-file=.env.development.local scripts/reanalyze.ts --limit 3             # the first three by priority
+ *   pnpm exec tsx --env-file=.env.development.local scripts/reanalyze.ts "Northside Air" "Harbour Plumbing"  # by name
+ *   pnpm exec tsx --env-file=.env.development.local scripts/reanalyze.ts --all --emails         # everything researched, then write the emails
+ *   pnpm exec tsx --env-file=.env.development.local scripts/reanalyze.ts --all --emails-only    # only write the emails that are queued
  */
 import { desc, eq, inArray, like, or } from "drizzle-orm";
 import { closeDatabase, getDb } from "@/db/client";

@@ -28,7 +28,7 @@ export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams;
   const [state, userId] = (req.cookies.get(MICROSOFT_STATE_COOKIE)?.value ?? "").split(".");
   // The person pressed Cancel on Microsoft's page, or an administrator has to approve the app first.
-  if (q.get("error")) return back("error", q.get("error") === "access_denied" ? "The Microsoft sign-in was cancelled, so no mailbox was added." : `Microsoft did not allow the sign-in: ${(q.get("error_description") ?? q.get("error") ?? "").split(/\r?\n/)[0].slice(0, 200)}`);
+  if (q.get("error")) return back("error", q.get("error") === "access_denied" ? "The Microsoft sign-in was canceled, so no mailbox was added." : `Microsoft did not allow the sign-in: ${(q.get("error_description") ?? q.get("error") ?? "").split(/\r?\n/)[0].slice(0, 200)}`);
   const code = q.get("code");
   if (!code || !state || q.get("state") !== state || userId !== user.id) return back("error", "The Microsoft sign-in was interrupted. Please try again.");
   try {

@@ -4,6 +4,7 @@
  * and degrades explicitly when credentials are missing.
  */
 import { z } from "zod";
+import { checkEnvironment, type AppEnv } from "@/lib/app-env";
 
 const Effort = z.enum(["low", "medium", "high", "xhigh", "max"]);
 
@@ -150,6 +151,10 @@ export type AppConfig = z.infer<typeof EnvSchema> & {
   mail: MailConfig;
   /** Running on Vercel serverless: storage is ephemeral and no long-lived worker exists. */
   serverless: boolean;
+  /** Development, production or test (src/lib/app-env.ts). */
+  appEnv: AppEnv;
+  /** What is not yet as it should be for this environment; shown on the System page. */
+  envWarnings: string[];
 };
 
 let cached: AppConfig | null = null;
@@ -161,6 +166,10 @@ export function getConfig(): AppConfig {
     throw new Error(`Invalid environment configuration: ${parsed.error.message}`);
   }
   const env = parsed.data;
+  // Settings of one environment used in the other (the production database opened from development, the test
+  // mailbox in production) stop the app here, before anything is read or written.
+  const check = checkEnvironment(process.env);
+  if (check.blocking.length) throw new Error(`The settings do not fit the ${check.env} environment:\n- ${check.blocking.join("\n- ")}`);
   const hasAnthropic = Boolean(env.ANTHROPIC_API_KEY?.trim());
   const hasOpenAi = Boolean(env.OPENAI_API_KEY?.trim());
   const provider = env.AI_PROVIDER === "anthropic" ? (hasAnthropic ? "anthropic" : null) : env.AI_PROVIDER === "openai" ? (hasOpenAi ? "openai" : null) : hasAnthropic ? "anthropic" : hasOpenAi ? "openai" : null;
@@ -173,6 +182,8 @@ export function getConfig(): AppConfig {
   cached = {
     ...env,
     serverless,
+    appEnv: check.env,
+    envWarnings: check.warnings,
     ai: { enabled: provider !== null, provider },
     googleMaps: { enabled: Boolean(env.SERPER_API_KEY?.trim()) },
     firecrawl: { enabled: Boolean(env.FIRECRAWL_API_KEY) },

@@ -819,6 +819,8 @@ export const users = sqliteTable(
     role: text("role").notNull().default("member"),
     createdAt: text("created_at").notNull(),
     lastLoginAt: text("last_login_at"),
+    /** When the person showed the address is theirs (a link sent to it, or Google or Microsoft vouching for it). Null = not yet. */
+    emailVerifiedAt: text("email_verified_at"),
   },
   (t) => [uniqueIndex("users_email_idx").on(t.email)],
 );
@@ -836,6 +838,42 @@ export const sessions = sqliteTable(
   },
   (t) => [index("sessions_user_idx").on(t.userId)],
 );
+
+/**
+ * A link to choose a new password, sent to an account's own address. Only a hash of the link's secret is
+ * kept, so reading this table opens no account; a link works once and for an hour.
+ */
+export const passwordResets = sqliteTable(
+  "password_resets",
+  {
+    /** SHA-256 of the secret in the link. */
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    usedAt: text("used_at"),
+  },
+  (t) => [index("password_resets_user_idx").on(t.userId)],
+);
+
+/** A link that confirms an account's email address, sent to that address. Only a hash of its secret is kept; it works once and for a day. */
+export const emailVerifications = sqliteTable(
+  "email_verifications",
+  {
+    /** SHA-256 of the secret in the link. */
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    createdAt: text("created_at").notNull(),
+    expiresAt: text("expires_at").notNull(),
+    usedAt: text("used_at"),
+  },
+  (t) => [index("email_verifications_user_idx").on(t.userId)],
+);
+
 
 /** One workspace per customer: the owner of a set of businesses, emails and settings. */
 export const workspaces = sqliteTable("workspaces", {

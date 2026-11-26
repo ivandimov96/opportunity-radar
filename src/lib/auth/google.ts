@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db/client";
 import { users } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
-import { markOnboardingPending, normalizeEmail, workspaceForNewUser, type SessionUser } from "./index";
+import { markOnboardingPending, normalizeEmail, roleForSignup, workspaceForNewUser, type SessionUser } from "./index";
 
 export const GOOGLE_STATE_COOKIE = "radar_google_state";
 export const googleConfigured = () => Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET);
@@ -39,13 +39,18 @@ export async function googleProfile(origin: string, code: string, nonce: string)
   return { email: normalizeEmail(info.email), name: (info.name ?? "").slice(0, 80) };
 }
 
-/** The account for a Google email: the existing one, or a new one (the first account ever is the owner, later ones are members). */
+/** The account for a Google email: the existing one, or a new one with a workspace of its own. */
 export async function userForGoogle(profile: { email: string; name: string }): Promise<SessionUser> {
   const db = await getDb();
   const row = await db.select().from(users).where(eq(users.email, profile.email)).get();
-  if (row) return { id: row.id, email: row.email, name: row.name, role: row.role === "owner" ? "owner" : "member", workspaceId: row.workspaceId };
+  if (row) {
+    // Google vouches for the address: signing in with it confirms an account that had not confirmed yet.
+    const verified = row.emailVerifiedAt ?? nowIso();
+    if (!row.emailVerifiedAt) await db.update(users).set({ emailVerifiedAt: verified }).where(eq(users.id, row.id)).run();
+    return { id: row.id, email: row.email, name: row.name, role: row.role === "owner" ? "owner" : "member", workspaceId: row.workspaceId, emailVerifiedAt: verified };
+  }
   const first = !(await db.select({ id: users.id }).from(users).limit(1).get());
-  const user: SessionUser = { id: newId(), email: profile.email, name: profile.name, role: first ? "owner" : "member", workspaceId: await workspaceForNewUser(first, profile.name) };
+  const user: SessionUser = { id: newId(), email: profile.email, name: profile.name, role: roleForSignup(first), workspaceId: await workspaceForNewUser(first, profile.name), emailVerifiedAt: nowIso() };
   // No password: this account signs in with Google only (the marker can never match a typed password).
   await db.insert(users).values({ ...user, passwordHash: "google", createdAt: nowIso() }).run();
   await markOnboardingPending(user.workspaceId);

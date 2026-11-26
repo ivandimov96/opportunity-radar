@@ -244,7 +244,7 @@ const PLAYBOOKS: Record<string, IndustryPlaybook> = {
   },
   dental: {
     key: "dental",
-    label: "Dental practices",
+    label: "Dental clinics",
     description: "Private practices with intake, scheduling, recall and insurance workflows.",
     segments: [
       { key: "general", label: "General dentistry", description: "Family and general practices.", osmSelectors: ['["amenity"="dentist"]', '["healthcare"="dentist"]'], googleQuery: "dentist" },

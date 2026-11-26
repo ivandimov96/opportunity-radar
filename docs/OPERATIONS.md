@@ -2,7 +2,7 @@
 
 ## Setup
 
-1. `pnpm install`, `cp .env.example .env`, add keys, `pnpm dev`.
+1. `pnpm install`, `cp .env.example .env.development.local`, add keys, `pnpm dev`.
 2. **Settings → You**: name, postal address, optionally a company (and a sentence
    on what you do, a booking link and a few of your own emails if you like).
    Sending is refused until name and postal address are filled in.
@@ -11,8 +11,43 @@
 4. Start a search from Businesses → Find businesses. Research, qualification and
    email writing follow on their own; emails appear under Outreach.
 
-Secrets stay in `.env` (see `.env.example` for every variable). Everything the
-operator changes day to day is under Settings and stored in the database.
+Secrets stay in `.env.development.local` (see `.env.example` for every variable).
+Everything the operator changes day to day is under Settings and stored in the
+database.
+
+## Development and production
+
+Two environments, and nothing is shared between them: not the database, not a
+secret, not a key, not a mailbox.
+
+| | Development | Production |
+|---|---|---|
+| Where | this computer, `pnpm dev` | the live deployment |
+| Settings | `.env.development.local` | the host's own settings (Vercel: Project, Settings, Environment Variables, "Production"), or `.env.production.local` on a machine of your own |
+| Template | `.env.example` | `.env.production.example` |
+| Database | the file in `DATABASE_PATH` (`./data/dev.db`) | the hosted Turso database |
+| Shown as | a "Dev" mark beside the name | nothing |
+
+- Do not keep a plain `.env`: the framework reads it in both environments.
+- The environment is worked out by itself (`src/lib/app-env.ts`): `pnpm dev` is
+  development, the production deployment is production, a Vercel preview is
+  development, a test run is test. `APP_ENV` overrules it.
+- The app refuses to start when the settings of one are used in the other:
+  development or a test with `TURSO_DATABASE_URL` (the customers' database), or
+  production with the test mailbox. What production still lacks is listed on the
+  System page under Environment and printed when the app starts.
+- `pnpm env:check` (or `pnpm env:check production`) reads a settings file and
+  says what is filled in and what does not fit. It prints names, never values,
+  and warns when a secret is the same in both files.
+- A change reaches production only by a deploy (`pnpm dlx vercel@latest --prod`);
+  a push alone does not deploy. Database migrations apply when the deployed app
+  first opens the database, so a deploy that adds a migration changes the
+  production database: take the change through development and the tests first.
+- Each sign-in app (Google, Microsoft) needs the redirect addresses of both
+  environments registered: `http://localhost:3000/...` and `<APP_URL>/...`
+  (the paths are in `.env.production.example`).
+- Scripts read the development file (`--env-file=.env.development.local`). Never
+  point one at production settings without the founder's word.
 
 ## Connecting a mailbox
 
@@ -120,8 +155,8 @@ spending Firecrawl credits:
 
 ```bash
 # stop pnpm dev first, or two workers compete for the jobs
-pnpm exec tsx --env-file=.env scripts/reanalyze.ts --limit 3       # try three first and read the output
-pnpm exec tsx --env-file=.env scripts/reanalyze.ts --all --emails  # everything, then write the emails
+pnpm exec tsx --env-file=.env.development.local scripts/reanalyze.ts --limit 3       # try three first and read the output
+pnpm exec tsx --env-file=.env.development.local scripts/reanalyze.ts --all --emails  # everything, then write the emails
 ```
 
 Or per business: its page → Research → "Re-analyze stored pages". Cost: about

@@ -85,7 +85,7 @@ export default async function SearchDetail({ params, searchParams }: { params: P
                   disabled={active || !cfg.firecrawl.enabled}
                   title={cfg.firecrawl.enabled ? undefined : "Research is not set up yet (Settings)"}
                   confirmLabel="Start research"
-                  message={`Research ${businessStats.investigable} saved business${businessStats.investigable === 1 ? "" : "es"}? Each one has its website read and analysed, which uses website and AI credits.`}
+                  message={`Research ${businessStats.investigable} saved business${businessStats.investigable === 1 ? "" : "es"}? Each one has its website read and analyzed, which uses website and AI credits.`}
                 >
                   <Icon name="sparkles" /> Research <span className="btn-count">{businessStats.investigable}</span>
                 </ConfirmButton>

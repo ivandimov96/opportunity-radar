@@ -5,13 +5,14 @@
  */
 import { randomBytes, scrypt as scryptCb, timingSafeEqual } from "node:crypto";
 import { promisify } from "node:util";
-import { and, eq, gt, lt } from "drizzle-orm";
+import { and, eq, gt, lt, ne } from "drizzle-orm";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { getDb } from "@/db/client";
 import { FIRST_WORKSPACE_ID, sessions, users, workspaces, settings } from "@/db/schema";
 import { newId, nowIso } from "@/lib/ids";
 import { SESSION_COOKIE, WELCOME_COOKIE, WELCOME_SECONDS, makeToken, readToken, type Role } from "./token";
+import { accountEmailsOn } from "./account-emails";
 
 const scrypt = promisify(scryptCb) as (password: string, salt: Buffer, keylen: number) => Promise<Buffer>;
 const SESSION_DAYS = 30;
@@ -23,6 +24,8 @@ export interface SessionUser {
   role: Role;
   /** The workspace this user works in: every search, business and email they see belongs to it. */
   workspaceId: string;
+  /** When the address was confirmed as theirs; null = not yet. Left out where it was not looked up. */
+  emailVerifiedAt?: string | null;
 }
 
 /**
@@ -39,6 +42,30 @@ export async function workspaceForNewUser(first: boolean, name: string): Promise
 }
 
 /** Marks a workspace as new: its owner is taken through the first-run setup before the app opens (see src/app/setup). */
+/**
+ * Whether someone who signs up gets to work straight away. Open (the default): every new account owns a
+ * workspace of its own, on the trial plan, and starts with the first-run setup. SIGNUP_MODE=waitlist keeps
+ * new accounts on the welcome page until they are opened by hand.
+ */
+export const signupsOpen = () => process.env.SIGNUP_MODE?.trim().toLowerCase() !== "waitlist";
+/** The role of an account someone creates for themselves. The very first account always owns the first workspace. */
+export const roleForSignup = (first: boolean): Role => (first || signupsOpen() ? "owner" : "member");
+
+/** Where someone goes right after signing in: the waiting page, the first-run setup still ahead of them, or `next`. */
+/**
+ * Whether the person still has to confirm their address before the app opens: asked only while the product
+ * sends its own emails, and only of an account that was looked up and found unconfirmed.
+ */
+export const mustConfirmEmail = (user: SessionUser) => accountEmailsOn() && user.emailVerifiedAt === null;
+
+export async function landingAfterSignIn(user: SessionUser, next = "/"): Promise<string> {
+  if (user.role !== "owner") return "/welcome";
+  if (mustConfirmEmail(user)) return "/verify-email";
+  const db = await getDb();
+  const row = await db.select({ value: settings.value }).from(settings).where(and(eq(settings.workspaceId, user.workspaceId), eq(settings.key, "state:onboarding"))).get();
+  return row?.value === "pending" ? "/setup" : next;
+}
+
 export async function markOnboardingPending(workspaceId: string): Promise<void> {
   const db = await getDb();
   await db.insert(settings).values({ workspaceId, key: "state:onboarding", value: "pending", updatedAt: nowIso() }).onConflictDoNothing().run();
@@ -68,7 +95,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
 
-/** Creates an account. The very first account owns the workspace; later ones are members without one. */
+/** Creates an account. The very first account owns the first workspace; a later one owns a new workspace of its own (or waits for one, see `signupsOpen`). */
 export async function createUser(input: { email: string; password: string; name?: string; role?: Role }): Promise<{ ok: true; user: SessionUser } | { ok: false; error: string }> {
   const email = normalizeEmail(input.email);
   if (!isEmail(email)) return { ok: false, error: "That does not look like an email address." };
@@ -78,9 +105,11 @@ export async function createUser(input: { email: string; password: string; name?
   if (await db.select({ id: users.id }).from(users).where(eq(users.email, email)).get()) return { ok: false, error: "An account with this email already exists. Sign in instead." };
   const first = !(await db.select({ id: users.id }).from(users).limit(1).get());
   const name = (input.name ?? "").trim().slice(0, 80);
-  const role = input.role ?? (first ? "owner" : "member");
-  // An owner made on purpose after the first account (from the command line) shares the first workspace.
-  const user: SessionUser = { id: newId(), email, name, role, workspaceId: await workspaceForNewUser(first || role === "owner", name) };
+  const role = input.role ?? roleForSignup(first);
+  // An owner made on purpose after the first account (from the command line) shares the first workspace;
+  // someone who signed up themselves gets a workspace of their own.
+  // The very first account and one made on purpose (from the command line) are trusted; someone who signs up confirms their address.
+  const user: SessionUser = { id: newId(), email, name, role, workspaceId: await workspaceForNewUser(first || input.role === "owner", name), emailVerifiedAt: first || input.role ? nowIso() : null };
   await db.insert(users).values({ ...user, passwordHash: await hashPassword(input.password), createdAt: nowIso() }).run();
   // Someone who signed up themselves is new to the product: their workspace starts with the first-run setup.
   // (An account made from the command line or a test, with its role given, does not.)
@@ -94,7 +123,7 @@ export async function checkLogin(emailRaw: string, password: string): Promise<Se
   const row = await db.select().from(users).where(eq(users.email, normalizeEmail(emailRaw))).get();
   const ok = await verifyPassword(password, row?.passwordHash ?? "scrypt$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==");
   if (!row || !ok) return null;
-  return { id: row.id, email: row.email, name: row.name, role: row.role === "owner" ? "owner" : "member", workspaceId: row.workspaceId };
+  return { id: row.id, email: row.email, name: row.name, role: row.role === "owner" ? "owner" : "member", workspaceId: row.workspaceId, emailVerifiedAt: row.emailVerifiedAt };
 }
 
 export async function startSession(user: SessionUser): Promise<void> {
@@ -125,7 +154,7 @@ export async function currentUser(): Promise<SessionUser | null> {
   if (!token) return null;
   const db = await getDb();
   const row = await db
-    .select({ id: users.id, email: users.email, name: users.name, role: users.role, workspaceId: users.workspaceId })
+    .select({ id: users.id, email: users.email, name: users.name, role: users.role, workspaceId: users.workspaceId, emailVerifiedAt: users.emailVerifiedAt })
     .from(sessions)
     .innerJoin(users, eq(users.id, sessions.userId))
     .where(and(eq(sessions.id, token.sessionId), gt(sessions.expiresAt, nowIso())))
@@ -133,10 +162,34 @@ export async function currentUser(): Promise<SessionUser | null> {
   return row ? { ...row, role: row.role === "owner" ? "owner" : "member" } : null;
 }
 
+/** How an account signs in: with a password of its own, or through Google or Microsoft. */
+export async function signInMethod(userId: string): Promise<"password" | "google" | "microsoft"> {
+  const row = await (await getDb()).select({ hash: users.passwordHash }).from(users).where(eq(users.id, userId)).get();
+  return row?.hash === "google" ? "google" : row?.hash.startsWith("microsoft:") ? "microsoft" : "password";
+}
+
+/**
+ * Changes the password of the signed-in account after checking the current one. Every other session of the
+ * account ends; the one asking stays signed in.
+ */
+export async function changePassword(user: SessionUser, current: string, next: string): Promise<string | null> {
+  if (!(await checkLogin(user.email, current))) return "The current password is not right.";
+  const problem = passwordProblem(next);
+  if (problem) return problem;
+  if (current === next) return "Choose a password that is different from the current one.";
+  const db = await getDb();
+  const token = await readToken((await cookies()).get(SESSION_COOKIE)?.value);
+  await db.update(users).set({ passwordHash: await hashPassword(next) }).where(eq(users.id, user.id)).run();
+  await db.delete(sessions).where(and(eq(sessions.userId, user.id), ne(sessions.id, token?.sessionId ?? ""))).run();
+  return null;
+}
+
 /** For everything that touches the workspace: the signed-in owner, or a redirect to the sign-in page. */
 export async function requireOwner(): Promise<SessionUser> {
   const user = await currentUser();
   if (!user) redirect("/login");
   if (user.role !== "owner") redirect("/welcome");
+  // Nothing of the workspace opens before the address is confirmed.
+  if (mustConfirmEmail(user)) redirect("/verify-email");
   return user;
 }

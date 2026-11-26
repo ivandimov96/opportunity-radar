@@ -46,7 +46,7 @@ const SETUP_ACTION: Record<string, string> = {
   "AI key": "Set up the AI",
 };
 
-export function AppShell({ user, counts, setup = [], serverless = false, children }: { user?: { name: string; email: string }; counts?: NavCounts; setup?: SetupGap[]; serverless?: boolean; children: React.ReactNode }) {
+export function AppShell({ user, counts, setup = [], serverless = false, development = false, children }: { user?: { name: string; email: string }; counts?: NavCounts; setup?: SetupGap[]; serverless?: boolean; /** Not the live product: said beside the name, so the two are never taken for each other. */ development?: boolean; children: React.ReactNode }) {
   const path = usePathname();
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [path]);
@@ -60,6 +60,11 @@ export function AppShell({ user, counts, setup = [], serverless = false, childre
         <Link href="/" className="font-serif text-[1.02rem] font-semibold text-ink hover:no-underline leading-tight whitespace-nowrap min-w-0 truncate">
           Opportunity Radar
         </Link>
+        {development && (
+          <span className="rounded-full bg-warn-soft text-warn text-[0.65rem] font-bold uppercase tracking-wide px-1.5 leading-5 shrink-0" title="Development: not the live product. Its own database, keys and mailbox.">
+            Dev
+          </span>
+        )}
         <button className="ml-auto lg:hidden btn btn-ghost btn-sm" onClick={() => setOpen(false)} aria-label="Close menu">
           <Icon name="x" />
         </button>
@@ -97,14 +102,11 @@ export function AppShell({ user, counts, setup = [], serverless = false, childre
             <span className="w-8 h-8 rounded-full bg-accent-soft text-accent-text grid place-items-center text-sm font-bold shrink-0" aria-hidden>
               {(user.name || user.email).trim().charAt(0).toUpperCase()}
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-ink truncate" title={user.name || undefined}>
-                {user.name || "Your account"}
-              </span>
-              <span className="block text-xs text-ink-faint truncate" title={user.email}>
-                {user.email}
-              </span>
-            </span>
+            {/* The name leads to the person's own account (how they sign in, a new password). */}
+            <Link href="/account" className="min-w-0 flex-1 rounded-md hover:no-underline group" title="Your account">
+              <span className="block text-sm font-semibold text-ink truncate group-hover:text-accent-text">{user.name || "Your account"}</span>
+              <span className="block text-xs text-ink-faint truncate">{user.email}</span>
+            </Link>
             {/* An icon, so the name and address beside it have the room. */}
             <button className="w-8 h-8 rounded-lg grid place-items-center text-ink-faint hover:text-ink hover:bg-surface-3 shrink-0" title="Sign out" aria-label="Sign out">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
