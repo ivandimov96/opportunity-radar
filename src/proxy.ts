@@ -30,6 +30,9 @@ export async function proxy(req: NextRequest) {
   // account removed), and sending such a visitor away from "Sign in" would leave them with no way back in. The
   // pages themselves send on someone who really is signed in.
   if (token && SIGN_IN.has(pathname)) return pass();
+  // The address that starts a turn of the background work is called by a scheduler, not a person: it has no
+  // session and proves itself with its own secret (src/app/api/jobs/drain/route.ts).
+  if (pathname === "/api/jobs/drain") return pass();
   if (token?.role === "owner") return pass();
   if (token?.role === "member") return MEMBER.has(pathname) || LEGAL.has(pathname) ? pass() : to("/welcome");
   // Not signed in: the landing page can only be read; the sign-in and sign-up pages also take their own form.

@@ -22,4 +22,7 @@ jobs:
           APP_URL: ${{ vars.APP_URL }}
         run: |
           if [ -z "$CRON_SECRET" ] || [ -z "$APP_URL" ]; then echo "Not set up yet: CRON_SECRET and APP_URL are missing."; exit 0; fi
-          curl --fail-with-body --silent --show-error --max-time 330 -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/jobs/drain"
+          # Anything but a plain 200 is a failure (a redirect to the sign-in page is not an answer).
+          code=$(curl --silent --show-error --max-time 330 --output answer.txt --write-out "%{http_code}" -H "Authorization: Bearer $CRON_SECRET" "$APP_URL/api/jobs/drain")
+          cat answer.txt; echo
+          [ "$code" = "200" ] || { echo "The site answered $code"; exit 1; }

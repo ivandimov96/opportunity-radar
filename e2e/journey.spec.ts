@@ -760,3 +760,10 @@ test.describe("accounts", () => {
     await expect(page.getByRole("link", { name: "Get started", exact: true })).toBeVisible();
   });
 });
+
+test("the address that starts the background work answers a scheduler without a session", async ({ request }) => {
+  // No cookie: it must answer itself (here there is no secret and the app is a test), not send the caller to sign in.
+  const res = await request.get("/api/jobs/drain", { maxRedirects: 0 });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toHaveProperty("processed");
+});
